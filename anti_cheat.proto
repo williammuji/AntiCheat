@@ -1,0 +1,87 @@
+// 指定使用proto3语法。
+syntax = "proto3";
+
+// 定义包名，防止命名冲突。
+package anti_cheat;
+
+// [核心枚举] 定义了所有可被检测到的作弊或可疑行为的类别。
+// 通过此枚举，服务器可以轻松地对不同类型的作弊行为进行分类、统计和响应。
+enum CheatCategory {
+  // option allow_alias = true; // 允许在同一个枚举中为不同的值设置相同的编号，这里主要用于归类。
+
+  // --- 默认与未知类别 ---
+  RESERVED = 0; // proto3语法要求枚举的第一个值为0，此为保留值。
+  UNKNOWN_CHEAT = 1; // 无法归类的未知作弊行为。
+
+  // --- 游戏完整性类别 (1xx) ---
+  INTEGRITY_UNKNOWN = 100; // 未知的完整性问题。
+  INTEGRITY_MODULE_TAMPERED = 101; // 核心模块（如kernel32.dll）在内存中的映像与磁盘上的文件不一致，可能被hook。
+  INTEGRITY_MEMORY_PATCH = 102; // 检测到对关键游戏逻辑的内存补丁。
+  INTEGRITY_ASSET_TAMPERED = 103; // 游戏资源文件（如模型、地图、数据文件）的哈希值与预期不符。
+  INTEGRITY_API_HOOK = 104; // 检测到对关键API函数的挂钩。
+  INTEGRITY_SUSPICIOUS_HANDLE = 105; // 检测到可疑进程持有本进程的句柄。
+
+  // --- 外部环境与工具类别 (2xx) ---
+  ENVIRONMENT_UNKNOWN = 200; // 未知的环境异常。
+  ENVIRONMENT_DEBUGGER_DETECTED = 201; // 检测到���试器（如OllyDbg, x64dbg）正在附加游戏进程。
+  ENVIRONMENT_HARMFUL_PROCESS = 202; // 检测到已知的作弊或逆向工具进程（如Cheat Engine）正在运行。
+  ENVIRONMENT_VIRTUAL_MACHINE = 203; // 检测到游戏正在虚拟机（如VMware, VirtualBox）中运行。
+  ENVIRONMENT_SUSPICIOUS_DRIVER = 204; // 检测到可疑的内核驱动程序，可能用于更底层的作弊。
+  ENVIRONMENT_INVALID_PARENT_PROCESS = 205; // 检测到游戏由一个非法的父进程启动（例如，不是由官方启动器启动）。
+
+  // --- 运行时异常类别 (3xx) ---
+  RUNTIME_UNKNOWN = 300; // 未知的运行时异常。
+  RUNTIME_THREAD_NEW_UNKNOWN = 301; // 在游戏运行时，检测到新的、未知的线程被创建，可能由注入的DLL创建。
+  RUNTIME_MODULE_NEW_UNKNOWN = 302; // 检测到新的、未知的模块（DLL）被加载到游戏进程中。
+  RUNTIME_MEMORY_EXEC_PRIVATE = 303; // 发现不属于任何模块的私有可执行内存区域，这是DLL注入或Shellcode的典型特征。
+  RUNTIME_ILLEGAL_FUNCTION_CALL = 304; // [新增] 检测到对关键游戏函数的非法调用（例如，来自未知模块或Shellcode）。
+
+  // --- 输入与自动化类别 (4xx) ---
+  INPUT_AUTOMATION_DETECTED = 401; // 检测到疑似鼠标或键盘宏、机器人等自动化行为。
+
+  // --- 系统信息类别 (5xx) ---
+  SYSTEM_FINGERPRINT = 501; // 用于收集硬件指纹，本身不是作弊，但可用于关联封禁。
+}
+
+// [数据结构] 描述一个被加载到游戏进程中的模块（例如 DLL）的详细信息。
+message ModuleInfo {
+  string name = 1;        // 模块名，例如 "kernel32.dll"。
+  string path = 2;        // 模块在磁盘上的完整路径。
+  uint64 base_address = 3; // 模块在内存中的基地��。
+  uint32 size = 4;        // 模块在内存中的大小。
+  string sha256_hash = 5; // 模块文件的SHA256哈希值，用于完整性校验。
+}
+
+// [数据结构] 描述一个在系统中运行的进程的信息。
+message ProcessInfo {
+  uint32 process_id = 1; // 进程ID (PID)。
+  string name = 2;       // 进程可执行文件名，例如 "cheatengine.exe"。
+  string path = 3;       // 进程可执行文件的完整路径。
+  string command_line = 4; // 进程的命令行参数。
+}
+
+// [数据结构] 单条具体的作弊证据。
+message Evidence {
+  uint64 client_timestamp_ms = 1; // 客户端检测到该行为时的时间戳 (毫秒, UTC)。
+  CheatCategory category = 2;     // 证据的类别，来自上方的CheatCategory枚举。
+  string description = 3;         // 对可疑行为的详细文字描述，可以是调试信息或附加上下文。
+
+  oneof details {
+    ModuleInfo suspicious_module = 4; // 如果证据与模块相关，则填充此字段。
+    ProcessInfo suspicious_process = 5; // 如果证据与外部进程相关，则填充此字段。
+    string memory_region_info = 6;    // 如果是内存相关的证据，可以记录内存区域信息（如地址、大小、权限）。
+  }
+}
+
+// [核心消息] 客户端发送给服务器的精简版反作弊报告。
+// 每次上报只包含增量的证据，以减少网络开销。
+// 玩家身份等信息由服务器在会话建立时进行关联。
+message CheatReport {
+  // --- 报告元数据 ---
+  string report_id = 1; // 本次报告的唯一ID (建议使用 UUID)，用于追踪和去重。
+  uint64 report_timestamp_ms = 2; // 本次报告生成时的时间戳 (毫秒, UTC)。
+
+  // --- 证据列表 ---
+  // 只包含本次上报周期内新发现的证据。
+  repeated Evidence evidences = 3;
+}
