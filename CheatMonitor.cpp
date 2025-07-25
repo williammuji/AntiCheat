@@ -1,4 +1,4 @@
-#include "CheatMonitor.h"
+﻿#include "CheatMonitor.h"
 
 #include <Windows.h>
 #include <iostream>
@@ -22,6 +22,8 @@
 #include <Psapi.h>
 #include <TlHelp32.h>
 #include <Iphlpapi.h> // 为 GetAdaptersInfo 添加头文件
+#include <wintrust.h> // 为 WinVerifyTrust 添加头文件
+#include <Softpub.h> // 为 WINTRUST_ACTION_GENERIC_VERIFY_V2 GUID 添加头文件
 
 #include <winternl.h> // 包含 NTSTATUS 等定义
 
@@ -35,6 +37,10 @@
 // --- 为 NtQuerySystemInformation 定义必要的结构体和类型 ---
 #ifndef NT_SUCCESS
 #define NT_SUCCESS(Status) (((NTSTATUS)(Status)) >= 0)
+#endif
+
+#ifndef STATUS_INFO_LENGTH_MISMATCH
+#define STATUS_INFO_LENGTH_MISMATCH 0xC0000004L
 #endif
 
 const int SystemHandleInformation = 16;
@@ -62,10 +68,6 @@ typedef NTSTATUS(WINAPI* PNtQuerySystemInformation)(
     );
 
 // --- 为线程隐藏定义必要的结构体和类型 ---
-typedef enum _THREADINFOCLASS {
-    ThreadHideFromDebugger = 0x11
-} THREADINFOCLASS;
-
 typedef NTSTATUS(WINAPI* PNtSetInformationThread)(
     HANDLE ThreadHandle,
     THREADINFOCLASS ThreadInformationClass,
@@ -78,7 +80,7 @@ static const auto g_pNtQuerySystemInformation = reinterpret_cast<PNtQuerySystemI
 static const auto g_pNtSetInformationThread = reinterpret_cast<PNtSetInformationThread>(GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtSetInformationThread"));
 
 // --- 为系统完整性检测定义必要的结构体 ---
-const int SystemCodeIntegrityInformation = 103;
+// const int SystemCodeIntegrityInformation = 103;
 typedef struct _SYSTEM_CODE_INTEGRITY_INFORMATION {
     ULONG Length;
     ULONG CodeIntegrityOptions;
@@ -90,16 +92,6 @@ typedef struct _SYSTEM_KERNEL_DEBUGGER_INFORMATION {
     BOOLEAN KernelDebuggerEnabled;
     BOOLEAN KernelDebuggerNotPresent;
 } SYSTEM_KERNEL_DEBUGGER_INFORMATION, *PSYSTEM_KERNEL_DEBUGGER_INFORMATION;
-
-// --- 为RtlGetVersion定义 ---
-typedef struct _RTL_OSVERSIONINFOW {
-    ULONG dwOSVersionInfoSize;
-    ULONG dwMajorVersion;
-    ULONG dwMinorVersion;
-    ULONG dwBuildNumber;
-    ULONG dwPlatformId;
-    WCHAR  szCSDVersion[128];
-} RTL_OSVERSIONINFOW, *PRTL_OSVERSIONINFOW;
 
 namespace Utils {
     std::string WideToString(const std::wstring& wstr) {
@@ -214,6 +206,8 @@ struct CheatMonitor::Pimpl {
     std::atomic<bool> m_fingerprintCollected = false;
     std::unordered_set<std::wstring> m_legitimateModulePaths; // 使用哈希集合以实现O(1)复杂度的快速查找
     std::unordered_map<uintptr_t, std::chrono::steady_clock::time_point> m_reportedIllegalCallSources; // 用于记录已上报的非法调用来源，并实现5分钟上报冷却
+    //  记录每个用户、每种作弊类型的最近上报时间，防止重复上报
+    std::map<std::pair<uint32_t, anti_cheat::CheatCategory>, std::chrono::steady_clock::time_point> m_lastReported;
 
     // --- Input Automation Detection ---
     struct MouseMoveEvent {
@@ -236,7 +230,7 @@ struct CheatMonitor::Pimpl {
     void InitializeAndBaseline();
     void ResetSessionState();
     void AddEvidence(anti_cheat::CheatCategory category, const std::string& description);
-    void HardenProcessAndThreads(); // [新增] 进程与线程加固
+    void HardenProcessAndThreads(); //  进程与线程加固
 
     // --- Sensor Functions ---
     void Sensor_CheckApiHooks();
@@ -247,12 +241,12 @@ struct CheatMonitor::Pimpl {
     void Sensor_VerifySystemModuleIntegrity();
     void Sensor_CheckEnvironment();
     void Sensor_DetectVirtualMachine();
-    void Sensor_CollectHardwareFingerprint(); // [新增] 收集硬件指纹
-    void Sensor_CheckSystemIntegrityState(); // [新增] 系统完整性状态检测
-    void Sensor_CheckAdvancedAntiDebug(); // [新增] 高级反调试检测
-    void Sensor_CheckIatHooks(); // [新增] IAT Hook 检测
-    void Sensor_CheckInputAutomation(); // [新增] 输入自动化检测
-    void VerifyModuleIntegrity(const wchar_t* moduleName); // [新增] 通用模块验证辅助函数
+    void Sensor_CollectHardwareFingerprint(); //  收集硬件指纹
+    void Sensor_CheckSystemIntegrityState(); //  系统完整性状态检测
+    void Sensor_CheckAdvancedAntiDebug(); //  高级反调试检测
+    void Sensor_CheckIatHooks(); //  IAT Hook 检测
+    void Sensor_CheckInputAutomation(); //  输入自动化检测
+    void VerifyModuleIntegrity(const wchar_t* moduleName); //  通用模块验证辅助函数
 
     // VM detection helpers
     void DetectVmByCpuid();
@@ -263,6 +257,8 @@ struct CheatMonitor::Pimpl {
 
     // --- Hook Procedures ---
     static LRESULT CALLBACK LowLevelMouseProc(int nCode, WPARAM wParam, LPARAM lParam);
+
+    void CheckFunctionForHook(HMODULE moduleHandle, std::string_view functionName);
 };
 
 CheatMonitor::Pimpl* CheatMonitor::Pimpl::s_pimpl_for_hooks = nullptr;
@@ -293,7 +289,7 @@ void CheatMonitor::OnPlayerLogin(uint32_t user_id, const std::string& user_name,
         std::lock_guard<std::mutex> lock(m_pimpl->m_sessionMutex);
         m_pimpl->m_currentUserId = user_id;
         m_pimpl->m_currentUserName = user_name;
-        // [修改] 确保指纹只在第一个会话开始时收集一次
+        //  确保指纹只在第一个会话开始时收集一次
         if (!m_pimpl->m_fingerprintCollected.load()) {
             m_pimpl->Sensor_CollectHardwareFingerprint();
             m_pimpl->m_fingerprintCollected = true;
@@ -456,7 +452,7 @@ void CheatMonitor::Pimpl::HardenProcessAndThreads() {
             if (te.th32OwnerProcessID == GetCurrentProcessId()) {
                 HANDLE hThread = OpenThread(THREAD_SET_INFORMATION, FALSE, te.th32ThreadID);
                 if (hThread) {
-                    g_pNtSetInformationThread(hThread, ThreadHideFromDebugger, NULL, 0);
+                    g_pNtSetInformationThread(hThread, (THREADINFOCLASS)0x11, NULL, 0); // 0x11 is ThreadHideFromDebugger
                     CloseHandle(hThread);
                 }
             }
@@ -519,6 +515,24 @@ void CheatMonitor::Pimpl::AddEvidence(anti_cheat::CheatCategory category, const 
     std::lock_guard<std::mutex> lock(m_sessionMutex);
     if (!m_isSessionActive) return;
 
+    //  频率控制：半小时内只上报一次
+    auto now = std::chrono::steady_clock::now();
+    std::pair<uint32_t, anti_cheat::CheatCategory> key = {m_currentUserId, category};
+    auto it = m_lastReported.find(key);
+
+    if (it != m_lastReported.end()) {
+        auto duration = std::chrono::duration_cast<std::chrono::minutes>(now - it->second);
+        if (duration.count() < 30) {
+            // 距离上次上报时间小于30分钟，取消本次上报
+            return;
+        }
+    }
+
+    // 如果是第一次发现，或者距离上次上报已超过30分钟，则更新时间戳
+    m_lastReported[key] = now;
+
+
+
     // O(logN) 复杂度的去重检查
     if (m_uniqueEvidence.find({category, description}) != m_uniqueEvidence.end()) {
         return;
@@ -527,7 +541,7 @@ void CheatMonitor::Pimpl::AddEvidence(anti_cheat::CheatCategory category, const 
     m_uniqueEvidence.insert({category, description});
 
     anti_cheat::Evidence evidence; // 在栈上创建对象
-    evidence.set_client_timestamp_ms(duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count());
+    evidence.set_client_timestamp_ms(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
     evidence.set_category(category);
     evidence.set_description(description);
     m_evidences.push_back(evidence); // 拷贝到vector
@@ -539,7 +553,7 @@ void CheatMonitor::Pimpl::UploadReport() {
 
     anti_cheat::CheatReport report;
     report.set_report_id(Utils::GenerateUuid());
-    report.set_report_timestamp_ms(duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count());
+    report.set_report_timestamp_ms(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
     
     report.mutable_evidences()->CopyFrom({m_evidences.begin(), m_evidences.end()});
 
@@ -670,6 +684,19 @@ void CheatMonitor::Pimpl::Sensor_CheckSystemIntegrityState() {
     // ...
 }
 
+namespace { // 匿名命名空间，用于辅助函数
+    // 将__try块移至此辅助函数中，以解决C2712错误。
+    // 此函数不应使用任何需要堆栈展开的C++对象。
+    void CheckCloseHandleException() {
+        __try {
+            // 使用 reinterpret_cast 和 uintptr_t 以避免C4312警告 (在64位上从int到更大的指针的转换)
+            CloseHandle(reinterpret_cast<HANDLE>(static_cast<uintptr_t>(0xDEADBEEF)));
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {
+            // 如果调试器附加，它将捕获此异常，代码可能不会到达这里。
+        }
+    }
+}
 void CheatMonitor::Pimpl::Sensor_CheckAdvancedAntiDebug() {
     // 1. CheckRemoteDebuggerPresent - 另一个标准的API检查
     BOOL isDebuggerPresent = FALSE;
@@ -691,17 +718,7 @@ void CheatMonitor::Pimpl::Sensor_CheckAdvancedAntiDebug() {
     // 3. CloseHandle 无效句柄技巧
     // 在没有调试器的情况下，调用会失败并返回。
     // 如果有调试器附加，它会捕获这个异常，导致执行流程改变。
-    // 使用SEH (Structured Exception Handling) 来检测这种行为。
-    __try {
-        CloseHandle((HANDLE)0xDEADBEEF);
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) {
-        // 如果代码执行到这里，说明没有调试器处理这个异常，一切正常。
-    }
-    // 如果调试器捕获了异常，代码可能不会从这里正常返回，
-    // 但更可靠的检测是检查 __except 块是否被执行。
-    // 一个更高级的技巧是设置一个标志位，在 __except 块中清除它，
-    // 然后在外面检查标志位是否被清除。
+    CheckCloseHandleException();
 
     // 4. 硬件断点检查 (DR0-DR7)
     CONTEXT ctx = {};
@@ -949,12 +966,12 @@ void CheatMonitor::Pimpl::DetectVmByMacAddress() {
         const char* vendor;
     };
 
-    static constexpr std::array<MacPrefix, 4> vmMacPrefixes = {{
-        {{0x00, 0x05, 0x69}}, "VMware",
-        {{0x00, 0x0C, 0x29}}, "VMware",
-        {{0x08, 0x00, 0x27}}, "VirtualBox",
-        {{0x00, 0x15, 0x5D}}, "Microsoft Hyper-V"
-    }};
+    static const std::array<MacPrefix, 4> vmMacPrefixes = { {
+        { {0x00, 0x05, 0x69}, "VMware" },
+        { {0x00, 0x0C, 0x29}, "VMware" },
+        { {0x08, 0x00, 0x27}, "VirtualBox" },
+        { {0x00, 0x15, 0x5D}, "Microsoft Hyper-V" }
+    } };
 
     ULONG bufferSize = 0;
     // 第一次调用以获取所需的缓冲区大小
@@ -1034,7 +1051,6 @@ void CheatMonitor::Pimpl::Sensor_CollectHardwareFingerprint() {
     std::string cpuInfo = "CPU:Arch=" + std::to_string(sysInfo.wProcessorArchitecture) + ",Cores=" + std::to_string(sysInfo.dwNumberOfProcessors);
     AddEvidence(anti_cheat::SYSTEM_FINGERPRINT, cpuInfo);
 
-    }
 }
 
 namespace InputAnalysis {
@@ -1109,7 +1125,7 @@ void CheatMonitor::Pimpl::Sensor_CheckInputAutomation() {
 
 LRESULT CALLBACK CheatMonitor::Pimpl::LowLevelMouseProc(int nCode, WPARAM wParam, LPARAM lParam) {
     if (nCode == HC_ACTION && s_pimpl_for_hooks) {
-        MOUSEHOOKSTRUCT* pMouseStruct = (MOUSEHOOKSTRUCT*)lParam;
+        MSLLHOOKSTRUCT* pMouseStruct = (MSLLHOOKSTRUCT*)lParam;
         if (pMouseStruct) {
             std::lock_guard<std::mutex> lock(s_pimpl_for_hooks->m_inputMutex);
             if (wParam == WM_MOUSEMOVE) {
@@ -1120,40 +1136,37 @@ LRESULT CALLBACK CheatMonitor::Pimpl::LowLevelMouseProc(int nCode, WPARAM wParam
         }
     }
     // 务必调用 CallNextHookEx 将消息传递给钩子链中的下一个钩子
-    return CallNextHookEx(s_pimpl_for_hooks->m_hMouseHook, nCode, wParam, lParam);
+   return CallNextHookEx(s_pimpl_for_hooks->m_hMouseHook, nCode, wParam, lParam);
 }
 
-namespace { // 使用匿名命名空间来限制辅助函数的链接范围
 /**
  * @brief 检查单个函数是否存在已知的内联挂钩模式。
  * @param moduleHandle 模块句柄。
  * @param functionName 要检查的函数名。
- * @param pimpl 指向Pimpl实例的指针，用于调用AddEvidence。
  */
-void CheckFunctionForHook(HMODULE moduleHandle, std::string_view functionName, CheatMonitor::Pimpl* pimpl) {
-    if (!moduleHandle || !pimpl) return;
+void CheatMonitor::Pimpl::CheckFunctionForHook(HMODULE moduleHandle, std::string_view functionName) {
+    if (!moduleHandle) return;
 
     FARPROC pFunc = GetProcAddress(moduleHandle, functionName.data());
     if (!pFunc) {
-        pimpl->AddEvidence(anti_cheat::INTEGRITY_API_HOOK, "无法获取API地址: " + std::string(functionName));
+        AddEvidence(anti_cheat::INTEGRITY_API_HOOK, "无法获取API地址: " + std::string(functionName));
         return;
     }
 
     // 检查常见的内联挂钩模式
     // 1. JMP rel32 (E9 xx xx xx xx)
     if (*reinterpret_cast<BYTE*>(pFunc) == 0xE9) {
-        pimpl->AddEvidence(anti_cheat::INTEGRITY_API_HOOK, "检测到 JMP Hook: " + std::string(functionName));
+        AddEvidence(anti_cheat::INTEGRITY_API_HOOK, "检测到 JMP Hook: " + std::string(functionName));
     }
     // 2. JMP [addr] (FF 25 xx xx xx xx)
     else if (*reinterpret_cast<WORD*>(pFunc) == 0x25FF) {
-        pimpl->AddEvidence(anti_cheat::INTEGRITY_API_HOOK, "检测到 JMP [addr] Hook: " + std::string(functionName));
+        AddEvidence(anti_cheat::INTEGRITY_API_HOOK, "检测到 JMP [addr] Hook: " + std::string(functionName));
     }
     // 3. PUSH addr; RET (68 xx xx xx xx C3) - 另一种常见的跳转方式
     else if (*reinterpret_cast<BYTE*>(pFunc) == 0x68 && *(reinterpret_cast<BYTE*>(reinterpret_cast<uintptr_t>(pFunc) + 5)) == 0xC3) {
-        pimpl->AddEvidence(anti_cheat::INTEGRITY_API_HOOK, "检测到 PUSH-RET Hook: " + std::string(functionName));
+        AddEvidence(anti_cheat::INTEGRITY_API_HOOK, "检测到 PUSH-RET Hook: " + std::string(functionName));
     }
 }
-} // namespace
 
 void CheatMonitor::Pimpl::Sensor_CheckApiHooks() {
     // 此传感器通过检查关键函数的前几个字节来执行基本的内联API挂钩检测。
@@ -1172,9 +1185,9 @@ void CheatMonitor::Pimpl::Sensor_CheckApiHooks() {
         return;
     }
 
-    for (const auto& func_name : ntdll_funcs)    CheckFunctionForHook(hNtdll, func_name, this);
-    for (const auto& func_name : kernel32_funcs) CheckFunctionForHook(hKernel32, func_name, this);
-    for (const auto& func_name : psapi_funcs)    CheckFunctionForHook(hPsapi, func_name, this);
+    for (const auto& func_name : ntdll_funcs)    CheckFunctionForHook(hNtdll, func_name);
+    for (const auto& func_name : kernel32_funcs) CheckFunctionForHook(hKernel32, func_name);
+    for (const auto& func_name : psapi_funcs)    CheckFunctionForHook(hPsapi, func_name);
 }
 
 void CheatMonitor::Pimpl::Sensor_CheckIatHooks() {
@@ -1182,17 +1195,32 @@ void CheatMonitor::Pimpl::Sensor_CheckIatHooks() {
     const HMODULE hSelf = GetModuleHandle(NULL);
     if (!hSelf) return;
 
-    const auto* pDosHeader = reinterpret_cast<PIMAGE_DOS_HEADER>(hSelf);
-    if (pDosHeader->e_magic != IMAGE_DOS_SIGNATURE) return;
+    // 确保 hSelf 被视为指向常量字节数据的指针，以进行只读操作
+    const BYTE* baseAddress = reinterpret_cast<const BYTE*>(hSelf);
 
-    const auto* pNtHeaders = reinterpret_cast<PIMAGE_NT_HEADERS>(reinterpret_cast<const BYTE*>(hSelf) + pDosHeader->e_lfanew);
-    if (pNtHeaders->Signature != IMAGE_NT_SIGNATURE) return;
+    // 1. 对于 pDosHeader:
+    //    将 baseAddress 转换为 const IMAGE_DOS_HEADER*
+    const IMAGE_DOS_HEADER* pDosHeader = reinterpret_cast<const IMAGE_DOS_HEADER*>(baseAddress);
+    if (pDosHeader->e_magic != IMAGE_DOS_SIGNATURE) {
+        return; // 或者抛出异常，或者返回错误码
+    }
+
+    // 2. 对于 pNtHeaders:
+    //    将 (baseAddress + offset) 转换为 const IMAGE_NT_HEADERS*
+    const IMAGE_NT_HEADERS* pNtHeaders = reinterpret_cast<const IMAGE_NT_HEADERS*>(baseAddress + pDosHeader->e_lfanew);
+    if (pNtHeaders->Signature != IMAGE_NT_SIGNATURE) {
+        return; // 或者抛出异常，或者返回错误码
+    }
 
     // 找到导入表
     IMAGE_DATA_DIRECTORY importDirectory = pNtHeaders->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
-    if (importDirectory.VirtualAddress == 0) return;
+    if (importDirectory.VirtualAddress == 0) {
+        return; // 没有导入表
+    }
 
-    auto* pImportDesc = reinterpret_cast<PIMAGE_IMPORT_DESCRIPTOR>(reinterpret_cast<const BYTE*>(hSelf) + importDirectory.VirtualAddress);
+    // 3. 对于 pImportDesc:
+    //    将 (baseAddress + offset) 转换为 const IMAGE_IMPORT_DESCRIPTOR*
+    const IMAGE_IMPORT_DESCRIPTOR* pImportDesc = reinterpret_cast<const IMAGE_IMPORT_DESCRIPTOR*>(baseAddress + importDirectory.VirtualAddress);
 
     // 遍历每个导入的DLL
     while (pImportDesc->Name) {
@@ -1203,27 +1231,31 @@ void CheatMonitor::Pimpl::Sensor_CheckIatHooks() {
             continue;
         }
 
-        auto* pThunk = reinterpret_cast<PIMAGE_THUNK_DATA>(reinterpret_cast<const BYTE*>(hSelf) + pImportDesc->FirstThunk);
-        auto* pOrigThunk = reinterpret_cast<PIMAGE_THUNK_DATA>(reinterpret_cast<const BYTE*>(hSelf) + pImportDesc->OriginalFirstThunk);
+        const IMAGE_THUNK_DATA* pThunk = reinterpret_cast<const IMAGE_THUNK_DATA*>(baseAddress + pImportDesc->FirstThunk);
+        const IMAGE_THUNK_DATA* pOrigThunk = reinterpret_cast<const IMAGE_THUNK_DATA*>(baseAddress + pImportDesc->OriginalFirstThunk);
 
         // 遍历该DLL导入的每个函数
         while (pOrigThunk->u1.AddressOfData) {
-            const auto* pImportByName = reinterpret_cast<PIMAGE_IMPORT_BY_NAME>(reinterpret_cast<const BYTE*>(hSelf) + pOrigThunk->u1.AddressOfData);
+            const IMAGE_IMPORT_BY_NAME* pImportByName = reinterpret_cast<const IMAGE_IMPORT_BY_NAME*>(baseAddress + pOrigThunk->u1.AddressOfData);
             const char* functionName = pImportByName->Name;
 
             // 获取原始函数地址
             FARPROC originalAddress = GetProcAddress(hImportedModule, functionName);
             // 获取IAT中当前的函数地址
+            // 注意：pThunk->u1.Function 通常是可写的，因为IAT会被修改。
+            // 但是在这个检查的上下文中，我们只是读取它，所以 const 指针仍然是安全的。
+            // 如果你需要修改它，则需要一个非 const 的 pThunk。
+            // 但对于 hook 检测，我们只读取，所以当前 const 是没问题的。
             void* currentAddress = reinterpret_cast<void*>(pThunk->u1.Function);
 
             if (originalAddress && currentAddress != originalAddress) {
+                // 假设 AddEvidence 是可访问的成员函数或友元函数
                 AddEvidence(anti_cheat::INTEGRITY_API_HOOK, "检测到IAT Hook: " + std::string(dllName) + "!" + std::string(functionName));
             }
 
-            pOrigThunk++;
-            pThunk++;
+            pOrigThunk++; // 递增 const 指针是合法的，它不修改数据，只改变指针所指的位置
+            pThunk++;     // 递增 const 指针是合法的
         }
-        pImportDesc++;
     }
 }
 
