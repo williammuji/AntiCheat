@@ -103,7 +103,7 @@ cmake --build . --config Release
 
 The initial phase of this project focuses on **data collection and intelligence gathering**.
 
-### 1)Features
+### 1) Features
 
 #### Proactive Defense & Hardening
 
@@ -152,14 +152,14 @@ The initial phase of this project focuses on **data collection and intelligence 
     -   Uses Protobuf for efficient, cross-platform data serialization.
     -   Employs a timed (5-minute) reporting strategy to balance real-time awareness with network overhead.
 
-### 2)Planned Features
+### 2) Planned Features
 
 -   **Kernel-Mode Driver**: Develop a companion kernel driver for lower-level protection, such as process protection, thread creation filtering, and callback monitoring to counter kernel-level cheats.
 -   **Network Traffic Analysis**: Monitor game packets to detect abnormal sending frequencies or tampered protocol content.
 -   **Code Obfuscation/Virtualization**: Harden the anti-cheat module itself to prevent reverse engineering and tampering.
 -   **File System Scanning**: Scan the game directory and common cheat software paths at startup to find known cheat tool files.
 
-### 3)Build
+### 3) Build
 
 #### 1. Prerequisites
 
@@ -186,6 +186,6 @@ cmake --build . --config Release
 
 Upon successful compilation, the static library `CheatMonitorLib.lib` will be located in the `build/Release` directory.
 
-### 4)License
+### 4) License
 
 This project is licensed under the MIT License.
