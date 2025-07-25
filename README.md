@@ -4,20 +4,11 @@
 
 # CheatMonitor: 游戏客户端反作弊
 
-`CheatMonitor` 是一个为大型多人在线角色扮演游戏（MMORPG）设计的、运行在用户模式下的反作弊系统。其核心目标是在对游戏性能影响最小的前提下，全面、精准地检测各类作弊行为，并为服务器提供数据情报。
+`CheatMonitor` 是一个为大型多人在线角色扮演游戏（MMORPG）设计的、运行在用户模式下的反作弊系统。
 
 本项目的第一阶段主要侧重于**数据收集与摸底**。
 
-## 核心设计理念
-
-*   **高性能与低侵入**: 所有检测传感器都经过精心设计，以确保对游戏帧率的影响降至最低。采用动态休眠机制，在保证扫描频率的同时，智能调节系统资源占用。
-*   **模块化与可扩展**: 系统采用模块化的传感器设计，便于未来新增或更新检测功能，而无需重构核心代码。
-*   **主动防御**: 除了被动检测，系统还包含主动防御机制（如返回地址校验），旨在从根本上增加外挂的制作难度。
-*   **数据驱动**: 强大的硬件指纹收集能力和精准的证据上报机制，为服务器端的行为分析和封禁决策提供数据支持。
-
 ## 功能特性 (Features)
-
-`CheatMonitor` 已经实现了一个功能全面、多层次的防御体系。
 
 ### 主动防御与进程加固 (Proactive Defense & Hardening)
 
@@ -73,9 +64,7 @@
 -   **代码虚拟化与混淆 (Code Obfuscation/Virtualization)**: 对反作弊模块自身进行加固，防止被逆向分析和破解。
 -   **文件系统扫描 (File System Scanning)**: 在启动时扫描游戏目录和常见作弊软件路径，发现已知的作弊工具文件。
 
-## 编译 (Compile)
-
-本项目使用CMake进行构建，可以在Windows环境下通过Visual Studio轻松编译。
+## 编译 (Build)
 
 ### 1. 依赖环境
 
@@ -110,20 +99,11 @@ cmake --build . --config Release
 
 # CheatMonitor: A Game Client Anti-Cheat
 
-`CheatMonitor` is a user-mode anti-cheat system designed for Massively Multiplayer Online Role-Playing Games (MMORPGs). Its core objective is to comprehensively and accurately detect various forms of cheating while minimizing impact on game performance, providing valuable intelligence to the server.
+`CheatMonitor` is a user-mode anti-cheat system designed for Massively Multiplayer Online Role-Playing Games (MMORPGs). 
 
 The initial phase of this project focuses on **data collection and intelligence gathering**.
 
-## Core Design Philosophy
-
-*   **High Performance & Low Intrusion**: All detection sensors are meticulously designed to ensure minimal impact on game frame rates. A dynamic sleep mechanism is employed to intelligently manage system resource usage while guaranteeing a consistent scan frequency.
-*   **Modular & Extensible**: The system uses a modular sensor design, making it easy to add or update detection capabilities in the future without refactoring the core code.
-*   **Proactive Defense**: Beyond passive detection, the system includes proactive defense mechanisms (such as return address validation) aimed at fundamentally increasing the difficulty for cheat developers.
-*   **Data-Driven**: Robust hardware fingerprinting capabilities and a precise evidence reporting mechanism provide the data support needed for server-side behavioral analysis and banning decisions.
-
 ## Features
-
-`CheatMonitor` has implemented a comprehensive, multi-layered defense system.
 
 ### Proactive Defense & Hardening
 
@@ -207,40 +187,6 @@ cmake --build . --config Release
 ```
 
 Upon successful compilation, the static library `CheatMonitorLib.lib` will be located in the `build/Release` directory.
-
-## How to Use
-
-1.  Link `CheatMonitorLib.lib` into your main game project.
-2.  Initialize `CheatMonitor` when the game starts:
-    ```cpp
-    #include "CheatMonitor.h"
-    
-    void GameInitialize() {
-        sCheatMonitor.Initialize();
-    }
-    ```
-3.  Notify `CheatMonitor` to begin a session after a player successfully logs in:
-    ```cpp
-    void OnPlayerLoginSuccess(uint32_t player_id, const std::string& player_name) {
-        sCheatMonitor.OnPlayerLogin(player_id, player_name, "1.0.0");
-    }
-    ```
-4.  Call `IsCallerLegitimate()` at the entry point of critical game functions for proactive defense:
-    ```cpp
-    bool CPlayer::UseSkill(int skillId) {
-        if (!sCheatMonitor.IsCallerLegitimate()) {
-            return false; // Block the illegal call
-        }
-        // ... Normal skill logic ...
-        return true;
-    }
-    ```
-5.  Safely shut down `CheatMonitor` before the game exits:
-    ```cpp
-    void GameShutdown() {
-        sCheatMonitor.Shutdown();
-    }
-    ```
 
 ## License
 
