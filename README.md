@@ -8,7 +8,7 @@
 
 本项目的第一阶段主要侧重于**数据收集与摸底**。
 
-### 功能特性 (Features)
+### 1）功能特性 (Features)
 
 #### 主动防御与进程加固 (Proactive Defense & Hardening)
 
@@ -57,14 +57,14 @@
     -   通过Protobuf进行数据序列化，高效且跨平台。
     -   采用定时（5分钟）上报策略，平衡了实时性与网络开销。
 
-### 未来计划 (Planned Features)
+### 2）未来计划 (Planned Features)
 
 -   **内核级驱动 (Kernel-Mode Driver)**: 开发配套的内核驱动，以实现更底层的防护，如进程保护、线程创建过滤、回调函数监控等，对抗内核级作弊。
 -   **网络流量分析 (Network Traffic Analysis)**: 监控游戏数据包，检测异常的发包频率或被篡改的协议内容。
 -   **代码虚拟化与混淆 (Code Obfuscation/Virtualization)**: 对反作弊模块自身进行加固，防止被逆向分析和破解。
 -   **文件系统扫描 (File System Scanning)**: 在启动时扫描游戏目录和常见作弊软件路径，发现已知的作弊工具文件。
 
-### 编译 (Build)
+### 3）编译 (Build)
 
 #### 1. 依赖环境
 
@@ -91,7 +91,7 @@ cmake --build . --config Release
 
 编译成功后，静态库 `CheatMonitorLib.lib` 将会生成在 `build/Release` 目录下。
 
-### 授权协议 (License)
+### 4）授权协议 (License)
 
 本项目采用 MIT License。
 
@@ -103,7 +103,7 @@ cmake --build . --config Release
 
 The initial phase of this project focuses on **data collection and intelligence gathering**.
 
-### Features
+### 1)Features
 
 #### Proactive Defense & Hardening
 
@@ -152,14 +152,14 @@ The initial phase of this project focuses on **data collection and intelligence 
     -   Uses Protobuf for efficient, cross-platform data serialization.
     -   Employs a timed (5-minute) reporting strategy to balance real-time awareness with network overhead.
 
-### Planned Features
+### 2)Planned Features
 
 -   **Kernel-Mode Driver**: Develop a companion kernel driver for lower-level protection, such as process protection, thread creation filtering, and callback monitoring to counter kernel-level cheats.
 -   **Network Traffic Analysis**: Monitor game packets to detect abnormal sending frequencies or tampered protocol content.
 -   **Code Obfuscation/Virtualization**: Harden the anti-cheat module itself to prevent reverse engineering and tampering.
 -   **File System Scanning**: Scan the game directory and common cheat software paths at startup to find known cheat tool files.
 
-### Build
+### 3)Build
 
 #### 1. Prerequisites
 
@@ -186,6 +186,6 @@ cmake --build . --config Release
 
 Upon successful compilation, the static library `CheatMonitorLib.lib` will be located in the `build/Release` directory.
 
-### License
+### 4)License
 
 This project is licensed under the MIT License.
