@@ -4,7 +4,7 @@ syntax = "proto3";
 // 定义包名，防止命名冲突。
 package anti_cheat;
 
-// [核心枚举] 定义了所有可被检测到的作弊或可疑行为的类别。
+// 定义了所有可被检测到的作弊或可疑行为的类别。
 // 通过此枚举，服务器可以轻松地对不同类型的作弊行为进行分类、统计和响应。
 enum CheatCategory {
   // option allow_alias = true; // 允许在同一个枚举中为不同的值设置相同的编号，这里主要用于归类。
@@ -34,7 +34,7 @@ enum CheatCategory {
   RUNTIME_THREAD_NEW_UNKNOWN = 301; // 在游戏运行时，检测到新的、未知的线程被创建，可能由注入的DLL创建。
   RUNTIME_MODULE_NEW_UNKNOWN = 302; // 检测到新的、未知的模块（DLL）被加载到游戏进程中。
   RUNTIME_MEMORY_EXEC_PRIVATE = 303; // 发现不属于任何模块的私有可执行内存区域，这是DLL注入或Shellcode的典型特征。
-  RUNTIME_ILLEGAL_FUNCTION_CALL = 304; // [新增] 检测到对关键游戏函数的非法调用（例如，来自未知模块或Shellcode）。
+  RUNTIME_ILLEGAL_FUNCTION_CALL = 304; // 检测到对关键游戏函数的非法调用（例如，来自未知模块或Shellcode）。
 
   // --- 输入与自动化类别 (4xx) ---
   INPUT_AUTOMATION_DETECTED = 401; // 检测到疑似鼠标或键盘宏、机器人等自动化行为。
@@ -43,7 +43,7 @@ enum CheatCategory {
   SYSTEM_FINGERPRINT = 501; // 用于收集硬件指纹，本身不是作弊，但可用于关联封禁。
 }
 
-// [数据结构] 描述一个被加载到游戏进程中的模块（例如 DLL）的详细信息。
+// 描述一个被加载到游戏进程中的模块（例如 DLL）的详细信息。
 message ModuleInfo {
   string name = 1;        // 模块名，例如 "kernel32.dll"。
   string path = 2;        // 模块在磁盘上的完整路径。
@@ -52,7 +52,7 @@ message ModuleInfo {
   string sha256_hash = 5; // 模块文件的SHA256哈希值，用于完整性校验。
 }
 
-// [数据结构] 描述一个在系统中运行的进程的信息。
+// 描述一个在系统中运行的进程的信息。
 message ProcessInfo {
   uint32 process_id = 1; // 进程ID (PID)。
   string name = 2;       // 进程可执行文件名，例如 "cheatengine.exe"。
@@ -60,7 +60,7 @@ message ProcessInfo {
   string command_line = 4; // 进程的命令行参数。
 }
 
-// [数据结构] 单条具体的作弊证据。
+// 单条具体的作弊证据。
 message Evidence {
   uint64 client_timestamp_ms = 1; // 客户端检测到该行为时的时间戳 (毫秒, UTC)。
   CheatCategory category = 2;     // 证据的类别，来自上方的CheatCategory枚举。
@@ -73,7 +73,7 @@ message Evidence {
   }
 }
 
-// [核心消息] 客户端发送给服务器的精简版反作弊报告。
+// 客户端发送给服务器的精简版反作弊报告。
 // 每次上报只包含增量的证据，以减少网络开销。
 // 玩家身份等信息由服务器在会话建立时进行关联。
 message CheatReport {
