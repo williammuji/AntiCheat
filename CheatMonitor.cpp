@@ -203,7 +203,8 @@ struct CheatMonitor::Pimpl {
     // 使用 std::set 以获得更快的查找速度 (O(logN)) 并自动处理重复项
     std::set<DWORD> m_knownThreadIds;
     std::set<HMODULE> m_knownModules;
-    std::atomic<bool> m_fingerprintCollected = false;
+    //  硬件指纹信息，只在首次登录时收集一次
+    std::unique_ptr<anti_cheat::HardwareFingerprint> m_fingerprint;
     std::unordered_set<std::wstring> m_legitimateModulePaths; // 使用哈希集合以实现O(1)复杂度的快速查找
     std::unordered_map<uintptr_t, std::chrono::steady_clock::time_point> m_reportedIllegalCallSources; // 用于记录已上报的非法调用来源，并实现5分钟上报冷却
     //  记录每个用户、每种作弊类型的最近上报时间，防止重复上报
@@ -289,10 +290,9 @@ void CheatMonitor::OnPlayerLogin(uint32_t user_id, const std::string& user_name,
         std::lock_guard<std::mutex> lock(m_pimpl->m_sessionMutex);
         m_pimpl->m_currentUserId = user_id;
         m_pimpl->m_currentUserName = user_name;
-        //  确保指纹只在第一个会话开始时收集一次
-        if (!m_pimpl->m_fingerprintCollected.load()) {
+        //  确保硬件指纹只在第一个会话开始时收集一次
+        if (!m_pimpl->m_fingerprint) {
             m_pimpl->Sensor_CollectHardwareFingerprint();
-            m_pimpl->m_fingerprintCollected = true;
         }
         m_pimpl->m_isSessionActive = true;
     }
@@ -555,6 +555,12 @@ void CheatMonitor::Pimpl::UploadReport() {
     report.set_report_id(Utils::GenerateUuid());
     report.set_report_timestamp_ms(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
     
+    //  如果硬件指纹已收集且尚未上报（m_fingerprint非空），则附加到报告中
+    //  通过 release() 转移所有权，确保它只被上报一次。
+    if (m_fingerprint) {
+        report.set_allocated_fingerprint(m_fingerprint.release());
+    }
+
     report.mutable_evidences()->CopyFrom({m_evidences.begin(), m_evidences.end()});
 
     std::cout << "\n--- [反作弊] 上报报告 (UserID: " << m_currentUserId << ") ---\n"
@@ -1002,17 +1008,22 @@ void CheatMonitor::Pimpl::DetectVmByMacAddress() {
 }
 
 void CheatMonitor::Pimpl::Sensor_CollectHardwareFingerprint() {
+    // 仅当指纹尚未收集时才执行
+    if (m_fingerprint) return;
+
+    m_fingerprint = std::make_unique<anti_cheat::HardwareFingerprint>();
+
     // 1. 获取C盘卷序列号
     DWORD serialNum = 0;
     if (GetVolumeInformationA("C:\\", NULL, 0, &serialNum, NULL, NULL, NULL, 0)) {
-        AddEvidence(anti_cheat::SYSTEM_FINGERPRINT, "DiskSerial:" + std::to_string(serialNum));
+        m_fingerprint->set_disk_serial(std::to_string(serialNum));
     }
 
     // 2. 获取所有网络适配器的MAC地址
     ULONG bufferSize = 0;
     if (GetAdaptersInfo(nullptr, &bufferSize) == ERROR_BUFFER_OVERFLOW) {
         std::vector<BYTE> buffer(bufferSize);
-        auto adapterInfo = reinterpret_cast<IP_ADAPTER_INFO*>(buffer.data());
+        auto* adapterInfo = reinterpret_cast<IP_ADAPTER_INFO*>(buffer.data());
         if (GetAdaptersInfo(adapterInfo, &bufferSize) == ERROR_SUCCESS) {
             while (adapterInfo) {
                 if (adapterInfo->AddressLength == 6) {
@@ -1021,7 +1032,7 @@ void CheatMonitor::Pimpl::Sensor_CollectHardwareFingerprint() {
                     for (int i = 0; i < 6; ++i) {
                         oss << std::setw(2) << static_cast<int>(adapterInfo->Address[i]) << (i < 5 ? "-" : "");
                     }
-                    AddEvidence(anti_cheat::SYSTEM_FINGERPRINT, "MAC:" + oss.str());
+                    m_fingerprint->add_mac_addresses(oss.str());
                 }
                 adapterInfo = adapterInfo->Next;
             }
@@ -1032,16 +1043,16 @@ void CheatMonitor::Pimpl::Sensor_CollectHardwareFingerprint() {
     wchar_t computerName[MAX_COMPUTERNAME_LENGTH + 1];
     DWORD size = MAX_COMPUTERNAME_LENGTH + 1;
     if (GetComputerNameW(computerName, &size)) {
-        AddEvidence(anti_cheat::SYSTEM_FINGERPRINT, "ComputerName:" + Utils::WideToString(computerName));
+        m_fingerprint->set_computer_name(Utils::WideToString(computerName));
     }
 
     // 4. 获取操作系统版本
-    auto pRtlGetVersion = (NTSTATUS(WINAPI*)(PRTL_OSVERSIONINFOW))GetProcAddress(GetModuleHandleA("ntdll.dll"), "RtlGetVersion");
+    auto* pRtlGetVersion = (NTSTATUS(WINAPI*)(PRTL_OSVERSIONINFOW))GetProcAddress(GetModuleHandleA("ntdll.dll"), "RtlGetVersion");
     if (pRtlGetVersion) {
         RTL_OSVERSIONINFOW osInfo = { sizeof(RTL_OSVERSIONINFOW) };
         if (pRtlGetVersion(&osInfo) == 0) { // 0 is STATUS_SUCCESS
             std::string osVersion = "OS:" + std::to_string(osInfo.dwMajorVersion) + "." + std::to_string(osInfo.dwMinorVersion) + "." + std::to_string(osInfo.dwBuildNumber);
-            AddEvidence(anti_cheat::SYSTEM_FINGERPRINT, osVersion);
+            m_fingerprint->set_os_version(osVersion);
         }
     }
 
@@ -1049,8 +1060,7 @@ void CheatMonitor::Pimpl::Sensor_CollectHardwareFingerprint() {
     SYSTEM_INFO sysInfo;
     GetSystemInfo(&sysInfo);
     std::string cpuInfo = "CPU:Arch=" + std::to_string(sysInfo.wProcessorArchitecture) + ",Cores=" + std::to_string(sysInfo.dwNumberOfProcessors);
-    AddEvidence(anti_cheat::SYSTEM_FINGERPRINT, cpuInfo);
-
+    m_fingerprint->set_cpu_info(cpuInfo);
 }
 
 namespace InputAnalysis {
