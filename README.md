@@ -1,14 +1,14 @@
-[中文](#-cheatmonitor-游戏客户端反作弊) | [English](#cheatmonitor-a-game-client-anti-cheat)
+[中文](#-anticheat-游戏客户端反作弊) | [English](#anticheat-a-game-client-anti-cheat)
 
 ---
 
-# CheatMonitor: 游戏客户端反作弊
+# AntiCheat: 游戏客户端反作弊
 
-`CheatMonitor` 是一个为大型多人在线角色扮演游戏（MMORPG）设计的、运行在用户模式下的反作弊系统。
+`AntiCheat` 是一个为大型多人在线角色扮演游戏（MMORPG）设计的、运行在用户模式下的反作弊系统。
 
 本项目的第一阶段主要侧重于**数据收集与摸底**。
 
-### 1）功能特性 (Features)
+### 1）功能 (Features)
 
 #### 主动防御与进程加固 (Proactive Defense & Hardening)
 
@@ -83,13 +83,11 @@ cd build
 
 # 2. 运行CMake生成Visual Studio项目文件
 #    (如果使用VS 2019，请将 "Visual Studio 17 2022" 改为 "Visual Studio 16 2019")
-cmake .. -G "Visual Studio 17 2022"
+cmake .. -G "Visual Studio 17 2022" -DProtobuf_ROOT=""
 
 # 3. 使用CMake直接编译，或用Visual Studio打开生成的 .sln 文件进行编译
 cmake --build . --config Release
 ```
-
-编译成功后，静态库 `CheatMonitorLib.lib` 将会生成在 `build/Release` 目录下。
 
 ### 4）授权协议 (License)
 
@@ -97,9 +95,9 @@ cmake --build . --config Release
 
 ---
 
-# CheatMonitor: A Game Client Anti-Cheat
+# AntiCheat: A Game Client Anti-Cheat
 
-`CheatMonitor` is a user-mode anti-cheat system designed for Massively Multiplayer Online Role-Playing Games (MMORPGs). 
+`AntiCheat` is a user-mode anti-cheat system designed for Massively Multiplayer Online Role-Playing Games (MMORPGs). 
 
 The initial phase of this project focuses on **data collection and intelligence gathering**.
 
@@ -123,6 +121,7 @@ The initial phase of this project focuses on **data collection and intelligence 
 -   **Hook Detection**:
     -   **Inline Hooks**: Detects `JMP` / `PUSH-RET` instructions at the start of critical API functions.
     -   **IAT Hooks**: Traverses the Import Address Table to detect modified function pointers.
+    -   **VEH Hooks**: Traverses the Vectored Exception Handling (VEH) chain to detect exception handler hooks. **The implementation dynamically locates the VEH list by scanning the PEB at startup, avoiding reliance on hardcoded offsets of Windows internals to ensure forward compatibility and stability with future Windows versions.**
 -   **Runtime Activity Monitoring**:
     -   Detects newly created, unknown threads.
     -   Detects newly loaded modules and automatically performs **digital signature verification** on them, effectively identifying unsigned malicious DLLs.
@@ -178,13 +177,11 @@ cd build
 
 # 2. Run CMake to generate the Visual Studio project files
 #    (Change "Visual Studio 17 2022" to "Visual Studio 16 2019" if you are using VS 2019)
-cmake .. -G "Visual Studio 17 2022"
+cmake .. -G "Visual Studio 17 2022" -DProtobuf_ROOT=""
 
 # 3. Build directly with CMake, or open the generated .sln file in Visual Studio
 cmake --build . --config Release
 ```
-
-Upon successful compilation, the static library `CheatMonitorLib.lib` will be located in the `build/Release` directory.
 
 ### 4) License
 

@@ -7,14 +7,12 @@ package anti_cheat;
 // 定义了所有可被检测到的作弊或可疑行为的类别。
 // 通过此枚举，服务器可以轻松地对不同类型的作弊行为进行分类、统计和响应。
 enum CheatCategory {
-  // option allow_alias = true; // 允许在同一个枚举中为不同的值设置相同的编号，这里主要用于归类。
-
   // --- 默认与未知类别 ---
   RESERVED = 0; // proto3语法要求枚举的第一个值为0，此为保留值。
   UNKNOWN_CHEAT = 1; // 无法归类的未知作弊行为。
 
   // --- 游戏完整性类别 (1xx) ---
-  INTEGRITY_UNKNOWN = 100; // 未知的完整性问题。
+  INTEGRITY_UNKNOWN = 100;
   INTEGRITY_MODULE_TAMPERED = 101; // 核心模块（如kernel32.dll）在内存中的映像与磁盘上的文件不一致，可能被hook。
   INTEGRITY_MEMORY_PATCH = 102; // 检测到对关键游戏逻辑的内存补丁。
   INTEGRITY_ASSET_TAMPERED = 103; // 游戏资源文件（如模型、地图、数据文件）的哈希值与预期不符。
@@ -22,32 +20,45 @@ enum CheatCategory {
   INTEGRITY_SUSPICIOUS_HANDLE = 105; // 检测到可疑进程持有本进程的句柄。
 
   // --- 外部环境与工具类别 (2xx) ---
-  ENVIRONMENT_UNKNOWN = 200; // 未知的环境异常。
-  ENVIRONMENT_DEBUGGER_DETECTED = 201; // 检测到���试器（如OllyDbg, x64dbg）正在附加游戏进程。
+  ENVIRONMENT_UNKNOWN = 200;
+  ENVIRONMENT_DEBUGGER_DETECTED = 201; // 检测到调试器（如OllyDbg, x64dbg）正在附加游戏进程。
   ENVIRONMENT_HARMFUL_PROCESS = 202; // 检测到已知的作弊或逆向工具进程（如Cheat Engine）正在运行。
   ENVIRONMENT_VIRTUAL_MACHINE = 203; // 检测到游戏正在虚拟机（如VMware, VirtualBox）中运行。
   ENVIRONMENT_SUSPICIOUS_DRIVER = 204; // 检测到可疑的内核驱动程序，可能用于更底层的作弊。
   ENVIRONMENT_INVALID_PARENT_PROCESS = 205; // 检测到游戏由一个非法的父进程启动（例如，不是由官方启动器启动）。
+  ENVIRONMENT_PROCESS_HARDENING_FAILED = 206; // [新增] 进程加固失败（例如，无法设置DEP策略）。
 
   // --- 运行时异常类别 (3xx) ---
-  RUNTIME_UNKNOWN = 300; // 未知的运行时异常。
+  RUNTIME_UNKNOWN = 300;
   RUNTIME_THREAD_NEW_UNKNOWN = 301; // 在游戏运行时，检测到新的、未知的线程被创建，可能由注入的DLL创建。
   RUNTIME_MODULE_NEW_UNKNOWN = 302; // 检测到新的、未知的模块（DLL）被加载到游戏进程中。
   RUNTIME_MEMORY_EXEC_PRIVATE = 303; // 发现不属于任何模块的私有可执行内存区域，这是DLL注入或Shellcode的典型特征。
   RUNTIME_ILLEGAL_FUNCTION_CALL = 304; // 检测到对关键游戏函数的非法调用（例如，来自未知模块或Shellcode）。
+  RUNTIME_ERROR = 399; // [新增] 反作弊系统内部发生非致命错误。
 
   // --- 输入与自动化类别 (4xx) ---
   INPUT_AUTOMATION_DETECTED = 401; // 检测到疑似鼠标或键盘宏、机器人等自动化行为。
 
-  // --- 系统信息类别 (5xx) ---
+  // --- 系统信息与状态类别 (5xx) ---
+  SYSTEM_INITIALIZED = 500; // [新增] 反作弊系统初始化成功并建立基线。
   SYSTEM_FINGERPRINT = 501; // 用于收集硬件指纹，本身不是作弊，但可用于关联封禁。
+}
+
+// [新增] 描述客户端硬件和软件环境的唯一标识。
+// 用于追踪和关联账户，即使玩家更换账号。
+message HardwareFingerprint {
+  string disk_serial = 1;         // C盘卷序列号。
+  repeated string mac_addresses = 2; // 所有网络适配器的MAC地址。
+  string computer_name = 3;       // 计算机名。
+  string os_version = 4;          // 操作系统版本。
+  string cpu_info = 5;            // CPU信息（如架构、核心数）。
 }
 
 // 描述一个被加载到游戏进程中的模块（例如 DLL）的详细信息。
 message ModuleInfo {
   string name = 1;        // 模块名，例如 "kernel32.dll"。
   string path = 2;        // 模块在磁盘上的完整路径。
-  uint64 base_address = 3; // 模块在内存中的基地��。
+  uint64 base_address = 3; // 模块在内存中的基地址。
   uint32 size = 4;        // 模块在内存中的大小。
   string sha256_hash = 5; // 模块文件的SHA256哈希值，用于完整性校验。
 }
@@ -84,4 +95,9 @@ message CheatReport {
   // --- 证据列表 ---
   // 只包含本次上报周期内新发现的证据。
   repeated Evidence evidences = 3;
+
+  // [修改] 硬件指纹信息。
+  // 通常只在玩家第一次登录或硬件发生显著变化时上报一次。
+  // 使用 optional 关键字表示它不是每次都必须存在。
+  optional HardwareFingerprint fingerprint = 4;
 }
