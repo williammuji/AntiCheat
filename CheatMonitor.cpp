@@ -1405,10 +1405,7 @@ void CheatMonitor::Pimpl::UploadReport()
 
 void CheatMonitor::Pimpl::Sensor_CheckEnvironment()
 {
-    if (IsDebuggerPresent())
-    {
-        AddEvidence(anti_cheat::ENVIRONMENT_DEBUGGER_DETECTED, "IsDebuggerPresent() API返回true");
-    }
+    // [修复] 移除冗余的IsDebuggerPresent()检查，因为它与Sensor_CheckAdvancedAntiDebug中的PEB检查重复。
 
     // --- 性能优化: 解耦进程扫描与窗口扫描 ---
     // 1. 首先，一次性遍历所有窗口，构建一个 PID -> WindowTitles 的映射
@@ -2791,79 +2788,59 @@ void CheatMonitor::Pimpl::UninstallVirtualAllocHook()
 
 void CheatMonitor::Pimpl::Sensor_CheckIatHooks()
 {
-    // 主要检查我们自己的游戏进程模块，因为这是IAT Hook最常发生的地方。
+    // [修复] 重写IAT Hook检测逻辑，使用哈希基线对比，而不是无效的GetProcAddress对比。
     const HMODULE hSelf = GetModuleHandle(NULL);
-    if (!hSelf)
-        return;
+    if (!hSelf) return;
 
-    // 确保 hSelf 被视为指向常量字节数据的指针，以进行只读操作
     const BYTE *baseAddress = reinterpret_cast<const BYTE *>(hSelf);
-
-    // 1. 对于 pDosHeader:
-    //    将 baseAddress 转换为 const IMAGE_DOS_HEADER*
     const IMAGE_DOS_HEADER *pDosHeader = reinterpret_cast<const IMAGE_DOS_HEADER *>(baseAddress);
-    if (pDosHeader->e_magic != IMAGE_DOS_SIGNATURE)
-    {
-        return; // 或者抛出异常，或者返回错误码
-    }
+    if (pDosHeader->e_magic != IMAGE_DOS_SIGNATURE) return;
 
-    // 2. 对于 pNtHeaders:
-    //    将 (baseAddress + offset) 转换为 const IMAGE_NT_HEADERS*
     const IMAGE_NT_HEADERS *pNtHeaders = reinterpret_cast<const IMAGE_NT_HEADERS *>(baseAddress + pDosHeader->e_lfanew);
-    if (pNtHeaders->Signature != IMAGE_NT_SIGNATURE)
-    {
-        return; // 或者抛出异常，或者返回错误码
-    }
+    if (pNtHeaders->Signature != IMAGE_NT_SIGNATURE) return;
 
-    // 找到导入表
     IMAGE_DATA_DIRECTORY importDirectory = pNtHeaders->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
-    if (importDirectory.VirtualAddress == 0)
-    {
-        return; // 没有导入表
-    }
+    if (importDirectory.VirtualAddress == 0) return;
 
-    // 3. 对于 pImportDesc:
-    //    将 (baseAddress + offset) 转换为 const IMAGE_IMPORT_DESCRIPTOR*
     const IMAGE_IMPORT_DESCRIPTOR *pImportDesc = reinterpret_cast<const IMAGE_IMPORT_DESCRIPTOR *>(baseAddress + importDirectory.VirtualAddress);
 
     // 遍历每个导入的DLL
     while (pImportDesc->Name)
     {
-        const char *dllName = reinterpret_cast<const char *>(reinterpret_cast<const BYTE *>(hSelf) + pImportDesc->Name);
-        HMODULE hImportedModule = GetModuleHandleA(dllName);
-        if (!hImportedModule)
+        const char *dllName = reinterpret_cast<const char *>(baseAddress + pImportDesc->Name);
+        
+        // 查找该DLL的基线哈希
+        auto it = m_iatBaselineHashes.find(dllName);
+        if (it != m_iatBaselineHashes.end())
         {
-            pImportDesc++;
-            continue;
-        }
+            const std::vector<uint8_t>& baselineHash = it->second;
+            const IMAGE_THUNK_DATA *pThunk = reinterpret_cast<const IMAGE_THUNK_DATA *>(baseAddress + pImportDesc->FirstThunk);
 
-        const IMAGE_THUNK_DATA *pThunk = reinterpret_cast<const IMAGE_THUNK_DATA *>(baseAddress + pImportDesc->FirstThunk);
-        const IMAGE_THUNK_DATA *pOrigThunk = reinterpret_cast<const IMAGE_THUNK_DATA *>(baseAddress + pImportDesc->OriginalFirstThunk);
-
-        // 遍历该DLL导入的每个函数
-        while (pOrigThunk->u1.AddressOfData)
-        {
-            const IMAGE_IMPORT_BY_NAME *pImportByName = reinterpret_cast<const IMAGE_IMPORT_BY_NAME *>(baseAddress + pOrigThunk->u1.AddressOfData);
-            const char *functionName = pImportByName->Name;
-
-            // 获取原始函数地址
-            FARPROC originalAddress = GetProcAddress(hImportedModule, functionName);
-            // 获取IAT中当前的函数地址
-            // 注意：pThunk->u1.Function 通常是可写的，因为IAT会被修改。
-            // 但是在这个检查的上下文中，我们只是读取它，所以 const 指针仍然是安全的。
-            // 如果你需要修改它，则需要一个非 const 的 pThunk。
-            // 但对于 hook 检测，我们只读取，所以当前 const 是没问题的。
-            void *currentAddress = reinterpret_cast<void *>(pThunk->u1.Function);
-
-            if (originalAddress && currentAddress != originalAddress)
+            // 计算当前IAT块的大小
+            size_t entryCount = 0;
+            const IMAGE_THUNK_DATA *pCurrentThunk = pThunk;
+            while (pCurrentThunk->u1.AddressOfData)
             {
-                // 假设 AddEvidence 是可访问的成员函数或友元函数
-                AddEvidence(anti_cheat::INTEGRITY_API_HOOK, "检测到IAT Hook: " + std::string(dllName) + "!" + std::string(functionName));
+                entryCount++;
+                pCurrentThunk++;
             }
 
-            pOrigThunk++; // 递增 const 指针是合法的，它不修改数据，只改变指针所指的位置
-            pThunk++;     // 递增 const 指针是合法的
+            if (entryCount > 0)
+            {
+                // 计算当前IAT块的哈希
+                size_t iatBlockSize = entryCount * sizeof(IMAGE_THUNK_DATA);
+                std::vector<uint8_t> currentHash = CalculateHash(reinterpret_cast<const BYTE *>(pThunk), iatBlockSize);
+
+                // 与基线哈希对比
+                if (currentHash != baselineHash)
+                {
+                    AddEvidence(anti_cheat::INTEGRITY_API_HOOK, "检测到IAT Hook (哈希不匹配): " + std::string(dllName));
+                    // [加固] 更新基线以避免重复报告同一篡改
+                    m_iatBaselineHashes[dllName] = currentHash;
+                }
+            }
         }
-        pImportDesc++; // [修复] 增加此行以迭代到下一个导入的DLL，防止无限循环
+        
+        pImportDesc++;
     }
 }
