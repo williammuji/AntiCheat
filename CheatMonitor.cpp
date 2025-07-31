@@ -38,6 +38,28 @@
 #pragma comment(lib, "iphlpapi.lib") // 为 GetAdaptersInfo 添加库链接
 #pragma comment(lib, "wintrust.lib") // 为 WinVerifyTrust 添加库链接
 
+// [修复] 为兼容旧版Windows SDK (pre-Win8)，手动定义缺失的类型
+#if (NTDDI_VERSION < NTDDI_WIN8)
+typedef enum _PROCESS_MITIGATION_POLICY {
+    ProcessDEPPolicy = 0,
+    ProcessChildProcessPolicy = 8,
+} PROCESS_MITIGATION_POLICY;
+
+typedef struct _PROCESS_MITIGATION_CHILD_PROCESS_POLICY {
+    DWORD NoChildProcessCreation : 1;
+    DWORD AuditNoChildProcessCreation : 1;
+    DWORD AllowSecureProcessCreation : 1;
+    DWORD ReservedFlags : 29;
+} PROCESS_MITIGATION_CHILD_PROCESS_POLICY, *PPROCESS_MITIGATION_CHILD_PROCESS_POLICY;
+
+typedef struct _PROCESS_MITIGATION_DEP_POLICY {
+    DWORD Enable : 1;
+    DWORD DisableAtlThunkEmulation : 1;
+    DWORD ReservedFlags : 30;
+    BOOLEAN Permanent;
+} PROCESS_MITIGATION_DEP_POLICY, *PPROCESS_MITIGATION_DEP_POLICY;
+#endif // (NTDDI_VERSION < NTDDI_WIN8)
+
 // --- 为 NtQuerySystemInformation 定义必要的结构体和类型 ---
 #ifndef NT_SUCCESS
 #define NT_SUCCESS(Status) (((NTSTATUS)(Status)) >= 0)
@@ -47,6 +69,8 @@
 #define STATUS_INFO_LENGTH_MISMATCH 0xC0000004L
 #endif
 
+// [修复] 为兼容旧版SDK，手动定义缺失的枚举值
+const int SystemCodeIntegrityInformation = 102;
 const int SystemHandleInformation = 16;
 
 typedef struct _SYSTEM_HANDLE_TABLE_ENTRY_INFO
@@ -147,59 +171,53 @@ namespace Utils
         return strTo;
     }
 
+    // [性能优化] 使用单次遍历和哈希表来查找父进程，避免双重循环。
     bool GetParentProcessInfo(DWORD &parentPid, std::string &parentName)
     {
         HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
         if (hSnapshot == INVALID_HANDLE_VALUE)
         {
-            // 无法创建快照，这是一个严重的初始化问题，但我们不能在这里调用AddEvidence
-            // 因为这个工具函数可能在反作弊系统完全初始化之前被调用。
-            // 返回false是通知调用者失败的正确方式。
             return false;
         }
 
+        // 使用智能指针确保句柄总是被关闭
+        auto snapshot_closer = [](HANDLE h) { CloseHandle(h); };
+        std::unique_ptr<void, decltype(snapshot_closer)> snapshot_handle(hSnapshot, snapshot_closer);
+
         PROCESSENTRY32W pe;
         pe.dwSize = sizeof(PROCESSENTRY32W);
-        DWORD currentPid = GetCurrentProcessId();
+        const DWORD currentPid = GetCurrentProcessId();
         DWORD ppid = 0;
+        std::unordered_map<DWORD, std::wstring> processMap;
 
         if (Process32FirstW(hSnapshot, &pe))
         {
             do
             {
+                processMap[pe.th32ProcessID] = pe.szExeFile;
                 if (pe.th32ProcessID == currentPid)
                 {
                     ppid = pe.th32ParentProcessID;
-                    break;
                 }
             } while (Process32NextW(hSnapshot, &pe));
         }
         else
         {
-            CloseHandle(hSnapshot);
             return false; // 遍历失败
         }
 
         if (ppid > 0)
         {
-            // 重置快照遍历
-            if (Process32FirstW(hSnapshot, &pe))
+            auto it = processMap.find(ppid);
+            if (it != processMap.end())
             {
-                do
-                {
-                    if (pe.th32ProcessID == ppid)
-                    {
-                        parentPid = ppid;
-                        parentName = WideToString(pe.szExeFile);
-                        CloseHandle(hSnapshot);
-                        return true;
-                    }
-                } while (Process32NextW(hSnapshot, &pe));
-            } // 遍历失败，将在下方处理
+                parentPid = ppid;
+                parentName = WideToString(it->second);
+                return true;
+            }
         }
 
-        CloseHandle(hSnapshot);
-        return false; // 未找到父进程或遍历失败
+        return false; // 未找到父进程
     }
 
     std::string GenerateUuid()
@@ -301,11 +319,20 @@ namespace
     }
 
     // 此函数不应使用任何需要堆栈展开的C++对象。
+    // [修复] 使用 __try/__except 块来安全地执行此反调试检查。
+    // 如果没有调试器，会触发一个异常并被捕获。如果附加了调试器，它可能会“吞掉”这个异常，
+    // 从而改变程序的执行路径，但这本身不是一个可靠的证据来源，更多是用于增加逆向分析的难度。
     void CheckCloseHandleException()
     {
-
-        // 使用 reinterpret_cast 和 uintptr_t 以避免C4312警告 (在64位上从int到更大的指针的转换)
-        CloseHandle(reinterpret_cast<HANDLE>(static_cast<uintptr_t>(0xDEADBEEF)));
+        __try
+        {
+            // 使用 reinterpret_cast 和 uintptr_t 以避免C4312警告 (在64位上从int到更大的指针的转换)
+            CloseHandle(reinterpret_cast<HANDLE>(static_cast<uintptr_t>(0xDEADBEEF)));
+        }
+        __except(EXCEPTION_EXECUTE_HANDLER)
+        {
+            // 异常被捕获，这是没有调试器时的预期行为。什么也不做。
+        }
     }
     // 辅助函数：获取模块的代码节信息 (.text)
     bool GetCodeSectionInfo(HMODULE hModule, PVOID &outBase, DWORD &outSize)
@@ -360,6 +387,9 @@ namespace
         memcpy(result.data(), &hash, sizeof(hash));
         return result;
     }
+
+#pragma warning(pop) // [修复] 与上面的push配对
+
 }
 
 struct CheatMonitor::Pimpl
@@ -369,6 +399,7 @@ struct CheatMonitor::Pimpl
     std::thread m_monitorThread;
     std::condition_variable m_cv;
     std::mutex m_cvMutex;
+    std::mutex m_modulePathsMutex; // [修复] 保护 m_legitimateModulePaths 的并发访问
 
     std::mutex m_sessionMutex;
     uint32_t m_currentUserId = 0;
@@ -647,6 +678,9 @@ void CheatMonitor::Shutdown()
         OnPlayerLogout();
     m_pimpl->m_isSystemActive = false;
     m_pimpl->m_cv.notify_one();
+
+    // [修复] 先原子性地切断钩子回调函数访问Pimpl实例的路径，再卸载钩子，防止use-after-free
+    Pimpl::s_pimpl_for_hooks = nullptr;
     if (m_pimpl->m_hMouseHook)
     {
         if (!UnhookWindowsHookEx(m_pimpl->m_hMouseHook))
@@ -655,7 +689,7 @@ void CheatMonitor::Shutdown()
         }
         m_pimpl->m_hMouseHook = NULL;
     }
-    Pimpl::s_pimpl_for_hooks = nullptr;
+
     if (m_pimpl->m_monitorThread.joinable())
         m_pimpl->m_monitorThread.join();
     m_pimpl->UninstallVirtualAllocHook(); // [新增] 卸载钩子，恢复原始函数
@@ -683,9 +717,12 @@ bool CheatMonitor::IsCallerLegitimate()
             std::wstring lowerPath = modulePath;
             std::transform(lowerPath.begin(), lowerPath.end(), lowerPath.begin(), ::towlower);
             // 4. 使用哈希集合进行高效查找
-            if (m_pimpl->m_legitimateModulePaths.count(lowerPath) > 0)
             {
-                return true; // 调用者是白名单内的合法模块
+                std::lock_guard<std::mutex> lock(m_pimpl->m_modulePathsMutex); // [修复] 加锁保护读取
+                if (m_pimpl->m_legitimateModulePaths.count(lowerPath) > 0)
+                {
+                    return true; // 调用者是白名单内的合法模块
+                }
             }
             // --- 非法调用处理 ---
             // 调用者来自一个已加载但不在白名单内的模块 (例如 cheat.dll)
@@ -897,7 +934,10 @@ void CheatMonitor::Pimpl::InitializeSessionBaseline()
                 // 这里为了兼容性，仍然转换为小写，但更推荐使用_wcsicmp进行比较或PathCchCanonicalizeEx
                 std::wstring lowerPath = modPath;
                 std::transform(lowerPath.begin(), lowerPath.end(), lowerPath.begin(), ::towlower); // 依赖locale，但对于路径通常安全
-                m_legitimateModulePaths.insert(lowerPath);
+                {
+                    std::lock_guard<std::mutex> lock(m_modulePathsMutex); // [修复] 加锁保护写入
+                    m_legitimateModulePaths.insert(lowerPath);
+                }
             }
             else
             {
@@ -1368,34 +1408,41 @@ void CheatMonitor::Pimpl::Sensor_CheckEnvironment()
     {
         do
         {
-            // 使用一个立即执行的lambda来替代goto，使代码结构更清晰
+            // [性能优化] 将廉价的检查前置，避免对每个进程都执行昂贵的API调用。
             [&]
             {
                 std::wstring processName = pe.szExeFile;
                 std::transform(processName.begin(), processName.end(), processName.begin(), ::towlower);
 
-                // [新增] 检查进程完整路径是否在白名单中
-                std::wstring fullProcessPath = Utils::GetProcessFullName(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pe.th32ProcessID));
-                if (!fullProcessPath.empty())
-                {
-                    std::transform(fullProcessPath.begin(), fullProcessPath.end(), fullProcessPath.begin(), ::towlower);
-                    if (m_whitelistedProcessPaths.count(fullProcessPath) > 0)
-                    {
-                        return; // 进程在白名单中，跳过有害检查
-                    }
-                }
-
-                // 检查进程名
+                // 1. 首先执行最廉价的检查：进程名是否在黑名单中。
                 for (const auto &harmful : m_harmfulProcessNames)
                 {
                     if (processName.find(harmful) != std::wstring::npos)
                     {
                         AddEvidence(anti_cheat::ENVIRONMENT_HARMFUL_PROCESS, "有害进程(文件名): " + Utils::WideToString(pe.szExeFile));
-                        return; // 从lambda返回，效果等同于跳到下一个进程
+                        return; // 发现即上报并返回，无需后续昂贵检查。
                     }
                 }
 
-                // 检查窗口标题 (从预先构建的map中查找)
+                // 2. 如果进程名不在黑名单中，再执行昂贵的检查：获取完整路径以核对白名单。
+                //    这个OpenProcess调用现在只对不在黑名单中的进程执行，大大减少了系统调用次数。
+                HANDLE hProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pe.th32ProcessID);
+                if (hProcess)
+                {
+                    std::wstring fullProcessPath = Utils::GetProcessFullName(hProcess);
+                    CloseHandle(hProcess); // 确保立即关闭句柄
+
+                    if (!fullProcessPath.empty())
+                    {
+                        std::transform(fullProcessPath.begin(), fullProcessPath.end(), fullProcessPath.begin(), ::towlower);
+                        if (m_whitelistedProcessPaths.count(fullProcessPath) > 0)
+                        {
+                            return; // 进程在路径白名单中，跳过后续检查。
+                        }
+                    }
+                }
+
+                // 3. 最后，检查窗口标题。
                 if (auto it = windowTitlesByPid.find(pe.th32ProcessID); it != windowTitlesByPid.end())
                 {
                     for (const auto &title : it->second)
@@ -1403,7 +1450,7 @@ void CheatMonitor::Pimpl::Sensor_CheckEnvironment()
                         std::wstring lowerTitle = title;
                         std::transform(lowerTitle.begin(), lowerTitle.end(), lowerTitle.begin(), ::towlower);
 
-                        // [新增] 检查窗口标题关键词是否在白名单中
+                        // 检查窗口标题是否在白名单中
                         bool isWhitelistedWindow = false;
                         for (const auto &whitelistedKeyword : m_whitelistedWindowKeywords)
                         {
@@ -1415,15 +1462,16 @@ void CheatMonitor::Pimpl::Sensor_CheckEnvironment()
                         }
                         if (isWhitelistedWindow)
                         {
-                            continue; // 窗口在白名单中，跳过有害关键词检查
+                            continue; // 窗口在白名单中，跳过此窗口的有害关键词检查。
                         }
 
+                        // 检查窗口标题是否包含有害关键词
                         for (const auto &keyword : m_harmfulKeywords)
                         {
                             if (lowerTitle.find(keyword) != std::wstring::npos)
                             {
                                 AddEvidence(anti_cheat::ENVIRONMENT_HARMFUL_PROCESS, "有害进程(窗口标题): " + Utils::WideToString(title));
-                                return; // 从lambda返回
+                                return; // 发现一个即可返回。
                             }
                         }
                     }
@@ -1623,13 +1671,19 @@ void CheatMonitor::Pimpl::Sensor_CheckAdvancedAntiDebug()
         // 6. 内核调试器检测 (KUSER_SHARED_DATA)
         [&]()
         {
-            // 访问KUSER_SHARED_DATA需要__try/__except保护
-
-            const UCHAR *pSharedData = (const UCHAR *)0x7FFE0000;
-            const BOOLEAN kdDebuggerEnabled = *(pSharedData + 0x2D4);
-            if (kdDebuggerEnabled)
+            // [修复] 访问KUSER_SHARED_DATA必须使用__try/__except保护，防止因地址无效导致崩溃
+            __try
             {
-                AddEvidence(anti_cheat::ENVIRONMENT_DEBUGGER_DETECTED, "检测到内核调试器 (KUSER_SHARED_DATA)");
+                const UCHAR *pSharedData = (const UCHAR *)0x7FFE0000;
+                const BOOLEAN kdDebuggerEnabled = *(pSharedData + 0x2D4);
+                if (kdDebuggerEnabled)
+                {
+                    AddEvidence(anti_cheat::ENVIRONMENT_DEBUGGER_DETECTED, "检测到内核调试器 (KUSER_SHARED_DATA)");
+                }
+            }
+            __except(EXCEPTION_EXECUTE_HANDLER)
+            {
+                // 访问失败，这在某些系统环境下是可能的，静默处理即可。
             }
         }};
 
@@ -2129,47 +2183,50 @@ namespace InputAnalysis
 
 void CheatMonitor::Pimpl::Sensor_CheckInputAutomation()
 {
-    std::vector<MouseMoveEvent> mouseMoves;
-    std::vector<MouseClickEvent> mouseClicks;
+    // [修复] 增加锁并优化逻辑，防止数据竞争并减少锁的持有时间。
 
+    // 1. 将共享数据快速复制到局部变量，然后立即释放锁。
+    std::vector<MouseMoveEvent> local_moves;
+    std::vector<MouseClickEvent> local_clicks;
     {
         std::lock_guard<std::mutex> lock(m_inputMutex);
         // 为避免分析过于频繁或数据量过小，设置一个阈值
         if (m_mouseMoveEvents.size() > 200)
         {
-            mouseMoves.swap(m_mouseMoveEvents);
+            local_moves.swap(m_mouseMoveEvents); // 使用swap是O(1)操作，比复制更高效
         }
         if (m_mouseClickEvents.size() > 10)
         {
-            mouseClicks.swap(m_mouseClickEvents);
+            local_clicks.swap(m_mouseClickEvents);
         }
     }
 
-    // --- 1. 分析点击规律性 ---
-    if (mouseClicks.size() > 5)
+    // 2. 在局部数据上执行分析，此时已无锁。
+    // 分析点击规律性
+    if (local_clicks.size() > 5)
     {
         std::vector<double> deltas;
-        for (size_t i = 1; i < mouseClicks.size(); ++i)
+        for (size_t i = 1; i < local_clicks.size(); ++i)
         {
-            deltas.push_back(static_cast<double>(mouseClicks[i].time - mouseClicks[i - 1].time));
+            deltas.push_back(static_cast<double>(local_clicks[i].time - local_clicks[i - 1].time));
         }
 
         double stddev = InputAnalysis::CalculateStdDev(deltas);
         // 如果点击间隔的标准差小于5毫秒，这在人类操作中几乎不可能，极有可能是宏。
-        if (stddev < 5.0 && stddev > 0)
-        { // stddev > 0 to avoid single interval case
+        if (stddev < 5.0 && stddev > 0) // stddev > 0 to avoid single interval case
+        { 
             AddEvidence(anti_cheat::INPUT_AUTOMATION_DETECTED, "检测到规律性鼠标点击 (StdDev: " + std::to_string(stddev) + "ms)");
         }
     }
 
-    // --- 2. 分析鼠标移动轨迹 ---
-    if (mouseMoves.size() > 10)
+    // 3. 分析鼠标移动轨迹
+    if (local_moves.size() > 10)
     {
         // a) 检查是否存在完美的直线移动
         int collinear_count = 0;
-        for (size_t i = 2; i < mouseMoves.size(); ++i)
+        for (size_t i = 2; i < local_moves.size(); ++i)
         {
-            if (InputAnalysis::ArePointsCollinear(mouseMoves[i - 2].pt, mouseMoves[i - 1].pt, mouseMoves[i].pt))
+            if (InputAnalysis::ArePointsCollinear(local_moves[i - 2].pt, local_moves[i - 1].pt, local_moves[i].pt))
             {
                 collinear_count++;
             }
@@ -2206,23 +2263,23 @@ LRESULT CALLBACK CheatMonitor::Pimpl::LowLevelMouseProc(int nCode, WPARAM wParam
             s_pimpl_for_hooks->AddEvidence(anti_cheat::INPUT_AUTOMATION_DETECTED, "检测到注入的鼠标事件 (LLMHF_INJECTED flag)");
         }
 
-        std::lock_guard<std::mutex> lock(s_pimpl_for_hooks->m_inputMutex);
-        if (wParam == WM_MOUSEMOVE)
         {
-            if (s_pimpl_for_hooks->m_mouseMoveEvents.size() >= kMaxMouseMoveEvents)
-            {
-                s_pimpl_for_hooks->m_mouseMoveEvents.erase(s_pimpl_for_hooks->m_mouseMoveEvents.begin());
-            }
-            s_pimpl_for_hooks->m_mouseMoveEvents.push_back({pMouseStruct->pt, pMouseStruct->time});
-        }
-        else if (wParam == WM_LBUTTONDOWN || wParam == WM_RBUTTONDOWN)
+        std::lock_guard<std::mutex> lock(pimpl->m_inputMutex); // [修复] 加锁保护并发写入
+        if (wParam == WM_LBUTTONDOWN || wParam == WM_RBUTTONDOWN)
         {
-            if (s_pimpl_for_hooks->m_mouseClickEvents.size() >= kMaxMouseClickEvents)
+            if (pimpl->m_mouseClickEvents.size() < kMaxMouseClickEvents)
             {
-                s_pimpl_for_hooks->m_mouseClickEvents.erase(s_pimpl_for_hooks->m_mouseClickEvents.begin());
+                pimpl->m_mouseClickEvents.push_back({pMouseStruct->time});
             }
-            s_pimpl_for_hooks->m_mouseClickEvents.push_back({pMouseStruct->time});
         }
+        else if (wParam == WM_MOUSEMOVE)
+        {
+            if (pimpl->m_mouseMoveEvents.size() < kMaxMouseMoveEvents)
+            {
+                pimpl->m_mouseMoveEvents.push_back({pMouseStruct->pt, pMouseStruct->time});
+            }
+        }
+    }
     }
     // 务必调用 CallNextHookEx 将消息传递给钩子链中的下一个钩子
     return CallNextHookEx(s_pimpl_for_hooks->m_hMouseHook, nCode, wParam, lParam);
@@ -2257,40 +2314,47 @@ void CheatMonitor::Pimpl::Sensor_CheckVehHooks()
     const LIST_ENTRY *pListHead = &pVehList->List;
     const LIST_ENTRY *pCurrentEntry = pListHead->Flink;
     int handlerIndex = 0;
-    constexpr int maxHandlersToScan = 32; // 设置一个上限以防止无限循环
+    constexpr int maxHandlersToScan = 32; // [修复] 设置一个上限以防止因链表损坏导致的无限循环攻击
 
-    while (pCurrentEntry && pCurrentEntry != pListHead && handlerIndex < maxHandlersToScan)
+    __try
     {
-        const auto *pHandlerEntry = CONTAINING_RECORD(pCurrentEntry, VECTORED_HANDLER_ENTRY, List);
-
-        const PVOID handlerAddress = pHandlerEntry->Handler;
-
-        std::wstring modulePath;
-        if (IsAddressInLegitimateModule(handlerAddress, modulePath))
+        while (pCurrentEntry && pCurrentEntry != pListHead && handlerIndex < maxHandlersToScan)
         {
-            // Handler is in a whitelisted module (via m_legitimateModulePaths), this is fine.
-        }
-        else if (!modulePath.empty())
-        {
-            // Handler is in a module, but it's not in our general legitimate modules list.
-            std::wstring lowerModulePath = modulePath;
-            std::transform(lowerModulePath.begin(), lowerModulePath.end(), lowerModulePath.begin(), ::towlower);
-            if (m_whitelistedVEHModules.count(lowerModulePath) == 0)
+            const auto *pHandlerEntry = CONTAINING_RECORD(pCurrentEntry, VECTORED_HANDLER_ENTRY, List);
+
+            const PVOID handlerAddress = pHandlerEntry->Handler;
+
+            std::wstring modulePath;
+            if (IsAddressInLegitimateModule(handlerAddress, modulePath))
             {
+                // Handler is in a whitelisted module (via m_legitimateModulePaths), this is fine.
+            }
+            else if (!modulePath.empty())
+            {
+                // Handler is in a module, but it's not in our general legitimate modules list.
+                std::wstring lowerModulePath = modulePath;
+                std::transform(lowerModulePath.begin(), lowerModulePath.end(), lowerModulePath.begin(), ::towlower);
+                if (m_whitelistedVEHModules.count(lowerModulePath) == 0)
+                {
+                    std::wostringstream woss;
+                    woss << L"检测到可疑的VEH Hook (Handler #" << handlerIndex << L").来源: " << modulePath << L", 地址: 0x" << std::hex << handlerAddress;
+                    AddEvidence(anti_cheat::INTEGRITY_API_HOOK, Utils::WideToString(woss.str()));
+                }
+            }
+            else
+            {
+                // Handler is not in any module, likely shellcode.
                 std::wostringstream woss;
-                woss << L"检测到可疑的VEH Hook (Handler #" << handlerIndex << L").来源: " << modulePath << L", 地址: 0x" << std::hex << handlerAddress;
+                woss << L"检测到来自Shellcode的VEH Hook (Handler #" << handlerIndex << L").地址: 0x" << std::hex << handlerAddress;
                 AddEvidence(anti_cheat::INTEGRITY_API_HOOK, Utils::WideToString(woss.str()));
             }
+            pCurrentEntry = pCurrentEntry->Flink;
+            handlerIndex++;
         }
-        else
-        {
-            // Handler is not in any module, likely shellcode.
-            std::wostringstream woss;
-            woss << L"检测到来自Shellcode的VEH Hook (Handler #" << handlerIndex << L").地址: 0x" << std::hex << handlerAddress;
-            AddEvidence(anti_cheat::INTEGRITY_API_HOOK, Utils::WideToString(woss.str()));
-        }
-        pCurrentEntry = pCurrentEntry->Flink;
-        handlerIndex++;
+    }
+    __except(EXCEPTION_EXECUTE_HANDLER)
+    {
+        AddEvidence(anti_cheat::INTEGRITY_API_HOOK, "遍历VEH链表时发生异常，链表可能已损坏。");
     }
 }
 
@@ -2309,8 +2373,11 @@ bool CheatMonitor::Pimpl::IsAddressInLegitimateModule(PVOID address, std::wstrin
             outModulePath = modulePathBuffer;
             std::wstring lowerPath = outModulePath;
             std::transform(lowerPath.begin(), lowerPath.end(), lowerPath.begin(), ::towlower);
-            // Check if the lowercase path is in our set of legitimate modules
-            return m_legitimateModulePaths.count(lowerPath) > 0;
+            // [修复] 增加锁来保护对共享集合的并发读取，防止与InitializeSessionBaseline中的写入操作冲突
+            {
+                std::lock_guard<std::mutex> lock(m_modulePathsMutex);
+                return m_legitimateModulePaths.count(lowerPath) > 0;
+            }
         }
         else
         {
@@ -2742,5 +2809,6 @@ void CheatMonitor::Pimpl::Sensor_CheckIatHooks()
             pOrigThunk++; // 递增 const 指针是合法的，它不修改数据，只改变指针所指的位置
             pThunk++;     // 递增 const 指针是合法的
         }
+        pImportDesc++; // [修复] 增加此行以迭代到下一个导入的DLL，防止无限循环
     }
 }
