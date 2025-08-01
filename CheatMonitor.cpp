@@ -450,6 +450,8 @@ namespace
 
 }
 
+
+
 // --- [重构] 核心架构组件 ---
 
 class ScanContext;
@@ -2199,6 +2201,109 @@ void CheatMonitor::Pimpl::Sensor_CheckEnvironment()
     }
 }
 
+// [新增] 模块完整性校验的辅助函数，将不安全的内存访问隔离在SEH块中
+struct IntegrityCheckResult
+{
+    enum class Status { Success, DosHeaderInvalid, NtHeaderInvalid, PeHeaderTampered, SectionTampered, Exception };
+    Status status;
+    char sectionName[9];
+    char modPathStr[512];
+};
+
+void PerformLowLevelCheck(IntegrityCheckResult &result, HMODULE hModuleInMemory, LPVOID pMappedFileBase, const wchar_t *modPathOnDisk)
+{
+    WideCharToMultiByte(CP_UTF8, 0, modPathOnDisk, -1, result.modPathStr, sizeof(result.modPathStr), nullptr, nullptr);
+    result.status = IntegrityCheckResult::Status::Success;
+    result.sectionName[0] = '\0';
+
+    __try
+    {
+        const auto *pDosHeader = reinterpret_cast<const IMAGE_DOS_HEADER *>(hModuleInMemory);
+        if (pDosHeader->e_magic != IMAGE_DOS_SIGNATURE)
+        {
+            result.status = IntegrityCheckResult::Status::DosHeaderInvalid;
+            return;
+        }
+
+        const auto *pNtHeaders = reinterpret_cast<const IMAGE_NT_HEADERS *>(reinterpret_cast<const BYTE *>(hModuleInMemory) + pDosHeader->e_lfanew);
+        if (pNtHeaders->Signature != IMAGE_NT_SIGNATURE)
+        {
+            result.status = IntegrityCheckResult::Status::NtHeaderInvalid;
+            return;
+        }
+
+        if (memcmp(hModuleInMemory, pMappedFileBase, pNtHeaders->OptionalHeader.SizeOfHeaders) != 0)
+        {
+            result.status = IntegrityCheckResult::Status::PeHeaderTampered;
+        }
+        else
+        {
+            const IMAGE_SECTION_HEADER *pSectionHeader = IMAGE_FIRST_SECTION(pNtHeaders);
+            for (int i = 0; i < pNtHeaders->FileHeader.NumberOfSections; i++, pSectionHeader++)
+            {
+                if (pSectionHeader->Characteristics & IMAGE_SCN_CNT_CODE && pSectionHeader->Misc.VirtualSize > 0 && pSectionHeader->SizeOfRawData > 0)
+                {
+                    const void *sectionInMemory = reinterpret_cast<const BYTE *>(hModuleInMemory) + pSectionHeader->VirtualAddress;
+                    const void *sectionOnDisk = reinterpret_cast<const BYTE *>(pMappedFileBase) + pSectionHeader->PointerToRawData;
+                    size_t sizeToCompare = min(pSectionHeader->Misc.VirtualSize, pSectionHeader->SizeOfRawData);
+                    if (memcmp(sectionInMemory, sectionOnDisk, sizeToCompare) != 0)
+                    {
+                        memcpy(result.sectionName, pSectionHeader->Name, 8);
+                        result.sectionName[8] = '\0';
+                        result.status = IntegrityCheckResult::Status::SectionTampered;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        result.status = IntegrityCheckResult::Status::Exception;
+    }
+}
+
+void CheckModuleIntegrity(CheatMonitor::Pimpl *pimpl, HMODULE hModuleInMemory, LPVOID pMappedFileBase, const wchar_t *modPathOnDisk)
+{
+    IntegrityCheckResult result;
+    PerformLowLevelCheck(result, hModuleInMemory, pMappedFileBase, modPathOnDisk);
+
+    if (result.status != IntegrityCheckResult::Status::Success)
+    {
+        char errorMsg[1024];
+        switch (result.status)
+        {
+        case IntegrityCheckResult::Status::DosHeaderInvalid:
+            snprintf(errorMsg, sizeof(errorMsg), "模块DOS头无效: %s", result.modPathStr);
+            pimpl->AddEvidence(anti_cheat::INTEGRITY_MODULE_TAMPERED, errorMsg);
+            break;
+        case IntegrityCheckResult::Status::NtHeaderInvalid:
+            snprintf(errorMsg, sizeof(errorMsg), "模块NT头无效: %s", result.modPathStr);
+            pimpl->AddEvidence(anti_cheat::INTEGRITY_MODULE_TAMPERED, errorMsg);
+            break;
+        case IntegrityCheckResult::Status::PeHeaderTampered:
+            snprintf(errorMsg, sizeof(errorMsg), "模块PE头被篡改: %s (内存与磁盘不匹配)", result.modPathStr);
+            pimpl->AddEvidence(anti_cheat::INTEGRITY_MODULE_TAMPERED, errorMsg);
+            break;
+        case IntegrityCheckResult::Status::SectionTampered:
+            snprintf(errorMsg, sizeof(errorMsg), "代码节被篡改: %s (节名: %s)", result.modPathStr, result.sectionName);
+            pimpl->AddEvidence(anti_cheat::INTEGRITY_MODULE_TAMPERED, errorMsg);
+            break;
+        case IntegrityCheckResult::Status::Exception:
+            snprintf(errorMsg, sizeof(errorMsg), "模块完整性校验时发生异常: %s，内存可能已损坏。", result.modPathStr);
+            pimpl->AddEvidence(anti_cheat::RUNTIME_ERROR, errorMsg);
+            break;
+        default:
+            break;
+        }
+    }
+}
+
+void PerformIntegrityCheck(CheatMonitor::Pimpl *pimpl, HMODULE hModuleInMemory, LPVOID pMappedFileBase, const std::wstring &modPathOnDisk)
+{
+    CheckModuleIntegrity(pimpl, hModuleInMemory, pMappedFileBase, modPathOnDisk.c_str());
+}
+
 void CheatMonitor::Pimpl::VerifyModuleIntegrity(const wchar_t *moduleName)
 {
     // 定义句柄的智能指针类型，实现RAII，确保资源自动释放
@@ -2240,46 +2345,7 @@ void CheatMonitor::Pimpl::VerifyModuleIntegrity(const wchar_t *moduleName)
         return;
     }
 
-    PIMAGE_DOS_HEADER pDosHeader = (PIMAGE_DOS_HEADER)hModuleInMemory;
-    if (pDosHeader->e_magic != IMAGE_DOS_SIGNATURE)
-    {
-        AddEvidence(anti_cheat::INTEGRITY_MODULE_TAMPERED, "模块DOS头无效: " + Utils::WideToString(modPathOnDisk));
-        UnmapViewOfFile(pMappedFileBase);
-        return;
-    }
-
-    PIMAGE_NT_HEADERS pNtHeaders = (PIMAGE_NT_HEADERS)((BYTE *)hModuleInMemory + pDosHeader->e_lfanew);
-    if (pNtHeaders->Signature != IMAGE_NT_SIGNATURE)
-    {
-        AddEvidence(anti_cheat::INTEGRITY_MODULE_TAMPERED, "模块NT头无效: " + Utils::WideToString(modPathOnDisk));
-        UnmapViewOfFile(pMappedFileBase);
-        return;
-    }
-
-    // 比较PE头
-    if (memcmp(hModuleInMemory, pMappedFileBase, pNtHeaders->OptionalHeader.SizeOfHeaders) != 0)
-    {
-        AddEvidence(anti_cheat::INTEGRITY_MODULE_TAMPERED, "模块PE头被篡改: " + Utils::WideToString(moduleName ? moduleName : L"主程序") + " (内存与磁盘不匹配)");
-    }
-    else
-    {
-        // 遍历所有节，检查所有包含可执行代码的节
-        PIMAGE_SECTION_HEADER pSectionHeader = IMAGE_FIRST_SECTION(pNtHeaders);
-        for (int i = 0; i < pNtHeaders->FileHeader.NumberOfSections; i++, pSectionHeader++)
-        {
-            // 检查节属性是否为可执行代码
-            if (pSectionHeader->Characteristics & IMAGE_SCN_CNT_CODE)
-            {
-                void *sectionInMemory = (BYTE *)hModuleInMemory + pSectionHeader->VirtualAddress;
-                void *sectionOnDisk = (BYTE *)pMappedFileBase + pSectionHeader->PointerToRawData;
-                if (memcmp(sectionInMemory, sectionOnDisk, pSectionHeader->Misc.VirtualSize) != 0)
-                {
-                    AddEvidence(anti_cheat::INTEGRITY_MODULE_TAMPERED, "代码节被篡改: " + Utils::WideToString(moduleName ? moduleName : L"主程序") + " (节名: " + std::string(reinterpret_cast<char *>(pSectionHeader->Name)) + ")");
-                    break; // 找到一个被篡改的就足够了
-                }
-            }
-        }
-    }
+    PerformIntegrityCheck(this, hModuleInMemory, pMappedFileBase, modPathOnDisk);
 
     UnmapViewOfFile(pMappedFileBase);
 }
