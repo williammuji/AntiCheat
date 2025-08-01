@@ -592,6 +592,7 @@ struct CheatMonitor::Pimpl
     void InitializeSessionBaseline();
     void ResetSessionState();
     void AddEvidence(anti_cheat::CheatCategory category, const std::string &description);
+    void AddEvidenceInternal(anti_cheat::CheatCategory category, const std::string &description); // 不加锁的内部版本
     void HardenProcessAndThreads(); //  进程与线程加固
 
     // --- Sensor Functions ---
@@ -602,7 +603,7 @@ struct CheatMonitor::Pimpl
 
     void Sensor_CheckEnvironment();
     void Sensor_DetectVirtualMachine();
-    std::vector<std::string> CollectHardwareFingerprintErrors(); //  收集硬件指纹并返回错误
+    void Sensor_CollectHardwareFingerprint(); //  收集硬件指纹
     void Sensor_CheckSystemIntegrityState();  //  系统完整性状态检测
     void Sensor_CheckAdvancedAntiDebug();     //  高级反调试检测
     void Sensor_CheckIatHooks();              //  IAT Hook 检测
@@ -1357,14 +1358,7 @@ void CheatMonitor::OnPlayerLogin(uint32_t user_id, const std::string &user_name)
         //  确保硬件指纹只在第一个会话开始时收集一次
         if (!m_pimpl->m_fingerprint)
         {
-            // [修复] 将指纹收集与证据添加解耦，以避免重入锁。
-            // 1. 调用一个不直接添加证据，而是返回错误列表的函数。
-            std::vector<std::string> errors = m_pimpl->CollectHardwareFingerprintErrors();
-            // 2. 在同一个锁保护的上下文中，安全地添加证据。
-            for (const auto& error : errors)
-            {
-                m_pimpl->AddEvidence(anti_cheat::RUNTIME_ERROR, error);
-            }
+            m_pimpl->Sensor_CollectHardwareFingerprint();
         }
         m_pimpl->m_isSessionActive = true;
         m_pimpl->m_newSessionNeedsBaseline = true; // [新增] 标记新会话需要建立基线
@@ -1993,9 +1987,7 @@ void CheatMonitor::Pimpl::MonitorLoop()
     }
 }
 
-void CheatMonitor::Pimpl::AddEvidence(anti_cheat::CheatCategory category, const std::string &description)
-{
-    std::lock_guard<std::mutex> lock(m_sessionMutex);
+void CheatMonitor::Pimpl::AddEvidenceInternal(anti_cheat::CheatCategory category, const std::string &description) {
     if (!m_isSessionActive)
         return;
 
@@ -2012,6 +2004,12 @@ void CheatMonitor::Pimpl::AddEvidence(anti_cheat::CheatCategory category, const 
     evidence.set_category(category);
     evidence.set_description(description);
     m_evidences.push_back(evidence); // 拷贝到vector
+}
+
+void CheatMonitor::Pimpl::AddEvidence(anti_cheat::CheatCategory category, const std::string &description)
+{
+    std::lock_guard<std::mutex> lock(m_sessionMutex);
+    AddEvidenceInternal(category, description);
 }
 
 void CheatMonitor::Pimpl::UploadReport()
@@ -2822,13 +2820,11 @@ void CheatMonitor::Pimpl::DetectVmByMacAddress()
     }
 }
 
-std::vector<std::string> CheatMonitor::Pimpl::CollectHardwareFingerprintErrors()
+void CheatMonitor::Pimpl::Sensor_CollectHardwareFingerprint()
 {
-    std::vector<std::string> errors;
-
     // 仅当指纹尚未收集时才执行
     if (m_fingerprint)
-        return errors;
+        return;
 
     m_fingerprint = std::make_unique<anti_cheat::HardwareFingerprint>();
 
@@ -2845,12 +2841,12 @@ std::vector<std::string> CheatMonitor::Pimpl::CollectHardwareFingerprintErrors()
         }
         else
         {
-            errors.emplace_back("硬件指纹收集失败: 无法获取C盘卷序列号。");
+            AddEvidenceInternal(anti_cheat::RUNTIME_ERROR, "硬件指纹收集失败: 无法获取C盘卷序列号。");
         }
     }
     else
     {
-        errors.emplace_back("硬件指纹收集失败: 无法获取系统目录。");
+        AddEvidenceInternal(anti_cheat::RUNTIME_ERROR, "硬件指纹收集失败: 无法获取系统目录。");
     }
 
     // 2. 获取所有网络适配器的MAC地址
@@ -2878,16 +2874,16 @@ std::vector<std::string> CheatMonitor::Pimpl::CollectHardwareFingerprintErrors()
         }
         else
         {
-            errors.emplace_back("硬件指纹收集失败: 无法获取网络适配器信息。");
+            AddEvidenceInternal(anti_cheat::RUNTIME_ERROR, "硬件指纹收集失败: 无法获取网络适配器信息。");
         }
     }
     else if (bufferSize == 0)
     {
-        errors.emplace_back("硬件指纹收集失败: 未找到网络适配器。");
+        AddEvidenceInternal(anti_cheat::RUNTIME_ERROR, "硬件指纹收集失败: 未找到网络适配器。");
     }
     else
     {
-        errors.emplace_back("硬件指纹收集失败: GetAdaptersInfo第一次调用失败。");
+        AddEvidenceInternal(anti_cheat::RUNTIME_ERROR, "硬件指纹收集失败: GetAdaptersInfo第一次调用失败。");
     }
 
     // 3. 获取计算机名
@@ -2899,7 +2895,7 @@ std::vector<std::string> CheatMonitor::Pimpl::CollectHardwareFingerprintErrors()
     }
     else
     {
-        errors.emplace_back("硬件指纹收集失败: 无法获取计算机名。");
+        AddEvidenceInternal(anti_cheat::RUNTIME_ERROR, "硬件指纹收集失败: 无法获取计算机名。");
     }
 
     // 4. 获取操作系统版本
@@ -2915,12 +2911,12 @@ std::vector<std::string> CheatMonitor::Pimpl::CollectHardwareFingerprintErrors()
         }
         else
         {
-            errors.emplace_back("硬件指纹收集失败: RtlGetVersion调用失败。");
+            AddEvidenceInternal(anti_cheat::RUNTIME_ERROR, "硬件指纹收集失败: RtlGetVersion调用失败。");
         }
     }
     else
     {
-        errors.emplace_back("硬件指纹收集失败: 无法获取RtlGetVersion函数地址。");
+        AddEvidenceInternal(anti_cheat::RUNTIME_ERROR, "硬件指纹收集失败: 无法获取RtlGetVersion函数地址。");
     }
 
     // 5. 获取CPU信息
@@ -2929,8 +2925,6 @@ std::vector<std::string> CheatMonitor::Pimpl::CollectHardwareFingerprintErrors()
     // GetSystemInfo 总是成功，无需检查返回值。
     std::string cpuInfo = "CPU:Arch=" + std::to_string(sysInfo.wProcessorArchitecture) + ",Cores=" + std::to_string(sysInfo.dwNumberOfProcessors);
     m_fingerprint->set_cpu_info(cpuInfo);
-
-    return errors;
 }
 
 void CheatMonitor::Pimpl::Sensor_CheckInputAutomation()
