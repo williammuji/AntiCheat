@@ -4207,80 +4207,57 @@ void CheatMonitor::Pimpl::Sensor_CheckIatHooks()
   }
 }
 
-uintptr_t CheatMonitor::Pimpl::FindVehListOffset()
-{
-  uintptr_t offset = 0;
-  PVOID pDecoyHandler =
-      AddVectoredExceptionHandler(1, (PVECTORED_EXCEPTION_HANDLER)DecoyVehHandler);
-  if (!pDecoyHandler)
-  {
-    AddEvidence(anti_cheat::RUNTIME_ERROR,
-                "VEH偏移量查找失败: 无法注册诱饵VEH处理器。");
-    return 0;
-  }
+uintptr_t CheatMonitor::Pimpl::FindVehListOffset() {
+    uintptr_t offset = 0;
+    PVOID pDecoyHandler = AddVectoredExceptionHandler(1, (PVECTORED_EXCEPTION_HANDLER)DecoyVehHandler);
+    if (!pDecoyHandler) {
+        AddEvidence(anti_cheat::RUNTIME_ERROR, "VEH偏移量查找失败: 无法注册诱饵VEH处理器。");
+        return 0;
+    }
 
 #ifdef _WIN64
-  const auto pPeb = reinterpret_cast<const BYTE *>(__readgsqword(0x60));
+    const auto pPeb = reinterpret_cast<const BYTE*>(__readgsqword(0x60));
 #else
-  const auto pPeb = reinterpret_cast<const BYTE *>(__readfsdword(0x30));
+    const auto pPeb = reinterpret_cast<const BYTE*>(__readfsdword(0x30));
 #endif
 
-  if (pPeb)
-  {
-    // 遍历PEB（或其附近）的指针大小的块，寻找我们的目标
-    // 搜索范围设为0x1000字节，这对于所有已知的Windows版本都足够了
-    for (uintptr_t i = 0; i < 0x1000; i += sizeof(PVOID))
-    {
-      __try
-      {
-        const auto pVehList =
-            *reinterpret_cast<const VECTORED_HANDLER_LIST *const *>(pPeb + i);
-
-        // 验证候选指针
-        // a) 指针本身必须有效
-        // b) 指针指向的 VECTORED_HANDLER_LIST 结构必须是可读的
-        // c) 结构中的链表头 (List.Flink) 必须指向一个有效的内存地址
-        if (IsValidPointer(pVehList, sizeof(VECTORED_HANDLER_LIST)) &&
-            IsValidPointer(pVehList->List.Flink, sizeof(LIST_ENTRY)))
-        {
-          const auto *pEntry = CONTAINING_RECORD(
-              pVehList->List.Flink, VECTORED_HANDLER_ENTRY, List);
-
-          // VECTORED_HANDLER_ENTRY 的结构未公开且可能变化。
-          // 我们不依赖固定的结构定义，而是在 LIST_ENTRY 之后扫描几个指针大小的
-          // 空间来查找诱饵处理函数。
-          if (IsValidPointer(pEntry, sizeof(LIST_ENTRY) + 4 * sizeof(PVOID)))
-          {
-            for (int j = 0; j < 4; ++j)
-            {
-              const PVOID pPossibleHandler =
-                  *(reinterpret_cast<const PVOID *>(
-                        (const BYTE *)pEntry + sizeof(LIST_ENTRY)) +
-                    j);
-
-              if (pPossibleHandler == DecoyVehHandler)
-              {
-                offset = i;
-                break; // 找到了！
-              }
+    if (pPeb) {
+        // 遍历 PEB（或其附近）的指针大小的块，寻找目标
+        for (uintptr_t i = 0; i < 0x1000; i += sizeof(PVOID)) {
+            // 检查候选指针是否有效
+            const auto pVehListPtr = reinterpret_cast<const VECTORED_HANDLER_LIST* const*>(pPeb + i);
+            if (!IsValidPointer(pVehListPtr, sizeof(VECTORED_HANDLER_LIST*))) {
+                continue;
             }
-          }
 
-          if (offset != 0)
-          {
-            break; // 从外层循环中断
-          }
+            const auto pVehList = *pVehListPtr;
+            // 验证 pVehList 和 List.Flink 是否有效
+            if (IsValidPointer(pVehList, sizeof(VECTORED_HANDLER_LIST)) &&
+                IsValidPointer(pVehList->List.Flink, sizeof(LIST_ENTRY))) {
+                const auto* pEntry = CONTAINING_RECORD(
+                    pVehList->List.Flink, VECTORED_HANDLER_ENTRY, List);
+
+                // 检查 pEntry 是否有效
+                if (IsValidPointer(pEntry, sizeof(LIST_ENTRY) + 4 * sizeof(PVOID))) {
+                    // 扫描 LIST_ENTRY 之后的几个指针，查找 DecoyVehHandler
+                    for (int j = 0; j < 4; ++j) {
+                        const PVOID pPossibleHandler = *(reinterpret_cast<const PVOID*>(
+                            (const BYTE*)pEntry + sizeof(LIST_ENTRY)) + j);
+                        if (pPossibleHandler == DecoyVehHandler) {
+                            offset = i;
+                            break; // 找到了！
+                        }
+                    }
+                }
+
+                if (offset != 0) {
+                    break; // 从外层循环中断
+                }
+            }
         }
-      }
-      __except (EXCEPTION_EXECUTE_HANDLER)
-      {
-        // 如果访问无效内存，SEH会捕获异常并继续搜索
-        continue;
-      }
     }
-  }
 
-  // 无论是否找到，都必须移除诱饵处理函数
-  RemoveVectoredExceptionHandler(pDecoyHandler);
-  return offset;
+    // 移除诱饵处理函数
+    RemoveVectoredExceptionHandler(pDecoyHandler);
+    return offset;
 }
