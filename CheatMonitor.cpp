@@ -483,6 +483,7 @@ struct CheatMonitor::Pimpl {
       m_legitimateModulePaths; // 使用哈希集合以实现O(1)复杂度的快速查找
   std::unordered_map<uintptr_t, std::chrono::steady_clock::time_point>
       m_reportedIllegalCallSources; // 用于记录已上报的非法调用来源，并实现5分钟上报冷却
+  std::unordered_set<DWORD> m_trustedProcessPids;
   //  记录每个用户、每种作弊类型的最近上报时间，防止重复上报
   std::map<std::pair<uint32_t, anti_cheat::CheatCategory>,
            std::chrono::steady_clock::time_point>
@@ -2676,8 +2677,10 @@ bool CheatMonitor::Pimpl::Sensor_ValidateParentProcess() {
   std::transform(lowerParentName.begin(), lowerParentName.end(),
                  lowerParentName.begin(), ::tolower);
 
-  bool isLegitimateParent = (m_legitimateParentProcesses.count(lowerParentName) > 0);
-  bool isDeveloperTool = (m_trustedDeveloperProcesses.count(lowerParentName) > 0);
+  bool isLegitimateParent =
+      (m_legitimateParentProcesses.count(lowerParentName) > 0);
+  bool isDeveloperTool =
+      (m_trustedDeveloperProcesses.count(lowerParentName) > 0);
 
   // 在非调试模式下，不允许从开发工具启动
 #ifndef _DEBUG
@@ -2907,8 +2910,8 @@ void CheatMonitor::Pimpl::Sensor_CollectHardwareFingerprint() {
     wchar_t systemDrive[] = {systemPath[0], L':', L'\\', L'\0'};
 
     DWORD serialNum = 0;
-    if (GetVolumeInformationW(systemDrive, NULL, 0, &serialNum, NULL, NULL, NULL,
-                              0)) {
+    if (GetVolumeInformationW(systemDrive, NULL, 0, &serialNum, NULL, NULL,
+                              NULL, 0)) {
       m_fingerprint->set_disk_serial(std::to_string(serialNum));
     } else {
       // 错误信息动态化，报告实际尝试的驱动器号
@@ -2937,8 +2940,7 @@ void CheatMonitor::Pimpl::Sensor_CollectHardwareFingerprint() {
           std::ostringstream oss;
           oss << std::hex << std::uppercase << std::setfill('0');
           for (DWORD i = 0; i < adapterInfo->AddressLength; ++i) {
-            oss << std::setw(2)
-                << static_cast<int>(adapterInfo->Address[i])
+            oss << std::setw(2) << static_cast<int>(adapterInfo->Address[i])
                 << (i < adapterInfo->AddressLength - 1 ? "-" : "");
           }
           m_fingerprint->add_mac_addresses(oss.str());
@@ -2985,9 +2987,8 @@ void CheatMonitor::Pimpl::Sensor_CollectHardwareFingerprint() {
                           "硬件指纹收集失败: RtlGetVersion调用失败。");
     }
   } else {
-    AddEvidenceInternal(
-        anti_cheat::RUNTIME_ERROR,
-        "硬件指纹收集失败: 无法获取RtlGetVersion函数地址。");
+    AddEvidenceInternal(anti_cheat::RUNTIME_ERROR,
+                        "硬件指纹收集失败: 无法获取RtlGetVersion函数地址。");
   }
 
   // 5. 获取CPU信息
