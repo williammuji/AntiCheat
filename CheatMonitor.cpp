@@ -490,6 +490,8 @@ struct CheatMonitor::Pimpl
   std::thread m_monitorThread;
   std::condition_variable m_cv;
   std::mutex m_cvMutex;
+  std::mutex
+      m_signatureCacheMutex; // [新增] 保护 m_moduleSignatureCache 的并发访问
   std::mutex m_modulePathsMutex; // 保护 m_legitimateModulePaths 的并发访问
 
   std::mutex m_sessionMutex;
@@ -567,6 +569,7 @@ struct CheatMonitor::Pimpl
   };
 
   HHOOK m_hMouseHook = NULL;
+  DWORD m_hookOwnerThreadId = 0; // [新增] 记录钩子所有者线程ID
   std::mutex m_inputMutex;
   std::vector<MouseMoveEvent> m_mouseMoveEvents;
   std::vector<MouseClickEvent> m_mouseClickEvents;
@@ -1507,6 +1510,8 @@ bool CheatMonitor::Initialize()
   // The hook must be set from a thread that has a message loop, but for
   // system-wide LL hooks, it can be any thread.
   // 钩子回调函数需要一个指向Pimpl实例的静态指针。
+  // [新增] 记录下安装钩子的线程ID，用于安全卸载
+  m_pimpl->m_hookOwnerThreadId = GetCurrentThreadId();
   m_pimpl->m_hMouseHook = SetWindowsHookEx(
       WH_MOUSE_LL, Pimpl::LowLevelMouseProc, GetModuleHandle(NULL), 0);
   if (!m_pimpl->m_hMouseHook)
@@ -1609,11 +1614,29 @@ void CheatMonitor::Shutdown()
   Pimpl::s_pimpl_for_hooks = nullptr;
   if (m_pimpl->m_hMouseHook)
   {
-    if (!UnhookWindowsHookEx(m_pimpl->m_hMouseHook))
+    // [修复] 在卸载钩子前，检查其所有者线程是否仍然存活。
+    // 如果线程已死，钩子会被OS自动移除，此时再调用Unhook会失败并返回1404。
+    HANDLE hOwnerThread =
+        OpenThread(SYNCHRONIZE, FALSE, m_pimpl->m_hookOwnerThreadId);
+    if (hOwnerThread)
     {
-      std::cout << "[AntiCheat] Shutdown Error: Failed to unhook mouse hook. "
-                   "Error code: "
-                << GetLastError() << std::endl;
+      // 线程仍然存活，可以安全地卸载钩子。
+      if (!UnhookWindowsHookEx(m_pimpl->m_hMouseHook))
+      {
+        std::cout
+            << "[AntiCheat] Shutdown Error: Failed to unhook mouse hook. "
+               "Error code: "
+            << GetLastError() << std::endl;
+      }
+      CloseHandle(hOwnerThread);
+    }
+    else
+    {
+      // 线程已经不存在，钩子很可能已被系统自动移除。
+      std::cout << "[AntiCheat] Shutdown Warning: Mouse hook owner thread (TID: "
+                << m_pimpl->m_hookOwnerThreadId
+                << ") has already terminated. The hook was likely removed by the OS."
+                << std::endl;
     }
     m_pimpl->m_hMouseHook = NULL;
   }
@@ -3638,46 +3661,63 @@ void CheatMonitor::Pimpl::Sensor_CheckVehHooks()
   }
 }
 
-bool CheatMonitor::Pimpl::IsAddressInLegitimateModule(
-    PVOID address, std::wstring &outModulePath)
+bool CheatMonitor::Pimpl::IsAddressInLegitimateModule(PVOID address,
+                                                     std::wstring &outModulePath)
 {
   outModulePath.clear();
   HMODULE hModule = NULL;
 
-  // Attempt to get a handle to the module containing the address
   if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
                              GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
                          (LPCWSTR)address, &hModule) &&
       hModule != NULL)
   {
-    wchar_t modulePathBuffer[MAX_PATH] = {0};
-    // Get the full path of the module
-    if (GetModuleFileNameW(hModule, modulePathBuffer, MAX_PATH) > 0)
+    wchar_t modPath[MAX_PATH];
+    if (GetModuleFileNameW(hModule, modPath, MAX_PATH) == 0)
     {
-      outModulePath = modulePathBuffer;
-      std::wstring lowerPath = outModulePath;
-      std::transform(lowerPath.begin(), lowerPath.end(), lowerPath.begin(),
-                     ::towlower);
-      // [修复]
-      // 增加锁来保护对共享集合的并发读取，防止与InitializeSessionBaseline中的写入操作冲突
+      return false; // 无法获取模块路径，视为不合法
+    }
+    outModulePath = modPath;
+
+    // 1. 检查初始基线白名单 (最快)
+    std::wstring lowerPath = outModulePath;
+    std::transform(lowerPath.begin(), lowerPath.end(), lowerPath.begin(),
+                   ::towlower);
+    {
+      std::lock_guard<std::mutex> lock(m_modulePathsMutex);
+      if (m_legitimateModulePaths.count(lowerPath) > 0)
       {
-        std::lock_guard<std::mutex> lock(m_modulePathsMutex);
-        return m_legitimateModulePaths.count(lowerPath) > 0;
+        return true;
       }
     }
-    else
+
+    // 2. 检查签名缓存
+    auto now = std::chrono::steady_clock::now();
     {
-      std::cout << "[AntiCheat] IsAddressInLegitimateModule Error: "
-                   "GetModuleFileNameW failed for hModule 0x"
-                << std::hex << hModule << std::endl;
+      std::lock_guard<std::mutex> lock(m_signatureCacheMutex);
+      auto it = m_moduleSignatureCache.find(outModulePath);
+      if (it != m_moduleSignatureCache.end())
+      {
+        auto &[verdict, timestamp] = it->second;
+        if (now < timestamp + kSignatureCacheDuration)
+        {
+          return verdict == SignatureVerdict::SIGNED_AND_TRUSTED;
+        }
+        m_moduleSignatureCache.erase(it); // 缓存过期
+      }
     }
+
+    // 3. 执行实时签名验证 (最慢)
+    bool isSigned = Utils::VerifyFileSignature(outModulePath);
+    SignatureVerdict newVerdict =
+        isSigned ? SignatureVerdict::SIGNED_AND_TRUSTED
+                 : SignatureVerdict::UNSIGNED_OR_UNTRUSTED;
+
+    // 4. 更新缓存
+    std::lock_guard<std::mutex> lock(m_signatureCacheMutex);
+    m_moduleSignatureCache[outModulePath] = {newVerdict, now};
+    return isSigned;
   }
-  else
-  {
-    // This can happen if the address is in non-module memory (e.g., JIT code,
-    // shellcode), which is a valid case. No need to log an error here.
-  }
-  // Address is not in any module, or we failed to get the module path
   return false;
 }
 
@@ -3834,28 +3874,31 @@ void CheatMonitor::Pimpl::VerifyModuleSignature(HMODULE hModule)
   std::wstring modulePathStr = modPath;
   auto now = std::chrono::steady_clock::now();
 
-  // 1. 检查缓存
-  auto it = m_moduleSignatureCache.find(modulePathStr);
-  if (it != m_moduleSignatureCache.end())
   {
-    auto &[verdict, timestamp] = it->second;
-    if (now < timestamp + kSignatureCacheDuration)
+    std::lock_guard<std::mutex> lock(m_signatureCacheMutex);
+    // 1. 检查缓存
+    auto it = m_moduleSignatureCache.find(modulePathStr);
+    if (it != m_moduleSignatureCache.end())
     {
-      // 缓存未过期，直接使用缓存结果
-      if (verdict == SignatureVerdict::UNSIGNED_OR_UNTRUSTED ||
-          verdict == SignatureVerdict::VERIFICATION_FAILED)
+      auto &[verdict, timestamp] = it->second;
+      if (now < timestamp + kSignatureCacheDuration)
       {
-        // 如果缓存结果是未签名或验证失败，则再次上报（如果需要，可以增加冷却）
-        AddEvidence(anti_cheat::RUNTIME_MODULE_NEW_UNKNOWN,
-                    "加载了未签名或签名无效的模块 (缓存): " +
-                        Utils::WideToString(modulePathStr));
+        // 缓存未过期，直接使用缓存结果
+        if (verdict == SignatureVerdict::UNSIGNED_OR_UNTRUSTED ||
+            verdict == SignatureVerdict::VERIFICATION_FAILED)
+        {
+          // 如果缓存结果是未签名或验证失败，则再次上报（如果需要，可以增加冷却）
+          AddEvidence(anti_cheat::RUNTIME_MODULE_NEW_UNKNOWN,
+                      "加载了未签名或签名无效的模块 (缓存): " +
+                          Utils::WideToString(modulePathStr));
+        }
+        return; // 缓存命中，直接返回
       }
-      return; // 缓存命中，直接返回
-    }
-    else
-    {
-      // 缓存过期，移除它以便重新验证
-      m_moduleSignatureCache.erase(it);
+      else
+      {
+        // 缓存过期，移除它以便重新验证
+        m_moduleSignatureCache.erase(it);
+      }
     }
   }
 
@@ -3876,7 +3919,10 @@ void CheatMonitor::Pimpl::VerifyModuleSignature(HMODULE hModule)
   }
 
   // 3. 更新缓存
-  m_moduleSignatureCache[modulePathStr] = {currentVerdict, now};
+  {
+    std::lock_guard<std::mutex> lock(m_signatureCacheMutex);
+    m_moduleSignatureCache[modulePathStr] = {currentVerdict, now};
+  }
 }
 
 // --- Shellcode检测实现 ---
@@ -4163,49 +4209,78 @@ void CheatMonitor::Pimpl::Sensor_CheckIatHooks()
 
 uintptr_t CheatMonitor::Pimpl::FindVehListOffset()
 {
-  PVOID pDecoyHandler = AddVectoredExceptionHandler(1, DecoyVehHandler);
+  uintptr_t offset = 0;
+  PVOID pDecoyHandler =
+      AddVectoredExceptionHandler(1, (PVECTORED_EXCEPTION_HANDLER)DecoyVehHandler);
   if (!pDecoyHandler)
   {
     AddEvidence(anti_cheat::RUNTIME_ERROR,
-                "VEH偏移量查找失败: 无法注册诱饵Handler。");
+                "VEH偏移量查找失败: 无法注册诱饵VEH处理器。");
     return 0;
   }
 
-  uintptr_t offset = 0;
 #ifdef _WIN64
   const auto pPeb = reinterpret_cast<const BYTE *>(__readgsqword(0x60));
-  const auto pHandlerAddress = reinterpret_cast<uintptr_t>(DecoyVehHandler);
 #else
   const auto pPeb = reinterpret_cast<const BYTE *>(__readfsdword(0x30));
-  const auto pHandlerAddress = reinterpret_cast<uintptr_t>(DecoyVehHandler);
 #endif
 
   if (pPeb)
   {
-    // 扫描 PEB，寻找指向 VEH 链表的指针
-    for (size_t i = 0; i < 0x200; i += sizeof(void *))
+    // 遍历PEB（或其附近）的指针大小的块，寻找我们的目标
+    // 搜索范围设为0x1000字节，这对于所有已知的Windows版本都足够了
+    for (uintptr_t i = 0; i < 0x1000; i += sizeof(PVOID))
     {
-      const uintptr_t *pPossiblePtr = reinterpret_cast<const uintptr_t *>(pPeb + i);
-      // 检查 pPossiblePtr 是否有效
-      if (IsValidPointer(pPossiblePtr, sizeof(uintptr_t)))
+      __try
       {
-        const VECTORED_HANDLER_LIST *pVehList = reinterpret_cast<const VECTORED_HANDLER_LIST *>(*pPossiblePtr);
-        // 检查 pVehList 是否有效
-        if (IsValidPointer(pVehList, sizeof(VECTORED_HANDLER_LIST)))
+        const auto pVehList =
+            *reinterpret_cast<const VECTORED_HANDLER_LIST *const *>(pPeb + i);
+
+        // 验证候选指针
+        // a) 指针本身必须有效
+        // b) 指针指向的 VECTORED_HANDLER_LIST 结构必须是可读的
+        // c) 结构中的链表头 (List.Flink) 必须指向一个有效的内存地址
+        if (IsValidPointer(pVehList, sizeof(VECTORED_HANDLER_LIST)) &&
+            IsValidPointer(pVehList->List.Flink, sizeof(LIST_ENTRY)))
         {
-          const VECTORED_HANDLER_ENTRY *pEntry = reinterpret_cast<const VECTORED_HANDLER_ENTRY *>(pVehList->List.Flink);
-          // 检查 pEntry 是否有效且 Handler 匹配
-          if (IsValidPointer(pEntry, sizeof(VECTORED_HANDLER_ENTRY)) &&
-              pEntry->Handler == (PVOID)pHandlerAddress)
+          const auto *pEntry = CONTAINING_RECORD(
+              pVehList->List.Flink, VECTORED_HANDLER_ENTRY, List);
+
+          // VECTORED_HANDLER_ENTRY 的结构未公开且可能变化。
+          // 我们不依赖固定的结构定义，而是在 LIST_ENTRY 之后扫描几个指针大小的
+          // 空间来查找诱饵处理函数。
+          if (IsValidPointer(pEntry, sizeof(LIST_ENTRY) + 4 * sizeof(PVOID)))
           {
-            offset = i;
-            break;
+            for (int j = 0; j < 4; ++j)
+            {
+              const PVOID pPossibleHandler =
+                  *(reinterpret_cast<const PVOID *>(
+                        (const BYTE *)pEntry + sizeof(LIST_ENTRY)) +
+                    j);
+
+              if (pPossibleHandler == DecoyVehHandler)
+              {
+                offset = i;
+                break; // 找到了！
+              }
+            }
+          }
+
+          if (offset != 0)
+          {
+            break; // 从外层循环中断
           }
         }
+      }
+      __except (EXCEPTION_EXECUTE_HANDLER)
+      {
+        // 如果访问无效内存，SEH会捕获异常并继续搜索
+        continue;
       }
     }
   }
 
+  // 无论是否找到，都必须移除诱饵处理函数
   RemoveVectoredExceptionHandler(pDecoyHandler);
   return offset;
 }
