@@ -38,7 +38,7 @@
 #pragma comment(lib, "iphlpapi.lib") // 为 GetAdaptersInfo 添加库链接
 #pragma comment(lib, "wintrust.lib") // 为 WinVerifyTrust 添加库链接
 
-// [修复] 为兼容旧版Windows SDK (pre-Win8)，手动定义缺失的类型
+// 为兼容旧版Windows SDK (pre-Win8)，手动定义缺失的类型
 #if (NTDDI_VERSION < NTDDI_WIN8)
 typedef enum _PROCESS_MITIGATION_POLICY
 {
@@ -73,7 +73,7 @@ typedef struct _PROCESS_MITIGATION_DEP_POLICY
 #define STATUS_INFO_LENGTH_MISMATCH 0xC0000004L
 #endif
 
-// [修复] 为兼容旧版SDK，手动定义缺失的枚举值
+// 为兼容旧版SDK，手动定义缺失的枚举值
 // SystemCodeIntegrityInformation 在 Windows 8 SDK (NTDDI_WIN8) 中被定义为枚举。
 // #ifndef 无法检测到枚举成员，因此我们必须使用SDK版本进行条件编译。
 #if (NTDDI_VERSION < NTDDI_WIN8)
@@ -181,7 +181,7 @@ namespace Utils
     return strTo;
   }
 
-  // [性能优化] 使用单次遍历和哈希表来查找父进程，避免双重循环。
+  // 使用单次遍历和哈希表来查找父进程，避免双重循环。
   bool GetParentProcessInfo(DWORD &parentPid, std::string &parentName)
   {
     HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
@@ -328,7 +328,7 @@ namespace Utils
 namespace
 { // 匿名命名空间，用于辅助函数
 
-  // [新增] 指针验证函数（需根据环境实现）
+  // 指针验证函数（需根据环境实现）
   bool IsValidPointer(const void *ptr, size_t size)
   {
     if (!ptr)
@@ -372,7 +372,7 @@ namespace
   }
 
   // 此函数不应使用任何需要堆栈展开的C++对象。
-  // [修复] 使用 __try/__except 块来安全地执行此反调试检查。
+  // 使用 __try/__except 块来安全地执行此反调试检查。
   // 如果没有调试器，会触发一个异常并被捕获。如果附加了调试器，它可能会“吞掉”这个异常，
   // 从而改变程序的执行路径，但这本身不是一个可靠的证据来源，更多是用于增加逆向分析的难度。
   void CheckCloseHandleException()
@@ -389,7 +389,7 @@ namespace
     }
   }
 
-  // [新增] 辅助函数：通过KUSER_SHARED_DATA检测内核调试器
+  // 辅助函数：通过KUSER_SHARED_DATA检测内核调试器
   // 此函数不应使用任何需要堆栈展开的C++对象。
   bool IsKernelDebuggerPresent_KUserSharedData()
   {
@@ -466,11 +466,11 @@ namespace
     return result;
   }
 
-#pragma warning(pop) // [修复] 与上面的push配对
+#pragma warning(pop) // 与上面的push配对
 
 } // namespace
 
-// --- [重构] 核心架构组件 ---
+// --- 核心架构组件 ---
 
 class ScanContext;
 
@@ -490,8 +490,7 @@ struct CheatMonitor::Pimpl
   std::thread m_monitorThread;
   std::condition_variable m_cv;
   std::mutex m_cvMutex;
-  std::mutex
-      m_modulePathsMutex; // [修复] 保护 m_legitimateModulePaths 的并发访问
+  std::mutex m_modulePathsMutex; // 保护 m_legitimateModulePaths 的并发访问
 
   std::mutex m_sessionMutex;
   uint32_t m_currentUserId = 0;
@@ -500,14 +499,14 @@ struct CheatMonitor::Pimpl
   std::set<std::pair<anti_cheat::CheatCategory, std::string>> m_uniqueEvidence;
   std::vector<anti_cheat::Evidence> m_evidences;
 
-  // [新增] 用于控制会话基线重建的标志
+  // 用于控制会话基线重建的标志
   std::atomic<bool> m_newSessionNeedsBaseline = false;
 
-  // [重构] 引入基于数字签名的受信任开发者工具列表
+  // 引入基于数字签名的受信任开发者工具列表
   const std::unordered_set<std::string> m_trustedDeveloperProcesses = {
       "devenv.exe", "code.exe", "vsdebugconsole.exe"};
 
-  // [重构] 将父进程白名单改为哈希集合以提高效率，并移除开发者工具
+  // 将父进程白名单改为哈希集合以提高效率，并移除开发者工具
   const std::unordered_set<std::string> m_legitimateParentProcesses = {
       "yourlauncher.exe", // 必须包含官方启动器! 请替换为真实名称 (小写)。
       "explorer.exe",     // Windows Shell
@@ -546,6 +545,15 @@ struct CheatMonitor::Pimpl
       m_lastReported;
 
   static constexpr auto kReportCooldownMinutes = std::chrono::minutes(30);
+  static constexpr auto kIllegalCallReportCooldownMinutes =
+      std::chrono::minutes(5); // 非法调用上报冷却时间
+  static constexpr auto kHeavyScanIntervalMinutes =
+      std::chrono::minutes(15); // 重量级扫描间隔
+  static constexpr auto kReportUploadIntervalMinutes =
+      std::chrono::minutes(5); // 定期上报间隔
+  static constexpr auto kBaseScanIntervalSeconds = std::chrono::seconds(8); // 基础扫描间隔
+  static constexpr auto kJitterMilliseconds =
+      std::chrono::milliseconds(4000); // 扫描间隔随机抖动范围
 
   // --- Input Automation Detection ---
   struct MouseMoveEvent
@@ -572,17 +580,17 @@ struct CheatMonitor::Pimpl
   std::mt19937 m_rng;      // 随机数生成器
   std::random_device m_rd; // 随机数种子
 
-  // [新增] 白名单列表
+  // 白名单列表
   std::unordered_set<std::wstring>
       m_whitelistedProcessPaths; // 白名单进程完整路径 (小写)
   std::unordered_set<std::wstring>
       m_whitelistedWindowKeywords; // 白名单窗口标题关键词 (小写)
 
-  // [新增] IAT Hook 白名单
+  // IAT Hook 白名单
   std::unordered_set<std::string>
       m_whitelistedIATHooks; // 存储 "DLL!Function" 格式的白名单
 
-  // [新增] VEH Hook 白名单
+  // VEH Hook 白名单
   std::unordered_set<std::wstring>
       m_whitelistedVEHModules; // 存储白名单VEH处理函数所属的模块路径 (小写)
 
@@ -598,7 +606,7 @@ struct CheatMonitor::Pimpl
       std::wstring,
       std::pair<SignatureVerdict, std::chrono::steady_clock::time_point>>
       m_moduleSignatureCache;
-  // [新增] 进程句柄检测缓存
+  // 进程句柄检测缓存
   enum class ProcessVerdict
   {
     UNKNOWN,
@@ -617,11 +625,11 @@ struct CheatMonitor::Pimpl
   // 存储关键模块代码节的基线哈希值
   std::unordered_map<std::wstring, std::vector<uint8_t>> m_moduleBaselineHashes;
 
-  // [重构] IAT Hook检测基线：为每个导入的DLL存储一个独立的哈希值
+  // IAT Hook检测基线：为每个导入的DLL存储一个独立的哈希值
   std::unordered_map<std::string, std::vector<uint8_t>> m_iatBaselineHashes;
-  uintptr_t m_vehListOffset = 0; // [新增] 存储VEH链表在PEB中的偏移量
+  uintptr_t m_vehListOffset = 0; // 存储VEH链表在PEB中的偏移量
 
-  // [新增] 传感器集合
+  // 传感器集合
   std::vector<std::unique_ptr<ISensor>> m_lightweight_sensors;
   std::vector<std::unique_ptr<ISensor>> m_heavyweight_sensors;
 
@@ -680,7 +688,7 @@ struct CheatMonitor::Pimpl
   void InstallVirtualAllocHook();
   void UninstallVirtualAllocHook();
 
-  // [新增] VirtualAlloc Hook状态管理
+  // VirtualAlloc Hook状态管理
   bool m_isVirtualAllocHooked = false;
   BYTE m_originalVirtualAllocBytes[5] = {0}; // 假设JMP指令长度为5
 
@@ -795,7 +803,7 @@ namespace InputAnalysis
     return cross_product == 0;
   }
 } // namespace InputAnalysis
-// --- [重构] 将所有传感器实现移入独立的类中 ---
+// --- 将所有传感器实现移入独立的类中 ---
 namespace Sensors
 {
 
@@ -1541,7 +1549,7 @@ void CheatMonitor::OnPlayerLogin(uint32_t user_id,
 {
   if (!m_pimpl || !m_pimpl->m_isSystemActive.load())
     return;
-  // [重构] 先登出上一个玩家，这会处理上一个会话的报告上传和状态清理
+  // 先登出上一个玩家，这会处理上一个会话的报告上传和状态清理
   OnPlayerLogout();
   {
     std::lock_guard<std::mutex> lock(m_pimpl->m_sessionMutex);
@@ -1553,7 +1561,7 @@ void CheatMonitor::OnPlayerLogin(uint32_t user_id,
       m_pimpl->Sensor_CollectHardwareFingerprint();
     }
     m_pimpl->m_isSessionActive = true;
-    m_pimpl->m_newSessionNeedsBaseline = true; // [新增] 标记新会话需要建立基线
+    m_pimpl->m_newSessionNeedsBaseline = true; // 标记新会话需要建立基线
   }
   m_pimpl->m_cv.notify_one();
 }
@@ -1564,7 +1572,7 @@ void CheatMonitor::OnPlayerLogout()
   if (!m_pimpl || !m_pimpl->m_isSessionActive.load())
     return;
 
-  // [修复] 核心逻辑修复：先原子地标记会话结束，以阻止监控线程继续添加证据。
+  // 核心逻辑修复：先原子地标记会话结束，以阻止监控线程继续添加证据。
   {
     std::lock_guard<std::mutex> lock(m_pimpl->m_sessionMutex);
     if (!m_pimpl->m_isSessionActive)
@@ -1588,7 +1596,7 @@ void CheatMonitor::OnPlayerLogout()
 
 void CheatMonitor::Shutdown()
 {
-  std::lock_guard<std::mutex> lock(m_initMutex); // [修复] 增加互斥锁保护
+  std::lock_guard<std::mutex> lock(m_initMutex); // 增加互斥锁保护
   if (!m_pimpl || !m_pimpl->m_isSystemActive.load())
     return;
 
@@ -1597,7 +1605,6 @@ void CheatMonitor::Shutdown()
   m_pimpl->m_isSystemActive = false;
   m_pimpl->m_cv.notify_one();
 
-  // [修复]
   // 先原子性地切断钩子回调函数访问Pimpl实例的路径，再卸载钩子，防止use-after-free
   Pimpl::s_pimpl_for_hooks = nullptr;
   if (m_pimpl->m_hMouseHook)
@@ -1613,7 +1620,7 @@ void CheatMonitor::Shutdown()
 
   if (m_pimpl->m_monitorThread.joinable())
     m_pimpl->m_monitorThread.join();
-  m_pimpl->UninstallVirtualAllocHook(); // [新增] 卸载钩子，恢复原始函数
+  m_pimpl->UninstallVirtualAllocHook(); // 卸载钩子，恢复原始函数
                                         // UninstallVirtualAllocHook
                                         // 内部已添加日志，此处不重复判断。
   m_pimpl.reset();
@@ -1644,8 +1651,7 @@ bool CheatMonitor::IsCallerLegitimate()
                      ::towlower);
       // 4. 使用哈希集合进行高效查找
       {
-        std::lock_guard<std::mutex> lock(
-            m_pimpl->m_modulePathsMutex); // [修复] 加锁保护读取
+        std::lock_guard<std::mutex> lock(m_pimpl->m_modulePathsMutex); // 加锁保护读取
         if (m_pimpl->m_legitimateModulePaths.count(lowerPath) > 0)
         {
           return true; // 调用者是白名单内的合法模块
@@ -1662,8 +1668,8 @@ bool CheatMonitor::IsCallerLegitimate()
       auto it = m_pimpl->m_reportedIllegalCallSources.find(sourceId);
 
       if (it == m_pimpl->m_reportedIllegalCallSources.end() ||
-          std::chrono::duration_cast<std::chrono::minutes>(now - it->second)
-                  .count() >= 5)
+          (now - it->second) >=
+              CheatMonitor::Pimpl::kIllegalCallReportCooldownMinutes)
       {
         // 如果是第一次发现，或者距离上次上报已超过5分钟，则上报并更新时间戳
         m_pimpl->m_reportedIllegalCallSources[sourceId] = now;
@@ -1692,8 +1698,8 @@ bool CheatMonitor::IsCallerLegitimate()
   auto it = m_pimpl->m_reportedIllegalCallSources.find(sourceId);
 
   if (it == m_pimpl->m_reportedIllegalCallSources.end() ||
-      std::chrono::duration_cast<std::chrono::minutes>(now - it->second)
-              .count() >= 5)
+      (now - it->second) >=
+          CheatMonitor::Pimpl::kIllegalCallReportCooldownMinutes)
   {
     m_pimpl->m_reportedIllegalCallSources[sourceId] = now;
     m_pimpl->AddEvidence(anti_cheat::RUNTIME_ILLEGAL_FUNCTION_CALL,
@@ -1748,7 +1754,7 @@ void CheatMonitor::Pimpl::ResetSessionState()
   // 模块签名缓存通常不需要在会话结束时清空，因为它与进程无关
   m_currentUserId = 0;
 
-  // [重构] 初始化传感器列表，包括轻量级和重量级传感器
+  // 初始化传感器列表，包括轻量级和重量级传感器
   m_lightweight_sensors.clear();
   m_heavyweight_sensors.clear();
 
@@ -1769,17 +1775,17 @@ void CheatMonitor::Pimpl::ResetSessionState()
       std::make_unique<Sensors::MemoryScanSensor>());
 
   m_currentUserName.clear();
-  // [修复] 移除对未定义成员的调用
+  // 移除对未定义成员的调用
 }
 
 void CheatMonitor::Pimpl::InitializeSessionBaseline()
 {
   m_rng.seed(m_rd()); // 为每个会话重置随机数种子，增加随机性
 
-  // [新增] 通过数字签名验证，动态建立受信任进程的基线
+  // 通过数字签名验证，动态建立受信任进程的基线
   Sensor_EstablishTrustedProcesses();
 
-  // [新增] 初始化白名单 (重要：实际应从配置文件或服务器加载，避免硬编码)
+  // 初始化白名单 (重要：实际应从配置文件或服务器加载，避免硬编码)
   // 这里的路径示例将尝试使用更通用的方法，避免硬编码盘符。
   wchar_t systemDir[MAX_PATH];
   if (GetSystemDirectoryW(systemDir, MAX_PATH) > 0)
@@ -1800,7 +1806,7 @@ void CheatMonitor::Pimpl::InitializeSessionBaseline()
     return;
   }
 
-  // [重构] 移除所有基于 Program Files 或 AppData 的硬编码路径白名单。
+  // 移除所有基于 Program Files 或 AppData 的硬编码路径白名单。
   // 新的逻辑将依赖于对可信进程（如devenv.exe）的数字签名验证。
 
   // 窗口标题关键词
@@ -1809,13 +1815,13 @@ void CheatMonitor::Pimpl::InitializeSessionBaseline()
   m_whitelistedWindowKeywords.insert(L"powershell");
   m_whitelistedWindowKeywords.insert(L"visual studio code");
 
-  // [新增] 初始化IAT Hook白名单
+  // 初始化IAT Hook白名单
   // (重要：实际应从配置文件或服务器加载，避免硬编码)
   // 示例：允许来自特定DLL的特定函数被钩子（例如，某些安全软件或驱动）
   // m_whitelistedIATHooks.insert("ntdll.dll!NtCreateFile");
   // m_whitelistedIATHooks.insert("kernel32.dll!CreateFileW");
 
-  // [新增] 初始化VEH Hook白名单 (示例，实际应从配置文件或服务器加载)
+  // 初始化VEH Hook白名单 (示例，实际应从配置文件或服务器加载)
   // 示例：允许来自某些安全软件或系统组件的VEH处理函数
   // m_whitelistedVEHModules.insert(L"c:\\windows\\system32\\drivers\\some_security_driver.sys");
   // m_whitelistedVEHModules.insert(L"c:\\program
@@ -1897,8 +1903,7 @@ void CheatMonitor::Pimpl::InitializeSessionBaseline()
         std::transform(lowerPath.begin(), lowerPath.end(), lowerPath.begin(),
                        ::towlower); // 依赖locale，但对于路径通常安全
         {
-          std::lock_guard<std::mutex> lock(
-              m_modulePathsMutex); // [修复] 加锁保护写入
+          std::lock_guard<std::mutex> lock(m_modulePathsMutex); // 加锁保护写入
           m_legitimateModulePaths.insert(lowerPath);
         }
       }
@@ -1958,7 +1963,7 @@ void CheatMonitor::Pimpl::InitializeSessionBaseline()
     }
   }
 
-  // [重构] 为主模块的每个导入DLL建立独立的IAT哈希基线
+  // 为主模块的每个导入DLL建立独立的IAT哈希基线
   const HMODULE hSelf = GetModuleHandle(NULL);
   if (hSelf)
   {
@@ -2035,7 +2040,7 @@ void CheatMonitor::Pimpl::InitializeSystem()
 
   // --- 执行一次性的系统级初始化 ---
 
-  // [重构] 将进程启动时的一次性检查移到此处
+  // 将进程启动时的一次性检查移到此处
   Sensor_ValidateParentProcess();
   Sensor_DetectVirtualMachine();
 
@@ -2090,7 +2095,7 @@ void CheatMonitor::Pimpl::HardenProcessAndThreads()
                       std::to_string(error));
     }
 
-    // 3. [增强] 禁止动态代码生成。这是一个非常强的缓解措施，但需谨慎测试。
+    // 3. 禁止动态代码生成。这是一个非常强的缓解措施，但需谨慎测试。
     // 如果游戏引擎或第三方库使用了JIT等技术，可能会导致冲突。
     // 注意：此策略可能导致兼容性问题，在生产环境中使用前务必进行全面测试。
     // PROCESS_MITIGATION_DYNAMIC_CODE_POLICY dynamicCodePolicy = {};
@@ -2147,7 +2152,6 @@ void CheatMonitor::Pimpl::HardenProcessAndThreads()
 
 void CheatMonitor::Pimpl::MonitorLoop()
 {
-  // [性能优化]
   // 将监控线程的优先级设置为低于正常，以确保它不会与游戏主渲染/逻辑线程争抢CPU资源，
   // 从而避免引入卡顿。这是一个在反作弊开发中至关重要的实践。
   HANDLE hCurrentThread = GetCurrentThread();
@@ -2159,7 +2163,7 @@ void CheatMonitor::Pimpl::MonitorLoop()
               << GetLastError() << std::endl;
   }
 
-  // [重构] 系统级初始化，只执行一次
+  // 系统级初始化，只执行一次
   InitializeSystem();
   using namespace std::chrono;
 
@@ -2175,21 +2179,21 @@ void CheatMonitor::Pimpl::MonitorLoop()
     if (!m_isSystemActive.load())
       break;
 
-    // [重构] 会话级初始化，每次新会话开始时执行
+    // 会话级初始化，每次新会话开始时执行
     if (m_newSessionNeedsBaseline.exchange(false))
     {
       InitializeSessionBaseline();
     }
 
     auto last_report_time = steady_clock::now();
-    // [性能重构] 为重量级扫描引入独立的、更长的计时器
+    // 为重量级扫描引入独立的、更长的计时器
     auto last_heavy_scan_time = steady_clock::now();
 
     while (m_isSessionActive.load())
     {
       auto scan_start_time = steady_clock::now();
 
-      // --- [重构] Tier 1: 执行轻量级、高频扫描 ---
+      // --- Tier 1: 执行轻量级、高频扫描 ---
       std::shuffle(m_lightweight_sensors.begin(), m_lightweight_sensors.end(),
                    m_rng);
       for (const auto &sensor : m_lightweight_sensors)
@@ -2213,9 +2217,8 @@ void CheatMonitor::Pimpl::MonitorLoop()
         }
       }
 
-      // --- [重构] Tier 2: 执行重量级、低频扫描 ---
-      if (duration_cast<minutes>(scan_start_time - last_heavy_scan_time) >=
-          minutes(15))
+      // --- Tier 2: 执行重量级、低频扫描 ---
+      if ((scan_start_time - last_heavy_scan_time) >= kHeavyScanIntervalMinutes)
       {
         std::shuffle(m_heavyweight_sensors.begin(), m_heavyweight_sensors.end(),
                      m_rng);
@@ -2242,22 +2245,21 @@ void CheatMonitor::Pimpl::MonitorLoop()
       }
 
       // --- 定期上报 ---
-      if (duration_cast<minutes>(scan_start_time - last_report_time) >=
-          minutes(5))
+      if ((scan_start_time - last_report_time) >= kReportUploadIntervalMinutes)
       {
         UploadReport();
         last_report_time = steady_clock::now();
       }
 
-      // [改进] 为扫描间隔引入随机抖动，使其更难被预测。
       auto scan_end_time = steady_clock::now();
       auto scan_duration =
           duration_cast<milliseconds>(scan_end_time - scan_start_time);
 
       // 目标间隔为8-12秒。先计算基础休眠时间。
-      auto base_sleep_duration = seconds(8) - scan_duration;
+      auto base_sleep_duration = kBaseScanIntervalSeconds - scan_duration;
       // 再增加一个0-4秒的随机抖动。
-      auto jitter = milliseconds(m_rng() % 4000); // 使用成员随机数生成器
+      auto jitter = milliseconds(
+          m_rng() % kJitterMilliseconds.count()); // 使用成员随机数生成器
       auto sleep_duration = base_sleep_duration + jitter;
 
       if (sleep_duration > milliseconds(0))
