@@ -160,6 +160,7 @@ typedef struct _SYSTEM_KERNEL_DEBUGGER_INFORMATION
 
 namespace Utils
 {
+
   std::string WideToString(const std::wstring &wstr)
   {
     if (wstr.empty())
@@ -442,6 +443,9 @@ namespace
     __except (EXCEPTION_EXECUTE_HANDLER)
     {
       // 访问模块内存失败，可能模块已被卸载或内存损坏
+      DWORD exceptionCode = GetExceptionCode();
+      std::cout << "[AntiCheat] GetCodeSectionInfo Exception: hModule=0x" << std::hex << hModule << ", code=" << exceptionCode << std::endl;
+
       return false;
     }
     return false;
@@ -468,6 +472,40 @@ namespace
 
 #pragma warning(pop) // 与上面的push配对
 
+  // [新增] CRC32哈希算法实现
+  // 一个性能不错的标准CRC32实现，用于替代memcmp
+  uint32_t Crc32(const uint8_t *data, size_t length)
+  {
+    if (!data || length == 0)
+      return 0;
+
+    uint32_t crc = 0xFFFFFFFF;
+    static uint32_t table[256];
+    static bool table_generated = false;
+
+    // 首次调用时生成CRC32查找表
+    if (!table_generated)
+    {
+      for (uint32_t i = 0; i < 256; i++)
+      {
+        uint32_t c = i;
+        for (int j = 0; j < 8; j++)
+        {
+          c = (c & 1) ? (0xEDB88320 ^ (c >> 1)) : (c >> 1);
+        }
+        table[i] = c;
+      }
+      table_generated = true;
+    }
+
+    for (size_t i = 0; i < length; ++i)
+    {
+      crc = table[(crc ^ data[i]) & 0xFF] ^ (crc >> 8);
+    }
+
+    return crc ^ 0xFFFFFFFF;
+  }
+
 } // namespace
 
 // --- 核心架构组件 ---
@@ -491,7 +529,7 @@ struct CheatMonitor::Pimpl
   std::condition_variable m_cv;
   std::mutex m_cvMutex;
   std::mutex
-      m_signatureCacheMutex; // [新增] 保护 m_moduleSignatureCache 的并发访问
+      m_signatureCacheMutex;     // [新增] 保护 m_moduleSignatureCache 的并发访问
   std::mutex m_modulePathsMutex; // 保护 m_legitimateModulePaths 的并发访问
 
   std::mutex m_sessionMutex;
@@ -552,7 +590,7 @@ struct CheatMonitor::Pimpl
   static constexpr auto kHeavyScanIntervalMinutes =
       std::chrono::minutes(15); // 重量级扫描间隔
   static constexpr auto kReportUploadIntervalMinutes =
-      std::chrono::minutes(5); // 定期上报间隔
+      std::chrono::minutes(5);                                              // 定期上报间隔
   static constexpr auto kBaseScanIntervalSeconds = std::chrono::seconds(8); // 基础扫描间隔
   static constexpr auto kJitterMilliseconds =
       std::chrono::milliseconds(4000); // 扫描间隔随机抖动范围
@@ -604,6 +642,7 @@ struct CheatMonitor::Pimpl
     SIGNED_AND_TRUSTED,
     UNSIGNED_OR_UNTRUSTED,
     VERIFICATION_FAILED
+
   };
   std::unordered_map<
       std::wstring,
@@ -1866,7 +1905,6 @@ void CheatMonitor::Pimpl::InitializeSessionBaseline()
   VerifyModuleIntegrity(L"kernel32.dll");
   VerifyModuleIntegrity(L"user32.dll");
   VerifyModuleIntegrity(NULL); // 验证游戏主程序
-
   HANDLE hThreadSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
   if (hThreadSnapshot != INVALID_HANDLE_VALUE)
   {
@@ -2552,9 +2590,105 @@ struct IntegrityCheckResult
   char modPathStr[512];
 };
 
+// [重构] 新增一个辅助函数，专门用于处理节区校验的复杂逻辑
+// 这个函数内部可以使用C++对象，因为它不再被__try包裹
+bool ValidateSections(IntegrityCheckResult &result, const IMAGE_NT_HEADERS *pNtHeaders,
+                      HMODULE hModuleInMemory, LPVOID pMappedFileBase, DWORD fileSize)
+{
+  const ptrdiff_t delta = reinterpret_cast<ptrdiff_t>(hModuleInMemory) - pNtHeaders->OptionalHeader.ImageBase;
+  const IMAGE_SECTION_HEADER *pSectionHeader = IMAGE_FIRST_SECTION(pNtHeaders);
+
+  for (int i = 0; i < pNtHeaders->FileHeader.NumberOfSections; i++, pSectionHeader++)
+  {
+    if ((pSectionHeader->Characteristics & IMAGE_SCN_CNT_CODE) && pSectionHeader->Misc.VirtualSize > 0)
+    {
+      if (pSectionHeader->PointerToRawData > fileSize ||
+          pSectionHeader->SizeOfRawData > fileSize - pSectionHeader->PointerToRawData ||
+          pSectionHeader->VirtualAddress + pSectionHeader->Misc.VirtualSize > pNtHeaders->OptionalHeader.SizeOfImage)
+      {
+        memcpy(result.sectionName, pSectionHeader->Name, 8);
+        result.sectionName[8] = '\0';
+        result.status = IntegrityCheckResult::Status::SectionTampered;
+        return false; // 校验失败
+      }
+
+      const void *sectionInMemory = reinterpret_cast<const BYTE *>(hModuleInMemory) + pSectionHeader->VirtualAddress;
+      const void *sectionOnDisk = reinterpret_cast<const BYTE *>(pMappedFileBase) + pSectionHeader->PointerToRawData;
+
+      uint32_t hashInMemory = Crc32(reinterpret_cast<const uint8_t *>(sectionInMemory), pSectionHeader->Misc.VirtualSize);
+      uint32_t hashOnDisk;
+
+      if (delta != 0) // 需要处理重定位
+      {
+        // [关键] std::vector现在位于一个没有__try的函数中，是完全安全的
+        std::vector<uint8_t> tempSection(pSectionHeader->Misc.VirtualSize, 0);
+        memcpy(tempSection.data(), sectionOnDisk, (std::min)((size_t)pSectionHeader->SizeOfRawData, tempSection.size()));
+
+        const IMAGE_DATA_DIRECTORY *relocDir = &pNtHeaders->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC];
+        if (relocDir->VirtualAddress != 0 && relocDir->Size > 0)
+        {
+          auto *pRelocBlock = reinterpret_cast<IMAGE_BASE_RELOCATION *>(
+              reinterpret_cast<BYTE *>(pMappedFileBase) + relocDir->VirtualAddress);
+          const auto *pRelocEnd = reinterpret_cast<IMAGE_BASE_RELOCATION *>(
+              reinterpret_cast<BYTE *>(pRelocBlock) + relocDir->Size);
+
+          // 遍历所有重定位块
+          while (pRelocBlock < pRelocEnd && pRelocBlock->VirtualAddress != 0)
+          {
+            const uint32_t blockBaseRVA = pRelocBlock->VirtualAddress;
+            const uint32_t blockSize = pRelocBlock->SizeOfBlock;
+            const size_t entryCount = (blockSize - sizeof(IMAGE_BASE_RELOCATION)) / sizeof(WORD);
+            const auto *pRelocEntry = reinterpret_cast<const WORD *>(pRelocBlock + 1);
+
+            for (size_t j = 0; j < entryCount; ++j, ++pRelocEntry)
+            {
+              WORD type = (*pRelocEntry) >> 12;
+              WORD offset = (*pRelocEntry) & 0x0FFF;
+              DWORD relocRVA = blockBaseRVA + offset;
+
+              // 检查此重定位项是否落在当前节区内
+              if (relocRVA >= pSectionHeader->VirtualAddress &&
+                  relocRVA < (pSectionHeader->VirtualAddress + pSectionHeader->Misc.VirtualSize))
+              {
+                if (type == IMAGE_REL_BASED_HIGHLOW)
+                {
+                  DWORD *patchAddr = reinterpret_cast<DWORD *>(tempSection.data() + (relocRVA - pSectionHeader->VirtualAddress));
+                  *patchAddr += static_cast<DWORD>(delta);
+                }
+                else if (type == IMAGE_REL_BASED_DIR64)
+                {
+                  ULONGLONG *patchAddr = reinterpret_cast<ULONGLONG *>(tempSection.data() + (relocRVA - pSectionHeader->VirtualAddress));
+                  *patchAddr += delta;
+                }
+              }
+            }
+            pRelocBlock = reinterpret_cast<IMAGE_BASE_RELOCATION *>(reinterpret_cast<BYTE *>(pRelocBlock) + blockSize);
+          }
+        }
+        hashOnDisk = Crc32(tempSection.data(), tempSection.size());
+      }
+      else // 无需重定位
+      {
+        std::vector<uint8_t> tempSection(pSectionHeader->Misc.VirtualSize, 0);
+        memcpy(tempSection.data(), sectionOnDisk, (std::min)((size_t)pSectionHeader->SizeOfRawData, tempSection.size()));
+        hashOnDisk = Crc32(tempSection.data(), tempSection.size());
+      }
+
+      if (hashInMemory != hashOnDisk)
+      {
+        memcpy(result.sectionName, pSectionHeader->Name, 8);
+        result.sectionName[8] = '\0';
+        result.status = IntegrityCheckResult::Status::SectionTampered;
+        return false; // 校验失败
+      }
+    }
+  }
+  return true; // 所有节区校验成功
+}
+
 void PerformLowLevelCheck(IntegrityCheckResult &result, HMODULE hModuleInMemory,
-                          LPVOID pMappedFileBase, DWORD fileSize,
-                          const wchar_t *modPathOnDisk)
+                             LPVOID pMappedFileBase, DWORD fileSize,
+                             const wchar_t *modPathOnDisk)
 {
   WideCharToMultiByte(CP_UTF8, 0, modPathOnDisk, -1, result.modPathStr,
                       sizeof(result.modPathStr), nullptr, nullptr);
@@ -2563,11 +2697,17 @@ void PerformLowLevelCheck(IntegrityCheckResult &result, HMODULE hModuleInMemory,
 
   __try
   {
-    const auto *pDosHeader =
-        reinterpret_cast<const IMAGE_DOS_HEADER *>(hModuleInMemory);
+    // __try 块现在只包含指针操作和函数调用，不直接创建任何需要析构的C++对象
+    const auto *pDosHeader = reinterpret_cast<const IMAGE_DOS_HEADER *>(hModuleInMemory);
     if (pDosHeader->e_magic != IMAGE_DOS_SIGNATURE)
     {
       result.status = IntegrityCheckResult::Status::DosHeaderInvalid;
+      return;
+    }
+
+    if (pDosHeader->e_lfanew <= 0 || static_cast<DWORD>(pDosHeader->e_lfanew) + sizeof(IMAGE_NT_HEADERS) > fileSize)
+    {
+      result.status = IntegrityCheckResult::Status::NtHeaderInvalid;
       return;
     }
 
@@ -2579,49 +2719,20 @@ void PerformLowLevelCheck(IntegrityCheckResult &result, HMODULE hModuleInMemory,
       return;
     }
 
-    if (memcmp(hModuleInMemory, pMappedFileBase,
-               pNtHeaders->OptionalHeader.SizeOfHeaders) != 0)
+    const uint32_t headersInMemoryHash = Crc32(reinterpret_cast<const uint8_t *>(hModuleInMemory), pNtHeaders->OptionalHeader.SizeOfHeaders);
+    const uint32_t headersOnDiskHash = Crc32(reinterpret_cast<const uint8_t *>(pMappedFileBase), pNtHeaders->OptionalHeader.SizeOfHeaders);
+
+    if (headersInMemoryHash != headersOnDiskHash)
     {
       result.status = IntegrityCheckResult::Status::PeHeaderTampered;
+      return;
     }
-    else
-    {
-      const IMAGE_SECTION_HEADER *pSectionHeader =
-          IMAGE_FIRST_SECTION(pNtHeaders);
-      for (int i = 0; i < pNtHeaders->FileHeader.NumberOfSections;
-           i++, pSectionHeader++)
-      {
-        if (pSectionHeader->Characteristics & IMAGE_SCN_CNT_CODE &&
-            pSectionHeader->Misc.VirtualSize > 0 &&
-            pSectionHeader->SizeOfRawData > 0)
-        {
-          // [修复] 增加边界检查，防止因PE头损坏导致读取越界
-          if (pSectionHeader->PointerToRawData > fileSize ||
-              pSectionHeader->SizeOfRawData > fileSize - pSectionHeader->PointerToRawData)
-          {
-              memcpy(result.sectionName, pSectionHeader->Name, 8);
-              result.sectionName[8] = '\0';
-              result.status = IntegrityCheckResult::Status::SectionTampered;
-              break; // PE头信息与文件大小不符，视为篡改
-          }
 
-          const void *sectionInMemory =
-              reinterpret_cast<const BYTE *>(hModuleInMemory) +
-              pSectionHeader->VirtualAddress;
-          const void *sectionOnDisk =
-              reinterpret_cast<const BYTE *>(pMappedFileBase) +
-              pSectionHeader->PointerToRawData;
-          size_t sizeToCompare = min(pSectionHeader->Misc.VirtualSize,
-                                     pSectionHeader->SizeOfRawData);
-          if (memcmp(sectionInMemory, sectionOnDisk, sizeToCompare) != 0)
-          {
-            memcpy(result.sectionName, pSectionHeader->Name, 8);
-            result.sectionName[8] = '\0';
-            result.status = IntegrityCheckResult::Status::SectionTampered;
-            break;
-          }
-        }
-      }
+    // [重构] 调用辅助函数来执行节区校验
+    if (!ValidateSections(result, pNtHeaders, hModuleInMemory, pMappedFileBase, fileSize))
+    {
+      // result的状态已在ValidateSections内部设置好，这里无需操作
+      return;
     }
   }
   __except (EXCEPTION_EXECUTE_HANDLER)
@@ -3680,7 +3791,7 @@ void CheatMonitor::Pimpl::Sensor_CheckVehHooks()
 }
 
 bool CheatMonitor::Pimpl::IsAddressInLegitimateModule(PVOID address,
-                                                     std::wstring &outModulePath)
+                                                      std::wstring &outModulePath)
 {
   outModulePath.clear();
   HMODULE hModule = NULL;
@@ -3884,6 +3995,7 @@ void CheatMonitor::Pimpl::VerifyModuleSignature(HMODULE hModule)
   if (GetModuleFileNameW(hModule, modPath, MAX_PATH) == 0)
   {
     std::cout << "[AntiCheat] VerifyModuleSignature Error: GetModuleFileNameW "
+
                  "failed for hModule 0x"
               << std::hex << hModule << std::endl;
     return;
@@ -3891,6 +4003,21 @@ void CheatMonitor::Pimpl::VerifyModuleSignature(HMODULE hModule)
 
   std::wstring modulePathStr = modPath;
   auto now = std::chrono::steady_clock::now();
+
+  // [新增] 白名单检测：如果模块是 game.exe 并且在白名单中，则直接跳过签名验证
+  std::wstring gameExeName = L"game.exe";
+  std::filesystem::path modulePath(modulePathStr);
+  if (modulePath.filename().wstring() == gameExeName)
+  {
+    std::lock_guard<std::mutex> lock(m_modulePathsMutex);
+    if (m_legitimateModulePaths.count(modulePathStr) > 0)
+    {
+      std::cout << "[AntiCheat] Info: game.exe is whitelisted, skipping "
+                   "signature verification."
+                << std::endl;
+      return;
+    }
+  }
 
   {
     std::lock_guard<std::mutex> lock(m_signatureCacheMutex);
@@ -3924,6 +4051,7 @@ void CheatMonitor::Pimpl::VerifyModuleSignature(HMODULE hModule)
   SignatureVerdict currentVerdict;
   if (Utils::VerifyFileSignature(modulePathStr))
   {
+
     currentVerdict = SignatureVerdict::SIGNED_AND_TRUSTED;
     std::cout << "[AntiCheat] Info: Module signature verified for "
               << Utils::WideToString(modulePathStr) << std::endl;
@@ -3931,6 +4059,7 @@ void CheatMonitor::Pimpl::VerifyModuleSignature(HMODULE hModule)
   else
   {
     currentVerdict = SignatureVerdict::UNSIGNED_OR_UNTRUSTED;
+
     AddEvidence(anti_cheat::RUNTIME_MODULE_NEW_UNKNOWN,
                 "加载了未签名或签名无效的模块: " +
                     Utils::WideToString(modulePathStr));
@@ -4225,57 +4354,88 @@ void CheatMonitor::Pimpl::Sensor_CheckIatHooks()
   }
 }
 
-uintptr_t CheatMonitor::Pimpl::FindVehListOffset() {
-    uintptr_t offset = 0;
-    PVOID pDecoyHandler = AddVectoredExceptionHandler(1, (PVECTORED_EXCEPTION_HANDLER)DecoyVehHandler);
-    if (!pDecoyHandler) {
-        AddEvidence(anti_cheat::RUNTIME_ERROR, "VEH偏移量查找失败: 无法注册诱饵VEH处理器。");
-        return 0;
-    }
+uintptr_t CheatMonitor::Pimpl::FindVehListOffset()
+{
+  uintptr_t offset = 0;
+  PVOID pDecoyHandler = AddVectoredExceptionHandler(1, (PVECTORED_EXCEPTION_HANDLER)DecoyVehHandler);
+  if (!pDecoyHandler)
+  {
+    AddEvidence(anti_cheat::RUNTIME_ERROR, "VEH偏移量查找失败: 无法注册诱饵VEH处理器。");
+    std::cout << "[AntiCheat] FindVehListOffset Error: AddVectoredExceptionHandler failed with error code: " << GetLastError() << std::endl;
+    return 0;
+  }
 
 #ifdef _WIN64
-    const auto pPeb = reinterpret_cast<const BYTE*>(__readgsqword(0x60));
+  const auto pPeb = reinterpret_cast<const BYTE *>(__readgsqword(0x60));
 #else
-    const auto pPeb = reinterpret_cast<const BYTE*>(__readfsdword(0x30));
+  const auto pPeb = reinterpret_cast<const BYTE *>(__readfsdword(0x30));
 #endif
 
-    if (pPeb) {
-        // 遍历 PEB（或其附近）的指针大小的块，寻找目标
-        for (uintptr_t i = 0; i < 0x1000; i += sizeof(PVOID)) {
-            // 检查候选指针是否有效
-            const auto pVehListPtr = reinterpret_cast<const VECTORED_HANDLER_LIST* const*>(pPeb + i);
-            if (!IsValidPointer(pVehListPtr, sizeof(VECTORED_HANDLER_LIST*))) {
-                continue;
+  if (pPeb)
+  {
+    // 遍历 PEB（或其附近）的指针大小的块，寻找目标
+    constexpr uintptr_t searchRange = 0x2000; // Increase search range
+    for (uintptr_t i = 0; i < searchRange; i += sizeof(PVOID))
+    {
+      // 检查候选指针是否有效
+      if (i > searchRange - sizeof(VECTORED_HANDLER_LIST *))
+      {
+        std::cout << "[AntiCheat] FindVehListOffset Warning: potential out-of-bounds read" << std::endl;
+        break;
+      }
+
+      const auto pVehListPtr = reinterpret_cast<const VECTORED_HANDLER_LIST *const *>(pPeb + i);
+      if (!IsValidPointer(pVehListPtr, sizeof(VECTORED_HANDLER_LIST *)))
+      {
+        continue;
+      }
+
+      const auto pVehList = *pVehListPtr;
+      // 验证 pVehList 和 List.Flink 是否有效
+
+      if (IsValidPointer(pVehList, sizeof(VECTORED_HANDLER_LIST)) &&
+          IsValidPointer(pVehList->List.Flink, sizeof(LIST_ENTRY)))
+      {
+        const auto *pEntry = CONTAINING_RECORD(
+            pVehList->List.Flink, VECTORED_HANDLER_ENTRY, List);
+
+        // 检查 pEntry 是否有效
+        constexpr size_t handlerScanRange = 8;
+        if (IsValidPointer(pEntry, sizeof(LIST_ENTRY) + handlerScanRange * sizeof(PVOID)))
+        {
+          // 扫描 LIST_ENTRY 之后的几个指针，查找 DecoyVehHandler
+          for (int j = 0; j < handlerScanRange; ++j)
+          {
+            if ((const BYTE *)pEntry + sizeof(LIST_ENTRY) + j * sizeof(PVOID) > (const BYTE *)pPeb + searchRange)
+            {
+              // We are reading past the search range, prevent crash by skipping
+              std::cout << "[AntiCheat] FindVehListOffset Warning: potential out-of-bounds read in handler scan" << std::endl;
+              break;
             }
 
-            const auto pVehList = *pVehListPtr;
-            // 验证 pVehList 和 List.Flink 是否有效
-            if (IsValidPointer(pVehList, sizeof(VECTORED_HANDLER_LIST)) &&
-                IsValidPointer(pVehList->List.Flink, sizeof(LIST_ENTRY))) {
-                const auto* pEntry = CONTAINING_RECORD(
-                    pVehList->List.Flink, VECTORED_HANDLER_ENTRY, List);
-
-                // 检查 pEntry 是否有效
-                if (IsValidPointer(pEntry, sizeof(LIST_ENTRY) + 4 * sizeof(PVOID))) {
-                    // 扫描 LIST_ENTRY 之后的几个指针，查找 DecoyVehHandler
-                    for (int j = 0; j < 4; ++j) {
-                        const PVOID pPossibleHandler = *(reinterpret_cast<const PVOID*>(
-                            (const BYTE*)pEntry + sizeof(LIST_ENTRY)) + j);
-                        if (pPossibleHandler == DecoyVehHandler) {
-                            offset = i;
-                            break; // 找到了！
-                        }
-                    }
-                }
-
-                if (offset != 0) {
-                    break; // 从外层循环中断
-                }
+            const PVOID *handlerPtr = reinterpret_cast<const PVOID *>((const BYTE *)pEntry + sizeof(LIST_ENTRY)) + j;
+            if (!IsValidPointer(handlerPtr, sizeof(PVOID)))
+            {
+              continue;
             }
+            const PVOID pPossibleHandler = *handlerPtr;
+            if (pPossibleHandler == DecoyVehHandler)
+            {
+              offset = i;
+              break; // 找到了！
+            }
+          }
         }
-    }
 
-    // 移除诱饵处理函数
-    RemoveVectoredExceptionHandler(pDecoyHandler);
-    return offset;
+        if (offset != 0)
+        {
+          break; // 从外层循环中断
+        }
+      }
+    }
+  }
+
+  // 移除诱饵处理函数
+  RemoveVectoredExceptionHandler(pDecoyHandler);
+  return offset;
 }
