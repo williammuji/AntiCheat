@@ -2553,7 +2553,7 @@ struct IntegrityCheckResult
 };
 
 void PerformLowLevelCheck(IntegrityCheckResult &result, HMODULE hModuleInMemory,
-                          LPVOID pMappedFileBase,
+                          LPVOID pMappedFileBase, DWORD fileSize,
                           const wchar_t *modPathOnDisk)
 {
   WideCharToMultiByte(CP_UTF8, 0, modPathOnDisk, -1, result.modPathStr,
@@ -2595,6 +2595,16 @@ void PerformLowLevelCheck(IntegrityCheckResult &result, HMODULE hModuleInMemory,
             pSectionHeader->Misc.VirtualSize > 0 &&
             pSectionHeader->SizeOfRawData > 0)
         {
+          // [修复] 增加边界检查，防止因PE头损坏导致读取越界
+          if (pSectionHeader->PointerToRawData > fileSize ||
+              pSectionHeader->SizeOfRawData > fileSize - pSectionHeader->PointerToRawData)
+          {
+              memcpy(result.sectionName, pSectionHeader->Name, 8);
+              result.sectionName[8] = '\0';
+              result.status = IntegrityCheckResult::Status::SectionTampered;
+              break; // PE头信息与文件大小不符，视为篡改
+          }
+
           const void *sectionInMemory =
               reinterpret_cast<const BYTE *>(hModuleInMemory) +
               pSectionHeader->VirtualAddress;
@@ -2622,10 +2632,10 @@ void PerformLowLevelCheck(IntegrityCheckResult &result, HMODULE hModuleInMemory,
 
 void CheckModuleIntegrity(CheatMonitor::Pimpl *pimpl, HMODULE hModuleInMemory,
                           LPVOID pMappedFileBase,
-                          const wchar_t *modPathOnDisk)
+                          DWORD fileSize, const wchar_t *modPathOnDisk)
 {
   IntegrityCheckResult result;
-  PerformLowLevelCheck(result, hModuleInMemory, pMappedFileBase, modPathOnDisk);
+  PerformLowLevelCheck(result, hModuleInMemory, pMappedFileBase, fileSize, modPathOnDisk);
 
   if (result.status != IntegrityCheckResult::Status::Success)
   {
@@ -2666,9 +2676,9 @@ void CheckModuleIntegrity(CheatMonitor::Pimpl *pimpl, HMODULE hModuleInMemory,
 
 void PerformIntegrityCheck(CheatMonitor::Pimpl *pimpl, HMODULE hModuleInMemory,
                            LPVOID pMappedFileBase,
-                           const std::wstring &modPathOnDisk)
+                           DWORD fileSize, const std::wstring &modPathOnDisk)
 {
-  CheckModuleIntegrity(pimpl, hModuleInMemory, pMappedFileBase,
+  CheckModuleIntegrity(pimpl, hModuleInMemory, pMappedFileBase, fileSize,
                        modPathOnDisk.c_str());
 }
 
@@ -2708,6 +2718,14 @@ void CheatMonitor::Pimpl::VerifyModuleIntegrity(const wchar_t *moduleName)
     return;
   }
 
+  DWORD fileSize = GetFileSize(hFile.get(), NULL);
+  if (fileSize == INVALID_FILE_SIZE)
+  {
+    AddEvidence(anti_cheat::RUNTIME_ERROR,
+                "模块完整性校验失败: 无法获取文件大小: " + Utils::WideToString(modPathOnDisk));
+    return;
+  }
+
   UniqueMappingHandle hMapping(CreateFileMappingW(hFile.get(), NULL,
                                                   PAGE_READONLY | SEC_IMAGE, 0,
                                                   0, NULL),
@@ -2730,7 +2748,7 @@ void CheatMonitor::Pimpl::VerifyModuleIntegrity(const wchar_t *moduleName)
     return;
   }
 
-  PerformIntegrityCheck(this, hModuleInMemory, pMappedFileBase, modPathOnDisk);
+  PerformIntegrityCheck(this, hModuleInMemory, pMappedFileBase, fileSize, modPathOnDisk);
 
   UnmapViewOfFile(pMappedFileBase);
 }
