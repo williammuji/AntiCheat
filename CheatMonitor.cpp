@@ -710,15 +710,6 @@ struct CheatMonitor::Pimpl
 
   // Helper to check if an address belongs to a whitelisted module
   bool IsAddressInLegitimateModule(PVOID address, std::wstring &outModulePath);
-  uintptr_t FindVehListAddress();
-  uintptr_t FindVehListAddress();
-  uintptr_t FindVehListAddress();
-  uintptr_t FindVehListAddress();
-  uintptr_t FindVehListAddress();
-  uintptr_t FindVehListAddress();
-  uintptr_t FindVehListAddress();
-  uintptr_t FindVehListAddress();
-  uintptr_t FindVehListAddress();
   // 使用“诱饵处理函数”技术动态查找VEH链表的地址
   uintptr_t FindVehListAddress();
 
