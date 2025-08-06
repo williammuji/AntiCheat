@@ -2694,8 +2694,8 @@ bool ValidateSections(IntegrityCheckResult &result, const IMAGE_NT_HEADERS *pNtH
 }
 
 void PerformLowLevelCheck(IntegrityCheckResult &result, HMODULE hModuleInMemory,
-                             LPVOID pMappedFileBase, DWORD fileSize,
-                             const wchar_t *modPathOnDisk)
+                          LPVOID pMappedFileBase, DWORD fileSize,
+                          const wchar_t *modPathOnDisk)
 {
   WideCharToMultiByte(CP_UTF8, 0, modPathOnDisk, -1, result.modPathStr,
                       sizeof(result.modPathStr), nullptr, nullptr);
@@ -4418,21 +4418,17 @@ uintptr_t CheatMonitor::Pimpl::FindVehListOffset()
     return 0;
   }
 
-  // 在PEB中搜索指向 LdrpVectorHandlerList 的指针
+  // 在 PEB 中搜索指向 LdrpVectorHandlerList 的指针
   for (uintptr_t offset = 0; offset < 0x1000; offset += sizeof(PVOID))
   {
-    __try
+    const uintptr_t *pPebEntryPtr = reinterpret_cast<const uintptr_t *>(pPeb + offset);
+    if (IsValidPointer(pPebEntryPtr, sizeof(uintptr_t)))
     {
-      const uintptr_t pPebEntry =
-          *reinterpret_cast<const uintptr_t *>(pPeb + offset);
+      const uintptr_t pPebEntry = *pPebEntryPtr;
       if (pPebEntry == vehListPtrAddress)
       {
         return offset; // 找到了！
       }
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER)
-    {
-      continue;
     }
   }
 
