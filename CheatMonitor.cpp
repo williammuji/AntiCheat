@@ -668,7 +668,7 @@ struct CheatMonitor::Pimpl
 
   // IAT Hook检测基线：为每个导入的DLL存储一个独立的哈希值
   std::unordered_map<std::string, std::vector<uint8_t>> m_iatBaselineHashes;
-  uintptr_t m_vehListOffset = 0; // 存储VEH链表在PEB中的偏移量
+  uintptr_t m_vehListAddress = 0; // 存储VEH链表(LdrpVectorHandlerList)的绝对地址
 
   // 传感器集合
   std::vector<std::unique_ptr<ISensor>> m_lightweight_sensors;
@@ -697,8 +697,8 @@ struct CheatMonitor::Pimpl
   void Sensor_CollectHardwareFingerprint(); //  收集硬件指纹
   void Sensor_CheckSystemIntegrityState();  //  系统完整性状态检测
   void Sensor_CheckAdvancedAntiDebug();     //  高级反调试检测
-  void Sensor_CheckIatHooks();              //  IAT Hook 检测
-  void Sensor_CheckVehHooks();
+  void Sensor_CheckIatHooks();
+  
   void Sensor_CheckInputAutomation(); //  输入自动化检测
   void Sensor_EstablishTrustedProcesses();
 
@@ -710,6 +710,17 @@ struct CheatMonitor::Pimpl
 
   // Helper to check if an address belongs to a whitelisted module
   bool IsAddressInLegitimateModule(PVOID address, std::wstring &outModulePath);
+  uintptr_t FindVehListAddress();
+  uintptr_t FindVehListAddress();
+  uintptr_t FindVehListAddress();
+  uintptr_t FindVehListAddress();
+  uintptr_t FindVehListAddress();
+  uintptr_t FindVehListAddress();
+  uintptr_t FindVehListAddress();
+  uintptr_t FindVehListAddress();
+  uintptr_t FindVehListAddress();
+  // 使用“诱饵处理函数”技术动态查找VEH链表的地址
+  uintptr_t FindVehListAddress();
 
   // VM detection helpers
   void DetectVmByCpuid();
@@ -778,7 +789,7 @@ public:
   {
     return m_pimpl->m_moduleBaselineHashes;
   }
-  uintptr_t GetVehListOffset() const { return m_pimpl->m_vehListOffset; }
+  uintptr_t GetVehListAddress() const { return m_pimpl->m_vehListAddress; }
   const std::unordered_set<std::wstring> &GetWhitelistedVEHModules() const
   {
     return m_pimpl->m_whitelistedVEHModules;
@@ -1063,19 +1074,21 @@ namespace Sensors
     const char *GetName() const override { return "VehHookSensor"; }
     void Execute(ScanContext &context) override
     {
-#ifdef _WIN64
-      const auto pPeb = reinterpret_cast<const BYTE *>(__readgsqword(0x60));
-#else
-      const auto pPeb = reinterpret_cast<const BYTE *>(__readfsdword(0x30));
-#endif
-      if (!pPeb || context.GetVehListAddress() == 0)
+      const uintptr_t vehListAddress = context.GetVehListAddress();
+      if (vehListAddress == 0)
+      {
+        // 地址未找到，在初始化时已上报，此处静默返回。
         return;
+      }
 
+      // 直接使用获取到的绝对地址
       const auto *pVehList =
-          *reinterpret_cast<const VECTORED_HANDLER_LIST *const *>(
-              pPeb + context.GetVehListAddress());
-      if (!pVehList)
+          reinterpret_cast<const VECTORED_HANDLER_LIST *>(vehListAddress);
+      if (!IsValidPointer(pVehList, sizeof(VECTORED_HANDLER_LIST)))
+      {
+        context.AddEvidence(anti_cheat::RUNTIME_ERROR, "VEH Hook检测失败: 获取到的链表地址无效。");
         return;
+      }
 
       const LIST_ENTRY *pListHead = &pVehList->List;
       const LIST_ENTRY *pCurrentEntry = pListHead->Flink;
@@ -3802,117 +3815,6 @@ LRESULT CALLBACK CheatMonitor::Pimpl::LowLevelMouseProc(int nCode,
   }
   // 务必调用 CallNextHookEx 将消息传递给钩子链中的下一个钩子
   return CallNextHookEx(s_pimpl_for_hooks->m_hMouseHook, nCode, wParam, lParam);
-}
-
-void CheatMonitor::Pimpl::Sensor_CheckVehHooks()
-{
-#ifdef _WIN64
-  const auto pPeb = reinterpret_cast<const BYTE *>(__readgsqword(0x60));
-#else
-  const auto pPeb = reinterpret_cast<const BYTE *>(__readfsdword(0x30));
-#endif
-
-  if (!pPeb)
-  {
-    AddEvidence(anti_cheat::RUNTIME_ERROR,
-                "VEH Hook检测失败: 无法获取PEB地址。");
-    return;
-  }
-  if (m_vehListOffset == 0)
-  {
-    // 在InitializeSystem中已记录错误，此处不再重复记录以避免日志泛滥
-    return;
-  }
-
-  const auto *pVehList =
-      *reinterpret_cast<const VECTORED_HANDLER_LIST *const *>(pPeb +
-                                                              m_vehListOffset);
-  if (!pVehList)
-  {
-    // VEH链表指针为空是正常的，例如未注册任何处理程序时
-    return;
-  }
-
-  const LIST_ENTRY *pListHead = &pVehList->List;
-  const LIST_ENTRY *pCurrentEntry = pListHead->Flink;
-  int handlerIndex = 0;
-  constexpr int maxHandlersToScan =
-      32; // 设置上限以防止链表损坏导致的无限循环攻击
-
-  // 辅助函数处理每个处理程序，避免在关键部分使用 C++ 对象展开
-  auto ProcessHandler = [&](const VECTORED_HANDLER_ENTRY *pHandlerEntry,
-                            int index) -> bool
-  {
-    const PVOID handlerAddress = pHandlerEntry->Handler;
-    std::wstring modulePath;
-
-    // IsAddressInLegitimateModule 会填充 modulePath 并检查其是否在主白名单中
-    if (IsAddressInLegitimateModule(handlerAddress, modulePath))
-    {
-      // 处理程序位于白名单模块中，无需操作
-      return true;
-    }
-
-    bool hasModule = !modulePath.empty();
-    if (hasModule)
-    {
-      // 将模块路径转换为小写以进行比较
-      std::wstring lowerModulePath = modulePath;
-      std::transform(lowerModulePath.begin(), lowerModulePath.end(),
-                     lowerModulePath.begin(), ::towlower);
-      if (m_whitelistedVEHModules.count(lowerModulePath) == 0)
-      {
-        std::wostringstream woss;
-        woss << L"检测到可疑的VEH Hook (Handler #" << index << L").来源: "
-             << modulePath << L", 地址: 0x" << std::hex << handlerAddress;
-        AddEvidence(anti_cheat::INTEGRITY_API_HOOK,
-                    Utils::WideToString(woss.str()));
-      }
-    }
-    else
-    {
-      // 处理程序不在任何模块中，可能是 Shellcode
-      std::wostringstream woss;
-      woss << L"检测到来自Shellcode的VEH Hook (Handler #" << index
-           << L").地址: 0x" << std::hex << handlerAddress;
-      AddEvidence(anti_cheat::INTEGRITY_API_HOOK,
-                  Utils::WideToString(woss.str()));
-    }
-    return true;
-  };
-
-  // 遍历 VEH 链表，使用指针检查避免异常
-  while (pCurrentEntry && pCurrentEntry != pListHead &&
-         handlerIndex < maxHandlersToScan)
-  {
-    // 在解引用前验证指针有效性
-    if (!IsValidPointer(pCurrentEntry,
-                        sizeof(*pCurrentEntry))) // 替换为实际的指针验证
-    {
-      AddEvidence(anti_cheat::INTEGRITY_API_HOOK,
-                  "遍历VEH链表时检测到无效指针，链表可能已损坏。");
-      break;
-    }
-
-    const auto *pHandlerEntry =
-        CONTAINING_RECORD(pCurrentEntry, VECTORED_HANDLER_ENTRY, List);
-
-    if (!ProcessHandler(pHandlerEntry, handlerIndex))
-    {
-      AddEvidence(anti_cheat::INTEGRITY_API_HOOK,
-                  "处理VEH处理程序时发生错误，链表可能已损坏。");
-      break;
-    }
-
-    pCurrentEntry = pCurrentEntry->Flink;
-    handlerIndex++;
-  }
-
-  if (handlerIndex >= maxHandlersToScan)
-  {
-    AddEvidence(anti_cheat::INTEGRITY_API_HOOK,
-                "VEH处理程序数量超过上限，链表可能已损坏。");
-  }
 }
 
 bool CheatMonitor::Pimpl::IsAddressInLegitimateModule(PVOID address,
