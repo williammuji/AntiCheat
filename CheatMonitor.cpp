@@ -4352,12 +4352,58 @@ void CheatMonitor::Pimpl::Sensor_CheckIatHooks()
 
 uintptr_t CheatMonitor::Pimpl::FindVehListOffset()
 {
-  uintptr_t offset = 0;
-  PVOID pDecoyHandler = AddVectoredExceptionHandler(1, (PVECTORED_EXCEPTION_HANDLER)DecoyVehHandler);
-  if (!pDecoyHandler)
+  // 通过扫描RtlAddVectoredExceptionHandler函数代码来动态查找VEH链表偏移量
+  // 该方法比扫描PEB更稳定，更能抵抗Windows版本更新带来的变化
+  HMODULE hNtdll = GetModuleHandleW(L"ntdll.dll");
+  if (!hNtdll)
   {
-    AddEvidence(anti_cheat::RUNTIME_ERROR, "VEH偏移量查找失败: 无法注册诱饵VEH处理器。");
-    std::cout << "[AntiCheat] FindVehListOffset Error: AddVectoredExceptionHandler failed with error code: " << GetLastError() << std::endl;
+    AddEvidence(anti_cheat::RUNTIME_ERROR,
+                "FindVehListOffset失败：无法获取ntdll.dll句柄。");
+    return 0;
+  }
+
+  // 获取RtlAddVectoredExceptionHandler的地址
+  auto pRtlAddVeh = reinterpret_cast<uintptr_t>(
+      GetProcAddress(hNtdll, "RtlAddVectoredExceptionHandler"));
+  if (!pRtlAddVeh)
+  {
+    AddEvidence(
+        anti_cheat::RUNTIME_ERROR,
+        "FindVehListOffset失败：无法获取RtlAddVectoredExceptionHandler地址。");
+    return 0;
+  }
+
+  uintptr_t vehListPtrAddress = 0;
+
+#ifdef _WIN64
+  // x64: 扫描 `lea rdx, [rip + offset]` (48 8D 15) 或 `lea rcx, ...` (48 8D 0D)
+  for (int i = 0; i < 64; ++i)
+  {
+    const BYTE *p = reinterpret_cast<const BYTE *>(pRtlAddVeh + i);
+    if ((p[0] == 0x48 && p[1] == 0x8D && (p[2] == 0x15 || p[2] == 0x0D)))
+    {
+      const int32_t relativeOffset = *reinterpret_cast<const int32_t *>(p + 3);
+      vehListPtrAddress = (uintptr_t)(p + 7 + relativeOffset);
+      break;
+    }
+  }
+#else
+  // x86: 扫描 `mov edi, offset ...` (BF XX XX XX XX) 或 `mov esi, ...` (BE ...)
+  for (int i = 0; i < 32; ++i)
+  {
+    const BYTE *p = reinterpret_cast<const BYTE *>(pRtlAddVeh + i);
+    if (p[0] == 0xBF || p[0] == 0xBE)
+    {
+      vehListPtrAddress = *reinterpret_cast<const uintptr_t *>(p + 1);
+      break;
+    }
+  }
+#endif
+
+  if (vehListPtrAddress == 0)
+  {
+    AddEvidence(anti_cheat::RUNTIME_ERROR,
+                "FindVehListOffset失败：无法在函数代码中定位VEH链表地址。");
     return 0;
   }
 
@@ -4366,58 +4412,31 @@ uintptr_t CheatMonitor::Pimpl::FindVehListOffset()
 #else
   const auto pPeb = reinterpret_cast<const BYTE *>(__readfsdword(0x30));
 #endif
-
-  if (pPeb)
+  if (!pPeb)
   {
-    // 遍历 PEB（或其附近）的指针大小的块，寻找目标
-    constexpr uintptr_t searchRange = 0x2000; // Increase search range
-    for (uintptr_t i = 0; i < searchRange; i += sizeof(PVOID))
+    AddEvidence(anti_cheat::RUNTIME_ERROR, "FindVehListOffset失败：无法获取PEB。");
+    return 0;
+  }
+
+  // 在PEB中搜索指向 LdrpVectorHandlerList 的指针
+  for (uintptr_t offset = 0; offset < 0x1000; offset += sizeof(PVOID))
+  {
+    __try
     {
-      const auto pVehListPtr = reinterpret_cast<const VECTORED_HANDLER_LIST *const *>(pPeb + i);
-      if (!IsValidPointer(pVehListPtr, sizeof(VECTORED_HANDLER_LIST *)))
+      const uintptr_t pPebEntry =
+          *reinterpret_cast<const uintptr_t *>(pPeb + offset);
+      if (pPebEntry == vehListPtrAddress)
       {
-        continue;
+        return offset; // 找到了！
       }
-
-      const auto pVehList = *pVehListPtr;
-      // 验证 pVehList 和 List.Flink 是否有效
-
-      if (IsValidPointer(pVehList, sizeof(VECTORED_HANDLER_LIST)) &&
-          IsValidPointer(pVehList->List.Flink, sizeof(LIST_ENTRY)))
-      {
-        const auto *pEntry = CONTAINING_RECORD(
-            pVehList->List.Flink, VECTORED_HANDLER_ENTRY, List);
-
-        // 检查 pEntry 是否有效
-        constexpr size_t handlerScanRange = 8;
-        if (IsValidPointer(pEntry, sizeof(LIST_ENTRY) + handlerScanRange * sizeof(PVOID)))
-        {
-          // 扫描 LIST_ENTRY 之后的几个指针，查找 DecoyVehHandler
-          for (int j = 0; j < handlerScanRange; ++j)
-          {
-            const PVOID *handlerPtr = reinterpret_cast<const PVOID *>((const BYTE *)pEntry + sizeof(LIST_ENTRY)) + j;
-            if (!IsValidPointer(handlerPtr, sizeof(PVOID)))
-            {
-              continue;
-            }
-            const PVOID pPossibleHandler = *handlerPtr;
-            if (pPossibleHandler == DecoyVehHandler)
-            {
-              offset = i;
-              break; // 找到了！
-            }
-          }
-        }
-
-        if (offset != 0)
-        {
-          break; // 从外层循环中断
-        }
-      }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+      continue;
     }
   }
 
-  // 移除诱饵处理函数
-  RemoveVectoredExceptionHandler(pDecoyHandler);
-  return offset;
+  AddEvidence(anti_cheat::RUNTIME_ERROR,
+              "系统初始化失败：无法在PEB中找到VEH链表偏移量。");
+  return 0;
 }
