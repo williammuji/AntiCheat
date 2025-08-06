@@ -340,8 +340,7 @@ namespace
       return false;
 
     // 检查内存是否已提交且可读
-    if (mbi.State != MEM_COMMIT ||
-        !(mbi.Protect & (PAGE_READONLY | PAGE_READWRITE)))
+    if (mbi.State != MEM_COMMIT || (mbi.Protect & PAGE_NOACCESS) || (mbi.Protect & PAGE_GUARD))
       return false;
 
     // 确保请求的内存范围在同一内存页面内
@@ -1899,11 +1898,11 @@ void CheatMonitor::Pimpl::InitializeSessionBaseline()
   VerifyModuleSignature(GetModuleHandleW(L"user32.dll"));
   VerifyModuleSignature(GetModuleHandle(NULL)); // 验证游戏主程序
 
-  // 第2层：将内存中的模块与磁盘上的可信版本进行比较，以检测启动时的篡改。
-  // VerifyModuleIntegrity 内部已添加日志。
-  VerifyModuleIntegrity(L"ntdll.dll");
-  VerifyModuleIntegrity(L"kernel32.dll");
-  VerifyModuleIntegrity(L"user32.dll");
+  // 对游戏主程序执行启动时完整性校验。
+  // 我们跳过对 ntdll.dll 等系统模块的此项检查，因为它们可能被其他合法软件（如杀毒软件）
+  // 在我们的反作弊启动前就进行了挂钩，这会引发误报。
+  // 对于运行时篡改，我们依赖于后续建立的内存哈希基线和定期的 MemoryScanSensor 扫描，
+  // 这种方法更为可靠。
   VerifyModuleIntegrity(NULL); // 验证游戏主程序
   HANDLE hThreadSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
   if (hThreadSnapshot != INVALID_HANDLE_VALUE)
@@ -3991,34 +3990,21 @@ void CheatMonitor::Pimpl::Sensor_CheckProcessHandles()
 
 void CheatMonitor::Pimpl::VerifyModuleSignature(HMODULE hModule)
 {
+  // 如果正在检查的模块是游戏主程序本身，则直接跳过，因为我们总是信任自己。
+  if (hModule == GetModuleHandle(NULL))
+  {
+    return;
+  }
+
   wchar_t modPath[MAX_PATH];
   if (GetModuleFileNameW(hModule, modPath, MAX_PATH) == 0)
   {
-    std::cout << "[AntiCheat] VerifyModuleSignature Error: GetModuleFileNameW "
-
-                 "failed for hModule 0x"
-              << std::hex << hModule << std::endl;
+    std::cout << "[AntiCheat] VerifyModuleSignature Error: GetModuleFileNameW failed for hModule 0x" << std::hex << hModule << std::endl;
     return;
   }
 
   std::wstring modulePathStr = modPath;
   auto now = std::chrono::steady_clock::now();
-
-  // [新增] 白名单检测：如果模块是 game.exe 并且在白名单中，则直接跳过签名验证
-  std::wstring gameExeName = L"game.exe";
-  std::filesystem::path modulePath(modulePathStr);
-  if (modulePath.filename().wstring() == gameExeName)
-  {
-    std::lock_guard<std::mutex> lock(m_modulePathsMutex);
-    if (m_legitimateModulePaths.count(modulePathStr) > 0)
-    {
-      std::cout << "[AntiCheat] Info: game.exe is whitelisted, skipping "
-                   "signature verification."
-                << std::endl;
-      return;
-    }
-  }
-
   {
     std::lock_guard<std::mutex> lock(m_signatureCacheMutex);
     // 1. 检查缓存
@@ -4377,13 +4363,6 @@ uintptr_t CheatMonitor::Pimpl::FindVehListOffset()
     constexpr uintptr_t searchRange = 0x2000; // Increase search range
     for (uintptr_t i = 0; i < searchRange; i += sizeof(PVOID))
     {
-      // 检查候选指针是否有效
-      if (i > searchRange - sizeof(VECTORED_HANDLER_LIST *))
-      {
-        std::cout << "[AntiCheat] FindVehListOffset Warning: potential out-of-bounds read" << std::endl;
-        break;
-      }
-
       const auto pVehListPtr = reinterpret_cast<const VECTORED_HANDLER_LIST *const *>(pPeb + i);
       if (!IsValidPointer(pVehListPtr, sizeof(VECTORED_HANDLER_LIST *)))
       {
@@ -4406,13 +4385,6 @@ uintptr_t CheatMonitor::Pimpl::FindVehListOffset()
           // 扫描 LIST_ENTRY 之后的几个指针，查找 DecoyVehHandler
           for (int j = 0; j < handlerScanRange; ++j)
           {
-            if ((const BYTE *)pEntry + sizeof(LIST_ENTRY) + j * sizeof(PVOID) > (const BYTE *)pPeb + searchRange)
-            {
-              // We are reading past the search range, prevent crash by skipping
-              std::cout << "[AntiCheat] FindVehListOffset Warning: potential out-of-bounds read in handler scan" << std::endl;
-              break;
-            }
-
             const PVOID *handlerPtr = reinterpret_cast<const PVOID *>((const BYTE *)pEntry + sizeof(LIST_ENTRY)) + j;
             if (!IsValidPointer(handlerPtr, sizeof(PVOID)))
             {
