@@ -710,8 +710,6 @@ struct CheatMonitor::Pimpl
 
   // Helper to check if an address belongs to a whitelisted module
   bool IsAddressInLegitimateModule(PVOID address, std::wstring &outModulePath);
-  // 动态查找VEH链表在PEB中的偏移量
-  uintptr_t FindVehListOffset();
 
   // VM detection helpers
   void DetectVmByCpuid();
@@ -1070,12 +1068,12 @@ namespace Sensors
 #else
       const auto pPeb = reinterpret_cast<const BYTE *>(__readfsdword(0x30));
 #endif
-      if (!pPeb || context.GetVehListOffset() == 0)
+      if (!pPeb || context.GetVehListAddress() == 0)
         return;
 
       const auto *pVehList =
           *reinterpret_cast<const VECTORED_HANDLER_LIST *const *>(
-              pPeb + context.GetVehListOffset());
+              pPeb + context.GetVehListAddress());
       if (!pVehList)
         return;
 
@@ -2114,17 +2112,135 @@ void CheatMonitor::Pimpl::InitializeSystem()
   // 1. 加固进程，防止被轻易篡改。
   HardenProcessAndThreads();
 
-  // 2. 动态查找VEH链表偏移量，为后续的VEH Hook检测做准备。
-  m_vehListOffset = FindVehListOffset();
-  if (m_vehListOffset == 0)
+  // 2. 动态查找VEH链表的绝对地址，为后续的VEH Hook检测做准备。
+  m_vehListAddress = FindVehListAddress();
+  if (m_vehListAddress == 0)
   {
     // 这是一个关键功能的失败，必须记录。
+    // FindVehListAddress 内部已经记录了更详细的失败原因。
     AddEvidence(anti_cheat::RUNTIME_ERROR,
-                "系统初始化失败: 无法动态查找VEH链表偏移量。");
+                "系统初始化失败: 无法定位VEH链表地址。");
   }
 
   // 3. 安装API钩子以监控可疑的内存分配行为。
   InstallVirtualAllocHook();
+}
+
+// 使用“诱饵处理函数”技术动态查找VEH链表的地址。
+// 此方法稳定、可靠，且不受Windows版本更新中指令变化的影响。
+uintptr_t CheatMonitor::Pimpl::FindVehListAddress()
+{
+  // 1. 注册一个我们自己控制的“诱饵”异常处理程序。
+  //    AddVectoredExceptionHandler会将其放在链表的头部。
+  PVOID pDecoyHandler = AddVectoredExceptionHandler(1, DecoyVehHandler);
+  if (!pDecoyHandler)
+  {
+    AddEvidence(anti_cheat::RUNTIME_ERROR,
+                "FindVehListAddress失败: AddVectoredExceptionHandler返回空句柄。");
+    return 0;
+  }
+
+  uintptr_t vehListAddress = 0;
+  HMODULE hNtdll = GetModuleHandleW(L"ntdll.dll");
+
+  // 立即执行清理，无论后续操作是否成功。
+  // 使用一个简单的 RAII (Resource Acquisition Is Initialization)
+  // 对象来确保函数退出时诱饵一定被移除。
+  struct VehRemover
+  {
+    PVOID handler;
+    ~VehRemover()
+    {
+      if (handler)
+        RemoveVectoredExceptionHandler(handler);
+    }
+  } remover = {pDecoyHandler};
+
+  if (!hNtdll)
+  {
+    AddEvidence(anti_cheat::RUNTIME_ERROR,
+                "FindVehListAddress失败: 无法获取ntdll.dll句柄。");
+    return 0;
+  }
+
+  // 2. 获取ntdll.dll的.data节区信息，VEH链表头(LdrpVectorHandlerList)位于此节区。
+  const IMAGE_DOS_HEADER *pDosHeader =
+      reinterpret_cast<const IMAGE_DOS_HEADER *>(hNtdll);
+  const IMAGE_NT_HEADERS *pNtHeaders = reinterpret_cast<const IMAGE_NT_HEADERS *>(
+      reinterpret_cast<const BYTE *>(hNtdll) + pDosHeader->e_lfanew);
+  const IMAGE_SECTION_HEADER *pSectionHeader = IMAGE_FIRST_SECTION(pNtHeaders);
+
+  PVOID dataSectionBase = nullptr;
+  DWORD dataSectionSize = 0;
+
+  for (int i = 0; i < pNtHeaders->FileHeader.NumberOfSections;
+       i++, pSectionHeader++)
+  {
+    // 寻找.data节
+    if (strcmp(reinterpret_cast<const char *>(pSectionHeader->Name),
+               ".data") == 0)
+    {
+      dataSectionBase = reinterpret_cast<PVOID>(
+          reinterpret_cast<uintptr_t>(hNtdll) + pSectionHeader->VirtualAddress);
+      dataSectionSize = pSectionHeader->Misc.VirtualSize;
+      break;
+    }
+  }
+
+  if (!dataSectionBase || dataSectionSize == 0)
+  {
+    AddEvidence(anti_cheat::RUNTIME_ERROR,
+                "FindVehListAddress失败: 无法在ntdll.dll中定位.data节。");
+    return 0;
+  }
+
+  // 3. 在.data节区中搜索指向我们诱饵处理函数的指针。
+  //    VEH链表的第一个节点会包含这个指针。
+  const uintptr_t decoyHandlerAddress =
+      reinterpret_cast<uintptr_t>(DecoyVehHandler);
+  for (uintptr_t i = 0; i < dataSectionSize - sizeof(uintptr_t);
+       i += sizeof(uintptr_t))
+  {
+    uintptr_t *pCurrent = reinterpret_cast<uintptr_t *>(
+        reinterpret_cast<uintptr_t>(dataSectionBase) + i);
+    if (IsValidPointer(pCurrent, sizeof(uintptr_t)) &&
+        *pCurrent == decoyHandlerAddress)
+    {
+      // 找到了指向DecoyVehHandler的指针。
+      // 根据_VECTORED_HANDLER_ENTRY的结构，这个指针(Handler)成员的前面就是LIST_ENTRY。
+      // 我们找到的这个节点是链表的第一个节点，它的Blink(后向指针)就指向链表头(LdrpVectorHandlerList)的LIST_ENTRY成员。
+      PVECTORED_HANDLER_ENTRY pEntry =
+          CONTAINING_RECORD(pCurrent, VECTORED_HANDLER_ENTRY, Handler);
+
+      // LdrpVectorHandlerList的结构是_VECTORED_HANDLER_LIST，它的第一个成员是SRWLOCK，第二个是LIST_ENTRY。
+      // pEntry->List.Blink 指向的是链表头的 List 成员。
+      // 我们需要的是整个_VECTORED_HANDLER_LIST结构的起始地址。
+      // 所以需要从List成员的地址减去它在结构体中的偏移量。
+      LIST_ENTRY *pListHeadEntry = pEntry->List.Blink;
+      vehListAddress = reinterpret_cast<uintptr_t>(pListHeadEntry) -
+                       offsetof(VECTORED_HANDLER_LIST, List);
+
+      // 增加一个简单的验证：链表头的 Flink 应该指向我们刚刚添加的节点。
+      if (pListHeadEntry->Flink == &pEntry->List)
+      {
+        break; // 验证通过，找到了正确的地址
+      }
+      else
+      {
+        vehListAddress = 0; // 验证失败，继续搜索
+      }
+    }
+  }
+
+  if (vehListAddress == 0)
+  {
+    AddEvidence(
+        anti_cheat::RUNTIME_ERROR,
+        "FindVehListAddress失败: 无法在.data节中定位VEH链表。");
+  }
+
+  // 4. 诱饵处理函数在remover的析构函数中被自动移除。
+  return vehListAddress;
 }
 
 void CheatMonitor::Pimpl::HardenProcessAndThreads()
@@ -4348,91 +4464,4 @@ void CheatMonitor::Pimpl::Sensor_CheckIatHooks()
 
     pImportDesc++;
   }
-}
-
-uintptr_t CheatMonitor::Pimpl::FindVehListOffset()
-{
-  // 通过扫描RtlAddVectoredExceptionHandler函数代码来动态查找VEH链表偏移量
-  // 该方法比扫描PEB更稳定，更能抵抗Windows版本更新带来的变化
-  HMODULE hNtdll = GetModuleHandleW(L"ntdll.dll");
-  if (!hNtdll)
-  {
-    AddEvidence(anti_cheat::RUNTIME_ERROR,
-                "FindVehListOffset失败：无法获取ntdll.dll句柄。");
-    return 0;
-  }
-
-  // 获取RtlAddVectoredExceptionHandler的地址
-  auto pRtlAddVeh = reinterpret_cast<uintptr_t>(
-      GetProcAddress(hNtdll, "RtlAddVectoredExceptionHandler"));
-  if (!pRtlAddVeh)
-  {
-    AddEvidence(
-        anti_cheat::RUNTIME_ERROR,
-        "FindVehListOffset失败：无法获取RtlAddVectoredExceptionHandler地址。");
-    return 0;
-  }
-
-  uintptr_t vehListPtrAddress = 0;
-
-#ifdef _WIN64
-  // x64: 扫描 `lea rdx, [rip + offset]` (48 8D 15) 或 `lea rcx, ...` (48 8D 0D)
-  for (int i = 0; i < 64; ++i)
-  {
-    const BYTE *p = reinterpret_cast<const BYTE *>(pRtlAddVeh + i);
-    if ((p[0] == 0x48 && p[1] == 0x8D && (p[2] == 0x15 || p[2] == 0x0D)))
-    {
-      const int32_t relativeOffset = *reinterpret_cast<const int32_t *>(p + 3);
-      vehListPtrAddress = (uintptr_t)(p + 7 + relativeOffset);
-      break;
-    }
-  }
-#else
-  // x86: 扫描 `mov edi, offset ...` (BF XX XX XX XX) 或 `mov esi, ...` (BE ...)
-  for (int i = 0; i < 32; ++i)
-  {
-    const BYTE *p = reinterpret_cast<const BYTE *>(pRtlAddVeh + i);
-    if (p[0] == 0xBF || p[0] == 0xBE)
-    {
-      vehListPtrAddress = *reinterpret_cast<const uintptr_t *>(p + 1);
-      break;
-    }
-  }
-#endif
-
-  if (vehListPtrAddress == 0)
-  {
-    AddEvidence(anti_cheat::RUNTIME_ERROR,
-                "FindVehListOffset失败：无法在函数代码中定位VEH链表地址。");
-    return 0;
-  }
-
-#ifdef _WIN64
-  const auto pPeb = reinterpret_cast<const BYTE *>(__readgsqword(0x60));
-#else
-  const auto pPeb = reinterpret_cast<const BYTE *>(__readfsdword(0x30));
-#endif
-  if (!pPeb)
-  {
-    AddEvidence(anti_cheat::RUNTIME_ERROR, "FindVehListOffset失败：无法获取PEB。");
-    return 0;
-  }
-
-  // 在 PEB 中搜索指向 LdrpVectorHandlerList 的指针
-  for (uintptr_t offset = 0; offset < 0x1000; offset += sizeof(PVOID))
-  {
-    const uintptr_t *pPebEntryPtr = reinterpret_cast<const uintptr_t *>(pPeb + offset);
-    if (IsValidPointer(pPebEntryPtr, sizeof(uintptr_t)))
-    {
-      const uintptr_t pPebEntry = *pPebEntryPtr;
-      if (pPebEntry == vehListPtrAddress)
-      {
-        return offset; // 找到了！
-      }
-    }
-  }
-
-  AddEvidence(anti_cheat::RUNTIME_ERROR,
-              "系统初始化失败：无法在PEB中找到VEH链表偏移量。");
-  return 0;
 }
