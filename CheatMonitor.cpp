@@ -1928,7 +1928,7 @@ void CheatMonitor::Pimpl::InitializeSessionBaseline()
   // 动态构建模块白名单：将所有初始加载的模块路径添加到白名单中
   // 采用动态缓冲区，确保能够获取所有模块
   std::vector<HMODULE> hModsVec;
-  DWORD cbNeeded;
+  DWORD cbNeeded = 0;
   DWORD bufferSize = 1024 * sizeof(HMODULE); // 初始缓冲区大小
   hModsVec.resize(bufferSize / sizeof(HMODULE));
 
@@ -1977,8 +1977,11 @@ void CheatMonitor::Pimpl::InitializeSessionBaseline()
   }
   else
   {
-    AddEvidence(anti_cheat::RUNTIME_ERROR,
-                "会话基线初始化失败: 无法枚举进程模块。");
+    // 如果 EnumProcessModules 失败，记录下具体的错误码以便诊断
+    DWORD lastError = GetLastError();
+    std::string errorMsg = "会话基线初始化失败: 无法枚举进程模块。 Win32 Error Code: " + std::to_string(lastError);
+    AddEvidence(anti_cheat::RUNTIME_ERROR, errorMsg);
+    std::cout << "[AntiCheat] Baseline Error: " << errorMsg << std::endl;
   }
 
   // 为关键模块建立代码节哈希基线
@@ -2587,6 +2590,7 @@ struct IntegrityCheckResult
   Status status;
   char sectionName[9];
   char modPathStr[512];
+  DWORD exceptionCode;
 };
 
 // [重构] 新增一个辅助函数，专门用于处理节区校验的复杂逻辑
@@ -2693,6 +2697,7 @@ void PerformLowLevelCheck(IntegrityCheckResult &result, HMODULE hModuleInMemory,
                       sizeof(result.modPathStr), nullptr, nullptr);
   result.status = IntegrityCheckResult::Status::Success;
   result.sectionName[0] = '\0';
+  result.exceptionCode = 0;
 
   __try
   {
@@ -2737,6 +2742,7 @@ void PerformLowLevelCheck(IntegrityCheckResult &result, HMODULE hModuleInMemory,
   __except (EXCEPTION_EXECUTE_HANDLER)
   {
     result.status = IntegrityCheckResult::Status::Exception;
+    result.exceptionCode = GetExceptionCode();
   }
 }
 
@@ -2774,8 +2780,8 @@ void CheckModuleIntegrity(CheatMonitor::Pimpl *pimpl, HMODULE hModuleInMemory,
       break;
     case IntegrityCheckResult::Status::Exception:
       snprintf(errorMsg, sizeof(errorMsg),
-               "模块完整性校验时发生异常: %s，内存可能已损坏。",
-               result.modPathStr);
+               "模块完整性校验时发生异常: %s，内存可能已损坏。(Code: 0x%X)",
+               result.modPathStr, result.exceptionCode);
       pimpl->AddEvidence(anti_cheat::RUNTIME_ERROR, errorMsg);
       break;
     default:
