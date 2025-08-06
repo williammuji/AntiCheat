@@ -1898,12 +1898,16 @@ void CheatMonitor::Pimpl::InitializeSessionBaseline()
   VerifyModuleSignature(GetModuleHandleW(L"user32.dll"));
   VerifyModuleSignature(GetModuleHandle(NULL)); // 验证游戏主程序
 
-  // 对游戏主程序执行启动时完整性校验。
-  // 我们跳过对 ntdll.dll 等系统模块的此项检查，因为它们可能被其他合法软件（如杀毒软件）
-  // 在我们的反作弊启动前就进行了挂钩，这会引发误报。
-  // 对于运行时篡改，我们依赖于后续建立的内存哈希基线和定期的 MemoryScanSensor 扫描，
-  // 这种方法更为可靠。
-  VerifyModuleIntegrity(NULL); // 验证游戏主程序
+  // [已修复] 移除对游戏主程序的启动时磁盘-内存完整性校验。
+  // 原因：现代游戏经常使用加壳程序（如Themida, VMProtect）或受合法第三方软件（如Discord,
+  // RivaTuner）的挂钩，这会导致内存中的代码与磁盘上的文件在启动后立即变得不同。
+  // 这种差异会引发“代码节被篡改”的误报。
+  //
+  // 更可靠的策略（已在下方实现）是：
+  // 1. 使用 VerifyModuleSignature() 验证磁盘上 game.exe 文件的数字签名是否有效。
+  // 2. 在下方为 game.exe 的内存代码节建立一个“基线哈希”。
+  // 3. 使用 MemoryScanSensor 定期将当前内存与此基线哈希进行比较，以捕获运行时的恶意篡改。
+  // VerifyModuleIntegrity(NULL); // 验证游戏主程序 - 此行已注释掉以修复误报问题。
   HANDLE hThreadSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
   if (hThreadSnapshot != INVALID_HANDLE_VALUE)
   {
