@@ -332,20 +332,36 @@ namespace
   // 指针验证函数（需根据环境实现）
   bool IsValidPointer(const void *ptr, size_t size)
   {
-    if (!ptr)
+    if (!ptr || size == 0)
+    { // 基本的空指针和大小检查
       return false;
+    }
+
+    // 检查地址和大小相加是否会导致整数溢出，这是一种更安全的做法
+    uintptr_t start_addr = reinterpret_cast<uintptr_t>(ptr);
+    if (size > 0 && start_addr > (UINTPTR_MAX - size))
+    {
+      return false;
+    }
 
     MEMORY_BASIC_INFORMATION mbi;
+    // 使用 VirtualQuery 查询内存信息。如果函数失败（返回0），则指针无效。
     if (VirtualQuery(ptr, &mbi, sizeof(mbi)) == 0)
+    {
       return false;
+    }
 
-    // 检查内存是否已提交且可读
+    // 检查内存区域的状态：
+    // 1. 必须是已提交的物理内存 (MEM_COMMIT)。
+    // 2. 保护属性不能是 PAGE_NOACCESS (完全不可访问) 或 PAGE_GUARD (访问时会触发异常)。
     if (mbi.State != MEM_COMMIT || (mbi.Protect & PAGE_NOACCESS) || (mbi.Protect & PAGE_GUARD))
+    {
       return false;
+    }
 
-    // 确保请求的内存范围在同一内存页面内
-    return ((uintptr_t)ptr + size) <=
-           ((uintptr_t)mbi.BaseAddress + mbi.RegionSize);
+    // 最后，确保请求的整个内存块 (从 ptr 到 ptr + size)
+    // 完全位于这个查询到的、有效的内存区域内。
+    return (start_addr + size) <= (reinterpret_cast<uintptr_t>(mbi.BaseAddress) + mbi.RegionSize);
   }
 
   // 获取模块路径的占位符（替换为实际实现）
@@ -2131,121 +2147,68 @@ void CheatMonitor::Pimpl::InitializeSystem()
 }
 
 // 使用“诱饵处理函数”技术动态查找VEH链表的地址。
-// 此方法稳定、可靠，且不受Windows版本更新中指令变化的影响。
-uintptr_t CheatMonitor::Pimpl::FindVehListAddress()
+// 这是业界公认最稳定、最可靠的纯软件实现方法。
+void CheatMonitor::Pimpl::FindVehListAddress()
 {
-  uintptr_t vehListAddress = 0;
-  HMODULE hNtdll = GetModuleHandleW(L"ntdll.dll");
-  if (!hNtdll)
+  // 1. 注册“诱饵”处理程序
+  PVOID pDecoyNodeHandle = AddVectoredExceptionHandler(1, DecoyVehHandler); // 返回值是新节点的指针
+  if (!pDecoyNodeHandle)
   {
-    AddEvidence(anti_cheat::RUNTIME_ERROR, "FindVehListAddress失败: 无法获取ntdll.dll句柄。");
+    AddEvidence(anti_cheat::RUNTIME_ERROR, "FindVehListAddress失败: AddVectoredExceptionHandler返回了空句柄。");
     return 0;
   }
 
-  // 创建诱饵处理程序
-  PVOID pDecoyHandler = AddVectoredExceptionHandler(1, DecoyVehHandler);
-  if (!pDecoyHandler)
-  {
-    AddEvidence(anti_cheat::RUNTIME_ERROR, "FindVehListAddress失败: 无法注册诱饵VEH处理器。");
-    return 0;
-  }
-
-  // RAII 对象确保诱饵处理程序在函数退出时移除
+  // 2. 使用 RAII 机制确保诱饵处理程序在函数退出时移除
   struct VehRemover
   {
-    PVOID handler;
+    PVOID handle;
     ~VehRemover()
     {
-      if (handler)
-        RemoveVectoredExceptionHandler(handler);
+      if (handle)
+        RemoveVectoredExceptionHandler(handle);
     }
-  } remover = {pDecoyHandler};
+  } remover = {pDecoyNodeHandle};
 
-  // 遍历 ntdll.dll 的所有节区，寻找包含诱饵处理程序指针的可写节区
-  const IMAGE_DOS_HEADER *pDosHeader = reinterpret_cast<const IMAGE_DOS_HEADER *>(hNtdll);
-  if (!IsValidPointer(pDosHeader, sizeof(IMAGE_DOS_HEADER)))
+  // 2. 将返回的句柄转换为我们定义的节点类型
+  PVECTORED_HANDLER_ENTRY pDecoyEntry = reinterpret_cast<PVECTORED_HANDLER_ENTRY>(pDecoyNodeHandle);
+
+  // 3. 验证节点指针的有效性
+  // 我们只验证返回的句柄是否是一个可读的内存指针。我们不直接比较 Handler 的值，
+  // 因为像控制流保护(CFG)这样的安全特性可能会修改存储的函数指针，导致直接比较失败。
+  // 后续的链表结构验证（检查Blink和Flink）足以确保我们操作的正确性。
+  if (!IsValidPointer(pDecoyEntry, sizeof(VECTORED_HANDLER_ENTRY)))
   {
-    AddEvidence(anti_cheat::RUNTIME_ERROR, "FindVehListAddress失败: 无效的DOS头。");
+    AddEvidence(anti_cheat::RUNTIME_ERROR, "FindVehListAddress失败: AddVectoredExceptionHandler返回的句柄不是一个有效的内存指针。");
     return 0;
   }
 
-  const IMAGE_NT_HEADERS *pNtHeaders = reinterpret_cast<const IMAGE_NT_HEADERS *>(
-      reinterpret_cast<const BYTE *>(hNtdll) + pDosHeader->e_lfanew);
-  if (!IsValidPointer(pNtHeaders, sizeof(IMAGE_NT_HEADERS)))
+  // 4. 关键步骤：通过双向链表回溯找到链表头。
+  // 因为我们是第一个添加的处理器，所以我们节点的前一个节点(Blink)就是链表头本身。
+  // pDecoyEntry->List.Blink 指向 VECTORED_HANDLER_LIST.List
+  LIST_ENTRY *pListHeadEntry = pDecoyEntry->List.Blink;
+
+  // 5. 使用 CONTAINING_RECORD 从 List 成员的地址计算出 VECTORED_HANDLER_LIST 结构的基地址
+  PVECTORED_HANDLER_LIST pVehList = CONTAINING_RECORD(pListHeadEntry, VECTORED_HANDLER_LIST, List);
+
+  // 6. 最后验证：链表头的 Flink 应该指向我们的诱饵节点
+  if (IsValidPointer(pVehList, sizeof(VECTORED_HANDLER_LIST)) && pVehList->List.Flink == &pDecoyEntry->List)
   {
-    AddEvidence(anti_cheat::RUNTIME_ERROR, "FindVehListAddress失败: 无效的NT头。");
+    // 验证成功！
+    return reinterpret_cast<uintptr_t>(pVehList);
+  }
+  else
+  {
+    AddEvidence(anti_cheat::RUNTIME_ERROR, "FindVehListAddress失败: 无法通过回溯链表验证链表头。");
+    // Add more context for debugging
+    std::cerr << "pVehList: 0x" << std::hex << reinterpret_cast<uintptr_t>(pVehList) << std::endl;
+    if (IsValidPointer(pVehList, sizeof(VECTORED_HANDLER_LIST)))
+      std::cerr << "pVehList->List.Flink: 0x" << std::hex << reinterpret_cast<uintptr_t>(pVehList->List.Flink) << std::endl;
+    std::cerr << "pDecoyEntry->List: 0x" << std::hex << reinterpret_cast<uintptr_t>(&pDecoyEntry->List) << std::endl;
+
     return 0;
-  }
-
-  const IMAGE_SECTION_HEADER *pSectionHeader = IMAGE_FIRST_SECTION(pNtHeaders);
-  const uintptr_t decoyHandlerAddress = reinterpret_cast<uintptr_t>(DecoyVehHandler);
-
-  for (int i = 0; i < pNtHeaders->FileHeader.NumberOfSections; i++, pSectionHeader++)
-  {
-    if (!IsValidPointer(pSectionHeader, sizeof(IMAGE_SECTION_HEADER)))
-    {
-      continue;
-    }
-
-    // 只检查可写节区
-    if (pSectionHeader->Characteristics & IMAGE_SCN_MEM_WRITE)
-    {
-      const uintptr_t sectionStart = reinterpret_cast<uintptr_t>(hNtdll) + pSectionHeader->VirtualAddress;
-      const DWORD sectionSize = pSectionHeader->Misc.VirtualSize;
-
-      // 在可写节区中搜索诱饵处理程序指针
-      for (uintptr_t j = 0; j < sectionSize - sizeof(uintptr_t); j += sizeof(uintptr_t))
-      {
-        uintptr_t *pCurrent = reinterpret_cast<uintptr_t *>(sectionStart + j);
-        if (!IsValidPointer(pCurrent, sizeof(uintptr_t)))
-        {
-          j = (j + 0x1000) & ~(0x1000 - 1); // 对齐到下一页
-          if (j > 0)
-            j -= sizeof(uintptr_t); // 补偿循环增量
-          continue;
-        }
-
-        if (*pCurrent == decoyHandlerAddress)
-        {
-          // 找到指向 DecoyVehHandler 的指针
-          PVECTORED_HANDLER_ENTRY pEntry = CONTAINING_RECORD(pCurrent, VECTORED_HANDLER_ENTRY, Handler);
-          if (!IsValidPointer(pEntry, sizeof(VECTORED_HANDLER_ENTRY)))
-          {
-            continue;
-          }
-
-          // 获取链表头
-          LIST_ENTRY *pListHeadEntry = pEntry->List.Blink;
-          if (!IsValidPointer(pListHeadEntry, sizeof(LIST_ENTRY)))
-          {
-            continue;
-          }
-
-          // 计算 VECTORED_HANDLER_LIST 结构的起始地址
-          uintptr_t potentialAddress = reinterpret_cast<uintptr_t>(pListHeadEntry) -
-                                       offsetof(VECTORED_HANDLER_LIST, List);
-
-          // 验证链表头的 Flink 指向我们的节点
-          if (IsValidPointer(reinterpret_cast<void *>(potentialAddress), sizeof(VECTORED_HANDLER_LIST)) &&
-              pListHeadEntry->Flink == &pEntry->List)
-          {
-            vehListAddress = potentialAddress;
-            goto found_handler;
-          }
-        }
-      }
-    }
-  }
-
-found_handler:
-  if (vehListAddress == 0)
-  {
-    AddEvidence(anti_cheat::RUNTIME_ERROR,
-                "FindVehListAddress失败: 无法在ntdll.dll的可写节区中定位VEH链表。");
   }
 
   // 诱饵处理程序由 VehRemover 的析构函数自动移除
-  return vehListAddress;
 }
 
 void CheatMonitor::Pimpl::HardenProcessAndThreads()
