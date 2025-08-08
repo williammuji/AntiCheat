@@ -453,6 +453,8 @@ struct CheatMonitor::Pimpl {
   std::atomic<bool> m_isSystemActive = false;
   std::atomic<bool> m_isSessionActive = false;
   std::thread m_monitorThread;
+  // [新增] 用于智能关联父进程缺失事件的状态
+  std::atomic<bool> m_parentWasMissingAtStartup = false;
   std::condition_variable m_cv;
   std::mutex m_cvMutex;
   std::mutex
@@ -606,9 +608,10 @@ struct CheatMonitor::Pimpl {
   void AddEvidenceInternal(anti_cheat::CheatCategory category,
                            const std::string &description); // 不加锁的内部版本
   void HardenProcessAndThreads(); //  进程与线程加固
+  bool HasEvidenceOfType(anti_cheat::CheatCategory category) const;
 
   // --- Sensor Functions ---
-  bool Sensor_ValidateParentProcess();
+  void CheckParentProcessAtStartup();
   void Sensor_DetectVirtualMachine();
   void Sensor_CollectHardwareFingerprint(); //  收集硬件指纹
 
@@ -672,6 +675,16 @@ public:
   }
   const std::unordered_set<std::wstring> &GetWhitelistedWindowKeywords() const {
     return m_pimpl->m_whitelistedWindowKeywords;
+  }
+  // [新增] 为 SuspiciousLaunchSensor 提供上下文访问
+  bool GetParentWasMissingAtStartup() const {
+    return m_pimpl->m_parentWasMissingAtStartup.load();
+  }
+  void ClearParentWasMissingFlag() {
+    m_pimpl->m_parentWasMissingAtStartup = false;
+  }
+  bool HasEvidenceOfType(anti_cheat::CheatCategory category) const {
+    return m_pimpl->HasEvidenceOfType(category);
   }
   const std::unordered_map<std::string, std::vector<uint8_t>> &
   GetIatBaselineHashes() const {
@@ -1354,6 +1367,31 @@ public:
   }
 };
 
+class SuspiciousLaunchSensor : public ISensor {
+public:
+  const char *GetName() const override { return "SuspiciousLaunchSensor"; }
+  void Execute(ScanContext &context) override {
+    // 此检查仅在启动时父进程缺失且尚未上报关联事件时运行
+    if (!context.GetParentWasMissingAtStartup()) {
+      return;
+    }
+
+    // 检查本会话中是否已发现其他高风险作弊行为
+    if (context.HasEvidenceOfType(anti_cheat::INTEGRITY_MEMORY_PATCH) ||
+        context.HasEvidenceOfType(anti_cheat::RUNTIME_MODULE_NEW_UNKNOWN) ||
+        context.HasEvidenceOfType(anti_cheat::INTEGRITY_API_HOOK) ||
+        context.HasEvidenceOfType(anti_cheat::RUNTIME_MEMORY_EXEC_PRIVATE)) {
+      // 如果是，我们现在有了一个高可信度的傀儡进程攻击信号
+      context.AddEvidence(
+          anti_cheat::ENVIRONMENT_SUSPICIOUS_LAUNCH,
+          "父进程缺失，且检测到其他可疑活动（如内存篡改或未知模块），疑似傀儡进程攻击。");
+
+      // 上报关联后，清除标志以避免重复上报
+      context.ClearParentWasMissingFlag();
+    }
+  }
+};
+
 } // namespace Sensors
 
 // --- VirtualAlloc Hooking ---
@@ -1591,6 +1629,7 @@ void CheatMonitor::Pimpl::ResetSessionState() {
   m_reportedIllegalCallSources.clear(); // 会话结束时清空“记忆”
   // m_moduleSignatureCache.clear(); //
   // 模块签名缓存通常不需要在会话结束时清空，因为它与进程无关
+
   m_currentUserId = 0;
 
   // 初始化传感器列表，包括轻量级和重量级传感器
@@ -1605,6 +1644,8 @@ void CheatMonitor::Pimpl::ResetSessionState() {
   m_lightweight_sensors.push_back(std::make_unique<Sensors::VehHookSensor>());
   m_lightweight_sensors.push_back(
       std::make_unique<Sensors::InputAutomationSensor>());
+  m_lightweight_sensors.push_back(
+      std::make_unique<Sensors::SuspiciousLaunchSensor>());
 
   m_heavyweight_sensors.push_back(
       std::make_unique<Sensors::ProcessHandleSensor>());
@@ -1843,7 +1884,7 @@ void CheatMonitor::Pimpl::InitializeSystem() {
   // --- 执行一次性的系统级初始化 ---
 
   // 将进程启动时的一次性检查移到此处
-  Sensor_ValidateParentProcess();
+  CheckParentProcessAtStartup();
   Sensor_DetectVirtualMachine();
 
   // 1. 加固进程，防止被轻易篡改。
@@ -2219,18 +2260,32 @@ void CheatMonitor::Pimpl::UploadReport() {
   }
 }
 
+bool CheatMonitor::Pimpl::HasEvidenceOfType(
+    anti_cheat::CheatCategory category) const {
+  // AddEvidence() 会锁定 m_sessionMutex，因此这里读取时也需要锁定以保证线程安全
+  std::lock_guard<std::mutex> lock(m_sessionMutex);
+  for (const auto &evidence_pair : m_uniqueEvidence) {
+    if (evidence_pair.first == category) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /**
  * @brief 验证父进程，防止通过傀儡进程启动游戏以绕过检测。
  * @return 如果父进程被确认为合法，则返回 true，否则返回 false。
  */
-bool CheatMonitor::Pimpl::Sensor_ValidateParentProcess() {
+void CheatMonitor::Pimpl::CheckParentProcessAtStartup() {
   DWORD parentPid = 0;
   std::string parentName;
   if (!Utils::GetParentProcessInfo(parentPid, parentName)) {
-    AddEvidence(anti_cheat::ENVIRONMENT_UNKNOWN, "无法获取父进程信息。");
-    return false; // 无法获取信息，视为验证失败
+    // 不再直接上报，而是设置一个标志，由新的 SuspiciousLaunchSensor 进行智能关联
+    m_parentWasMissingAtStartup = true;
+    return;
   }
 
+  // 如果能获取到父进程信息，则继续执行严格的验证流程
   std::string lowerParentName = parentName;
   std::transform(lowerParentName.begin(), lowerParentName.end(),
                  lowerParentName.begin(), ::tolower);
@@ -2245,7 +2300,7 @@ bool CheatMonitor::Pimpl::Sensor_ValidateParentProcess() {
   if (isDeveloperTool) {
     AddEvidence(anti_cheat::ENVIRONMENT_INVALID_PARENT_PROCESS,
                 "Release版本不允许由开发工具启动: " + parentName);
-    return false;
+    return;
   }
 #endif
 
@@ -2254,7 +2309,7 @@ bool CheatMonitor::Pimpl::Sensor_ValidateParentProcess() {
     AddEvidence(anti_cheat::ENVIRONMENT_INVALID_PARENT_PROCESS,
                 "由一个不在白名单的父进程启动: " + parentName +
                     " (PID: " + std::to_string(parentPid) + ")");
-    return false;
+    return;
   }
 
   // 对所有白名单内的父进程（包括标准进程和开发工具）强制执行数字签名验证
@@ -2273,7 +2328,7 @@ bool CheatMonitor::Pimpl::Sensor_ValidateParentProcess() {
     AddEvidence(anti_cheat::ENVIRONMENT_INVALID_PARENT_PROCESS,
                 "父进程名称合法 (" + parentName +
                     ")，但其文件未签名或签名无效。");
-    return false;
+    return;
   }
 
   // [加固] 如果父进程是explorer.exe，执行额外的PID校验，确保它是当前的桌面Shell
@@ -2286,12 +2341,11 @@ bool CheatMonitor::Pimpl::Sensor_ValidateParentProcess() {
     if (!hShellWnd || parentPid != shellPid) {
       AddEvidence(anti_cheat::ENVIRONMENT_INVALID_PARENT_PROCESS,
                   "父进程是一个已签名但非激活Shell的explorer.exe实例。");
-      return false;
+      return;
     }
   }
 
-  // 所有检查通过，父进程被确认为合法
-  return true;
+  // 所有检查通过，将父进程标记为已验证
 }
 
 void CheatMonitor::Pimpl::Sensor_DetectVirtualMachine() {
