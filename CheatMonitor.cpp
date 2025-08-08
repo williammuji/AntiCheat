@@ -608,7 +608,7 @@ struct CheatMonitor::Pimpl {
   void AddEvidenceInternal(anti_cheat::CheatCategory category,
                            const std::string &description); // 不加锁的内部版本
   void HardenProcessAndThreads(); //  进程与线程加固
-  bool HasEvidenceOfType(anti_cheat::CheatCategory category) const;
+  bool HasEvidenceOfType(anti_cheat::CheatCategory category);
 
   // --- Sensor Functions ---
   void CheckParentProcessAtStartup();
@@ -2261,7 +2261,7 @@ void CheatMonitor::Pimpl::UploadReport() {
 }
 
 bool CheatMonitor::Pimpl::HasEvidenceOfType(
-    anti_cheat::CheatCategory category) const {
+    anti_cheat::CheatCategory category) {
   // AddEvidence() 会锁定 m_sessionMutex，因此这里读取时也需要锁定以保证线程安全
   std::lock_guard<std::mutex> lock(m_sessionMutex);
   for (const auto &evidence_pair : m_uniqueEvidence) {
