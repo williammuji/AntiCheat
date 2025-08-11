@@ -23,7 +23,9 @@ PointerAlignment: Left
 ReferenceAlignment: Left
 
 # --- Include Management ---
-SortIncludes: true
+SortIncludes: false # [修复] 设置为 false 以允许手动控制头文件顺序
+                   # 这对于解决 <winsock2.h> 和 <windows.h> 的编译问题至关重要
+
 IncludeBlocks: Regroup
 IncludeCategories:
   - Regex:           '^<.*\.h>'

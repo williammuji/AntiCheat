@@ -1,4 +1,10 @@
-#include "CheatMonitor.h"
+﻿#include "CheatMonitor.h"
+
+// [修复] 定义 NOMINMAX 宏以防止 Windows.h 定义 min/max 宏,
+// 从而解决与 std::max 的编译冲突。
+#define NOMINMAX
+#include <winsock2.h>
+#include <windows.h>
 
 #include <Iphlpapi.h>  // 为 GetAdaptersInfo 添加头文件
 #include <Objbase.h>
@@ -6,7 +12,6 @@
 #include <ShlObj.h>   // CSIDL_PROGRAM_FILES, SHGetFolderPathW
 #include <Softpub.h>  // 为 WINTRUST_ACTION_GENERIC_VERIFY_V2 GUID 添加头文件
 #include <TlHelp32.h>
-#include <Windows.h>
 #include <intrin.h>
 #include <winternl.h>  // 包含 NTSTATUS 等定义
 #include <wintrust.h>  // 为 WinVerifyTrust 添加头文件
@@ -61,6 +66,26 @@ typedef struct _PROCESS_MITIGATION_DEP_POLICY
     BOOLEAN Permanent;
 } PROCESS_MITIGATION_DEP_POLICY, *PPROCESS_MITIGATION_DEP_POLICY;
 #endif  // (NTDDI_VERSION < NTDDI_WIN8)
+
+// [修复] 为 NtCreateThreadEx (在代码中用于 DetourNtCreateThread) 定义兼容性结构体,
+// 解决 PPS_ATTRIBUTE_LIST 未定义的问题。
+typedef struct _PS_ATTRIBUTE
+{
+    ULONG_PTR Attribute;
+    SIZE_T Size;
+    union
+    {
+        ULONG_PTR Value;
+        PVOID ValuePtr;
+    };
+    PSIZE_T ReturnLength;
+} PS_ATTRIBUTE, *PPS_ATTRIBUTE;
+
+typedef struct _PS_ATTRIBUTE_LIST
+{
+    SIZE_T TotalLength;
+    PS_ATTRIBUTE Attributes[1];
+} PS_ATTRIBUTE_LIST, *PPS_ATTRIBUTE_LIST;
 
 // --- 为 NtQuerySystemInformation 定义必要的结构体和类型 ---
 #ifndef NT_SUCCESS
@@ -436,7 +461,7 @@ bool GetCodeSectionInfo(HMODULE hModule, PVOID &outBase, DWORD &outSize)
         if (pNtHeaders->Signature != IMAGE_NT_SIGNATURE)
             return false;
 
-        Pimage_SECTION_HEADER pSectionHeader = IMAGE_FIRST_SECTION(pNtHeaders);
+        PIMAGE_SECTION_HEADER pSectionHeader = IMAGE_FIRST_SECTION(pNtHeaders);
         for (int i = 0; i < pNtHeaders->FileHeader.NumberOfSections; i++, pSectionHeader++)
         {
             // 寻找第一个可执行代码节 (通常是 .text)
@@ -1818,7 +1843,7 @@ class NewActivitySensor : public ISensor
         DWORD cbNeeded;
         if (EnumProcessModules(GetCurrentProcess(), hModsVec.data(), hModsVec.size() * sizeof(HMODULE), &cbNeeded))
         {
-            if (hMods.size() * sizeof(HMODULE) < cbNeeded)
+            if (hModsVec.size() * sizeof(HMODULE) < cbNeeded)
             {
                 hModsVec.resize(cbNeeded / sizeof(HMODULE));
                 EnumProcessModules(GetCurrentProcess(), hModsVec.data(), hModsVec.size() * sizeof(HMODULE), &cbNeeded);
@@ -2217,8 +2242,6 @@ LRESULT CALLBACK CheatMonitor::Pimpl::LowLevelKeyboardProc(int nCode, WPARAM wPa
     return CallNextHookEx(s_pimpl_for_hooks->m_hKeyboardHook, nCode, wParam, lParam);
 }
 
-static HHOOK g_hKeyboardHook = NULL;
-
 CheatMonitor &CheatMonitor::GetInstance()
 {
     static CheatMonitor instance;
@@ -2292,13 +2315,11 @@ void CheatMonitor::Shutdown()
 
     // [建议] 关键改动：调整卸载和清理顺序
     // 1. 立即卸载钩子，停止接收新的回调
-    if (g_hMouseHook)
-        UnhookWindowsHookEx(g_hMouseHook);
-    if (g_hKeyboardHook)
-        UnhookWindowsHookEx(g_hKeyboardHook);
-    g_hMouseHook = NULL;
-    g_hKeyboardHook = NULL;
-    m_pimpl->m_hMouseHook = NULL;  // Also clear the pimpl's handle
+    if (m_pimpl->m_hMouseHook)
+        UnhookWindowsHookEx(m_pimpl->m_hMouseHook);
+    if (m_pimpl->m_hKeyboardHook)
+        UnhookWindowsHookEx(m_pimpl->m_hKeyboardHook);
+    m_pimpl->m_hMouseHook = NULL;
     m_pimpl->m_hKeyboardHook = NULL;
 
     // 2. 等待工作线程完全结束。这是最重要的同步点。
@@ -2479,12 +2500,14 @@ void CheatMonitor::Pimpl::InitializeSessionBaseline()
                 {
                     const auto *pImportDesc = reinterpret_cast<const IMAGE_IMPORT_DESCRIPTOR *>(
                             baseAddress + importDirectory.VirtualAddress);
-                    while (pImportDesc->Name)
+                    const auto *pCurrentDesc = pImportDesc;
+                    while (pCurrentDesc->Name)
                     {
-                        const char *dllName = (const char *)(baseAddress + pImportDesc->Name);
+                        const char *dllName = (const char *)(baseAddress + pCurrentDesc->Name);
                         std::vector<uint8_t> iat_hashes;
-                        auto *pThunk = reinterpret_cast<IMAGE_THUNK_DATA *>(baseAddress + pImportDesc->FirstThunk);
-                        while (pThunk->u1.AddressOfData)
+                        const auto *pThunk =
+                                reinterpret_cast<const IMAGE_THUNK_DATA *>(baseAddress + pCurrentDesc->FirstThunk);
+                        while (pThunk && pThunk->u1.AddressOfData)
                         {
                             uintptr_t func_ptr = pThunk->u1.Function;
                             iat_hashes.insert(iat_hashes.end(), (uint8_t *)&func_ptr,
@@ -2492,7 +2515,7 @@ void CheatMonitor::Pimpl::InitializeSessionBaseline()
                             pThunk++;
                         }
                         m_iatBaselineHashes[dllName] = CalculateHash(iat_hashes.data(), iat_hashes.size());
-                        pImportDesc++;
+                        pCurrentDesc++;
                     }
                 }
             }
@@ -2506,14 +2529,6 @@ void CheatMonitor::Pimpl::InitializeSessionBaseline()
     }
 
     AddEvidence(anti_cheat::SYSTEM_INITIALIZED, "会话基线建立完成。");
-}
-
-void CheatMonitor::ResetSessionState()
-{
-    if (m_pimpl)
-    {
-        m_pimpl->ResetSessionState();
-    }
 }
 
 void CheatMonitor::Pimpl::ResetSessionState()
@@ -2813,8 +2828,8 @@ void CheatMonitor::Pimpl::DetectVmByCpuid()
 
 void CheatMonitor::Pimpl::DetectVmByRegistry()
 {
-    const wchar_t *vmKeys[] = {L"HARDWARE\DESCRIPTION\System\BIOS\SystemManufacturer",
-                               L"HARDWARE\DESCRIPTION\System\BIOS\SystemProductName"};
+    const wchar_t *vmKeys[] = {L"HARDWARE\\DESCRIPTION\\System\\BIOS\\SystemManufacturer",
+                               L"HARDWARE\\DESCRIPTION\\System\\BIOS\\SystemProductName"};
     const wchar_t *vmValues[] = {L"vmware", L"virtualbox", L"qemu", L"kvm", L"microsoft"};
 
     for (const auto &key : vmKeys)
@@ -2889,7 +2904,7 @@ void CheatMonitor::Pimpl::Sensor_CollectHardwareFingerprint()
 
     // 1. Disk Serial
     DWORD serialNum = 0;
-    if (GetVolumeInformationW(L"C:\", NULL, 0, &serialNum, NULL, NULL, NULL, 0))
+    if (GetVolumeInformationW(L"C:\\", NULL, 0, &serialNum, NULL, NULL, NULL, 0))
     {
         m_fingerprint->set_disk_serial(std::to_string(serialNum));
     }
@@ -2968,7 +2983,7 @@ void CheatMonitor::Pimpl::DoCheckIatHooks(ScanContext &context, const BYTE *base
         {
             // Calculate current hash
             std::vector<uint8_t> current_iat_hashes;
-            auto *pThunk = reinterpret_cast<IMAGE_THUNK_DATA *>(baseAddress + pImportDesc->FirstThunk);
+            auto *pThunk = reinterpret_cast<IMAGE_THUNK_DATA *>((BYTE *)baseAddress + pImportDesc->FirstThunk);
             while (pThunk->u1.AddressOfData)
             {
                 uintptr_t func_ptr = pThunk->u1.Function;
@@ -3110,5 +3125,3 @@ void CheatMonitor::Pimpl::UninstallExtendedApiHooks()
 {
     // TODO: Implement safe IAT unhooking for extended APIs
 }
-
-```
