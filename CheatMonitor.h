@@ -17,6 +17,7 @@ public:
   void OnPlayerLogout();
   void Shutdown();
   bool IsCallerLegitimate(); // [新增] 供游戏逻辑调用的返回地址校验接口
+  void SetGameWindow(void* hwnd); // [新增] 允许游戏引擎设置主窗口句柄
 
   struct Pimpl;
 

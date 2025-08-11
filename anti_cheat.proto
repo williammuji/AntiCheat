@@ -18,6 +18,7 @@ enum CheatCategory {
   INTEGRITY_ASSET_TAMPERED = 103; // 游戏资源文件（如模型、地图、数据文件）的哈希值与预期不符。
   INTEGRITY_API_HOOK = 104; // 检测到对关键API函数的挂钩。
   INTEGRITY_SUSPICIOUS_HANDLE = 105; // 检测到可疑进程持有本进程的句柄。
+  INTEGRITY_BASELINE_LEARNED = 106; // [新增] 用于学习模块基线哈希
 
   // --- 外部环境与工具类别 (2xx) ---
   ENVIRONMENT_UNKNOWN = 200;
@@ -28,6 +29,8 @@ enum CheatCategory {
   ENVIRONMENT_INVALID_PARENT_PROCESS = 205; // 检测到游戏由一个非法的父进程启动（例如，不是由官方启动器启动）。
   ENVIRONMENT_PROCESS_HARDENING_FAILED = 206; // 进程加固失败（例如，无法设置DEP策略）。
   ENVIRONMENT_SUSPICIOUS_LAUNCH = 207;  // 非法启动器
+  ENVIRONMENT_HANDLE_PROXY_DETECTED = 208; // 新增：检测到句柄代理攻击
+  ENVIRONMENT_UNEXPECTED_OVERLAY = 209; // 新增：检测到可疑的窗口覆盖
 
   // --- 运行时异常类别 (3xx) ---
   RUNTIME_UNKNOWN = 300;
