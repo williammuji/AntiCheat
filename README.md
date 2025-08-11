@@ -13,25 +13,23 @@
 #### 主动防御与进程加固 (Proactive Defense & Hardening)
 
 -   **返回地址校验 (`IsCallerLegitimate`)**: 游戏核心功能（如技能释放、移动等）可以调用此接口，校验调用者是否来自合法的游戏模块，有效阻止来自注入DLL和Shellcode的非法调用。
--   **非法调用来源节流**: 对同一非法来源（特定DLL或Shellcode内存区域）的调用，采用5分钟冷却策略上报，在保证数据有效性的同时，避免“告警风暴”。
 -   **进程线程加固**:
-    -   **对调试器隐藏**: 在Release模式下，通过 `NtSetInformationThread` 隐藏所有游戏线程，极大地增加了调试器附加和分析的难度。
+    -   **对调试器隐藏**: 在Release模式下，通过 `NtSetInformationThread` 隐藏反作弊自身的监控线程，增加调试和逆向分析的难度。
     -   **进程缓解策略**: 阻止游戏客户端创建任何子进程，关闭常见的攻击路径。
 
 #### 运行时内存与模块分析 (Runtime Analysis)
 
 -   **内存扫描**:
     -   检测不属于任何模块的私有可执行内存（`MEM_PRIVATE`），这是Shellcode注入的典型特征。
-    -   检测已加载模块中被非法赋予写权限的代码节（`PAGE_EXECUTE_READWRITE`），这是内存Patch的强烈信号。
--   **模块完整性校验**:
-    -   通过比对内存镜像与磁盘文件，校验核心系统模块（`ntdll.dll`, `kernel32.dll`）和游戏自身模块的 `.text` 代码节是否被篡改。
+-   **模块完整性校验**: 在会话开始时为所有已加载模块的 `.text` 代码节建立哈希基线，并在运行时进行比对，以检测内存中的代码篡改。
 -   **Hook检测**:
-    -   **Inline Hook**: 检测关键API函数头部的 `JMP` / `PUSH-RET` 等指令。
     -   **IAT Hook**: 遍历导入地址表，检测函数指针是否被修改。
     -   **VEH Hook**: 遍历向量化异常处理 (VEH) 链以检测异常处理器挂钩。**该实现通过在启动时扫描PEB来动态定位VEH列表，避免了对Windows内部硬编码偏移量的依赖，以确保与未来Windows版本的向前兼容性和稳定性。**
 -   **运行时活动监控**:
     -   检测新创建的未知线程。
     -   检测新加载的模块，并自动对其进行**数字签名验证**，有效识别未签名的恶意DLL。
+-   **线程完整性扫描**: 检查线程的起始地址是否位于合法的模块内，以识别由Shellcode创建的线程。
+-   **隐藏模块扫描**: 通过遍历进程内存并与PEB模块列表对比，发现被手动映射（Manual Mapping）等技术隐藏的模块。
 
 #### 环境与系统完整性检测 (Environment & Integrity)
 
@@ -44,6 +42,9 @@
 -   **进程与句柄扫描**:
     -   检测系统中的已知作弊/逆向工具进程（如Cheat Engine, x64dbg, IDA）。
     -   检测并上报持有本游戏进程高权限句柄的可疑进程。
+-   **可疑行为关联分析**:
+    -   **句柄代理攻击**: 关联分析“白名单进程持有本进程句柄”与“高风险作弊行为（如内存修改）”同时发生的事件，以发现通过合法进程进行代理操作的攻击。
+    -   **傀儡进程攻击**: 关联分析“游戏由未知父进程启动”与后续发生的“高风险作弊行为”，以识别
 -   **父进程验证**: 校验游戏是否由合法的父进程（如官方启动器、IDE）启动，防止傀儡进程攻击。
 
 #### 行为启发式分析 (Behavioral Heuristics)
@@ -107,25 +108,24 @@ The initial phase of this project focuses on **data collection and intelligence 
 #### Proactive Defense & Hardening
 
 -   **Return Address Validation (`IsCallerLegitimate`)**: Core game functions (e.g., skill casting, movement) can call this interface to verify that the caller originates from a legitimate game module, effectively blocking illegal calls from injected DLLs and shellcode.
--   **Illegal Call Source Throttling**: Reports for calls from the same illegal source (a specific DLL or shellcode memory region) are throttled with a 5-minute cooldown to prevent "alert storms" while ensuring data validity.
 -   **Process & Thread Hardening**:
-    -   **Hide from Debugger**: In Release mode, all game threads are hidden via `NtSetInformationThread`, significantly increasing the difficulty of attaching and analyzing with a debugger.
+    -   **Hide from Debugger**: In Release mode, the anti-cheat's own monitoring thread is hidden via `NtSetInformationThread`, increasing the difficulty of debugging and reverse engineering.
     -   **Process Mitigation Policies**: Prevents the game client from creating any child processes, closing off a common attack vector.
 
 #### Runtime Analysis
 
 -   **Memory Scanning**:
     -   Detects private, executable memory (`MEM_PRIVATE`) that does not belong to any module, a classic sign of shellcode injection.
-    -   Detects code sections in loaded modules that have been illicitly granted write permissions (`PAGE_EXECUTE_READWRITE`), a strong indicator of memory patching.
 -   **Module Integrity Checks**:
-    -   Verifies the integrity of core system modules (`ntdll.dll`, `kernel32.dll`) and the game's own modules by comparing the in-memory image against the on-disk file.
+    -   Establishes a hash baseline for the `.text` code section of all loaded modules at the start of a session and compares against it at runtime to detect in-memory code tampering.
 -   **Hook Detection**:
-    -   **Inline Hooks**: Detects `JMP` / `PUSH-RET` instructions at the start of critical API functions.
     -   **IAT Hooks**: Traverses the Import Address Table to detect modified function pointers.
     -   **VEH Hooks**: Traverses the Vectored Exception Handling (VEH) chain to detect exception handler hooks. **The implementation dynamically locates the VEH list by scanning the PEB at startup, avoiding reliance on hardcoded offsets of Windows internals to ensure forward compatibility and stability with future Windows versions.**
 -   **Runtime Activity Monitoring**:
     -   Detects newly created, unknown threads.
     -   Detects newly loaded modules and automatically performs **digital signature verification** on them, effectively identifying unsigned malicious DLLs.
+-   **Thread Integrity Scanning**: Checks if a thread's start address is within a legitimate module to identify threads created by shellcode.
+-   **Hidden Module Scanning**: Discovers modules hidden by techniques like Manual Mapping by traversing process memory and comparing it against the PEB module list.
 
 #### Environment & Integrity
 
@@ -138,19 +138,22 @@ The initial phase of this project focuses on **data collection and intelligence 
 -   **Process & Handle Scanning**:
     -   Detects known cheating/reversing tools (e.g., Cheat Engine, x64dbg, IDA).
     -   Detects and reports suspicious processes holding high-privilege handles to our game process.
+-   **Suspicious Behavior Correlation Analysis**:
+    -   **Handle Proxy Attacks**: Correlates events where a whitelisted process holds a handle to our process with high-risk cheating behaviors (like memory modification) to detect attacks proxied through legitimate processes.
+    -   **Puppet Process Attacks**: Correlates the game being launched by an unknown parent process with subsequent high-risk behaviors to identify puppet process attacks.
 -   **Parent Process Validation**: Verifies that the game was launched by a legitimate parent process (e.g., the official launcher, an IDE) to prevent puppet process attacks.
 
 #### Behavioral Heuristics
 
--   **Input Automation Detection**: Collects data via a low-level mouse hook (`WH_MOUSE_LL`) to analyze the regularity of click intervals (standard deviation) and the smoothness of movement paths (collinearity) to detect macros and bots.
+-   **Input Automation Detection**: Collects data via low-level hooks (`WH_MOUSE_LL`, `WH_KEYBOARD_LL`) to analyze mouse click intervals (standard deviation), movement paths (collinearity), and **repetitive key sequences** to detect macros and bots.
 
 #### Data Collection & Reporting
 
--   **Hardware Fingerprint Collection**: On the player's first login, it collects disk serial number, MAC addresses, computer name, OS version, CPU architecture, and core count to support machine-based bans.
+-   **Hardware Fingerprint Collection**: On the player's first login, it collects disk serial number, MAC addresses, computer name, OS version, and **CPU brand string** to support machine-based bans.
 -   **Efficient Evidence Reporting**:
     -   All reported evidence is de-duplicated within a session to reduce data redundancy.
     -   Uses Protobuf for efficient, cross-platform data serialization.
-    -   Employs a timed (5-minute) reporting strategy to balance real-time awareness with network overhead.
+    -   Employs a timed (**15-minute**) reporting strategy to balance real-time awareness with network overhead.
 
 ### 2) Planned Features
 
