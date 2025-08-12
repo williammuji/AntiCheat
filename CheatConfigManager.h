@@ -89,6 +89,7 @@ class CheatConfigManager
     // 内部状态
     std::unique_ptr<anti_cheat::ClientConfig> m_config;
     mutable std::mutex m_mutex;
+    std::wstring m_configMutexName;  // 用于跨进程文件访问的命名互斥锁的名称
 
     // 为频繁访问的字符串列表提供宽字符缓存，避免重复转换
     std::vector<std::wstring> m_harmfulProcessNames_w;
