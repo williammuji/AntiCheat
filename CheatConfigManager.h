@@ -1,5 +1,8 @@
-#pragma once
+﻿#pragma once
 
+// Define WIN32_LEAN_AND_MEAN to exclude rarely-used APIs from Windows.h,
+// including the old winsock.h, which prevents conflicts with winsock2.h.
+#define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
 #include <string>
 #include <vector>
@@ -9,10 +12,14 @@
 #include "anti_cheat.pb.h"
 
 // 前向声明，避免在头文件中包含完整的实现
-namespace anti_cheat { class ClientConfig; }
+namespace anti_cheat
+{
+class ClientConfig;
+}
 
-class CheatConfigManager {
-public:
+class CheatConfigManager
+{
+   public:
     // 获取单例实例
     static CheatConfigManager& GetInstance();
 
@@ -34,7 +41,7 @@ public:
     const std::vector<std::wstring>& GetHarmfulKeywords() const;
     const std::unordered_set<std::wstring>& GetWhitelistedVEHModules() const;
     const std::unordered_set<std::wstring>& GetWhitelistedProcessPaths() const;
-    const std::unordered_set<std::wstring>const std::vector<std::wstring>& GetWhitelistedWindowKeywords GetWhitelistedWindowKeywords() const;
+    const std::unordered_set<std::wstring>& GetWhitelistedWindowKeywords() const;
     const std::unordered_set<std::wstring>& GetKnownGoodProcesses() const;
 
     // --- 行为控制参数 ---
@@ -60,7 +67,7 @@ public:
     int32_t GetKeyboardMacroMinSequenceLength() const;
     int32_t GetKeyboardMacroMinPatternLength() const;
 
-private:
+   private:
     CheatConfigManager();
     ~CheatConfigManager() = default;
 
@@ -68,8 +75,8 @@ private:
     CheatConfigManager(const CheatConfigManager&) = delete;
     CheatConfigManager& operator=(const CheatConfigManager&) = delete;
 
-    void SetDefaultValues(); // 设置硬编码的默认值
-    void UpdateWideStringCaches(); // 更新宽字符版本的缓存
+    void SetDefaultValues();        // 设置硬编码的默认值
+    void UpdateWideStringCaches();  // 更新宽字符版本的缓存
 
     // 安全相关辅助函数
     std::string EncryptData(const std::string& plain_text) const;
@@ -90,6 +97,4 @@ private:
     std::unordered_set<std::wstring> m_whitelistedProcessPaths_w;
     std::unordered_set<std::wstring> m_whitelistedWindowKeywords_w;
     std::unordered_set<std::wstring> m_knownGoodProcesses_w;
-
-    
 };
