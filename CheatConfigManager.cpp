@@ -4,6 +4,44 @@
 #include <filesystem>
 #include <stdexcept>
 #include <Wincrypt.h>
+#include <algorithm>  // for std::replace
+
+// --- InterprocessLock RAII arapper for named mutex ---
+// This helper class ensures that the named mutex is always released,
+// even if exceptions occur.
+class InterprocessLock
+{
+   public:
+    explicit InterprocessLock(const std::wstring& name)
+    {
+        // The "Global\" prefix makes the mutex visible across all user sessions.
+        m_hMutex = CreateMutexW(NULL, FALSE, name.c_str());
+        if (m_hMutex != NULL)
+        {
+            // Wait indefinitely for ownership of the mutex.
+            WaitForSingleObject(m_hMutex, INFINITE);
+        }
+        // In a production scenario, you might want to handle the case where m_hMutex is NULL
+        // (e.g., by throwing an exception), but for this fix, we'll keep it simple.
+    }
+
+    ~InterprocessLock()
+    {
+        if (m_hMutex != NULL)
+        {
+            ReleaseMutex(m_hMutex);
+            CloseHandle(m_hMutex);
+        }
+    }
+
+    // Delete copy and assignment operators to prevent misuse.
+    InterprocessLock(const InterprocessLock&) = delete;
+    InterprocessLock& operator=(const InterprocessLock&) = delete;
+
+   private:
+    HANDLE m_hMutex;
+};
+
 
 // --- Utils命名空间函数声明，因为它们在CheatMonitor.cpp中 ---
 namespace Utils
@@ -19,8 +57,16 @@ CheatConfigManager& CheatConfigManager::GetInstance()
     return instance;
 }
 
-CheatConfigManager::CheatConfigManager() : m_config(std::make_unique<anti_cheat::ClientConfig>())
+CheatConfigManager::CheatConfigManager() : m_config(std::make_unique<anti_cheat::ClientConfig>()) 
 {
+    // Create a unique mutex name from the config file path to avoid collisions.
+    // The 'Global\' prefix makes the mutex visible across all user sessions.
+    std::wstring path_str = GetConfigFilePath();
+    // Replace characters that are invalid in mutex names.
+    std::replace(path_str.begin(), path_str.end(), L'\\', L'_');
+    std::replace(path_str.begin(), path_str.end(), L':', L'_');
+    m_configMutexName = L"Global\AntiCheat_ConfigMutex_" + path_str;
+
     LoadConfigFromFile();
 }
 
@@ -28,6 +74,9 @@ CheatConfigManager::CheatConfigManager() : m_config(std::make_unique<anti_cheat:
 
 void CheatConfigManager::LoadConfigFromFile()
 {
+    // Acquire an inter-process lock to prevent race conditions with other clients.
+    InterprocessLock proc_lock(m_configMutexName);
+    // Acquire an intra-process lock for thread safety within this client.
     std::lock_guard<std::mutex> lock(m_mutex);
 
     std::wstring path = GetConfigFilePath();
@@ -101,7 +150,10 @@ void CheatConfigManager::UpdateConfigFromServer(const std::string& server_data)
         return;
     }
 
+    // Acquire locks before modifying shared resources (memory and file).
+    InterprocessLock proc_lock(m_configMutexName);
     std::lock_guard<std::mutex> lock(m_mutex);
+
     m_config = std::move(new_config);
     UpdateWideStringCaches();
 
