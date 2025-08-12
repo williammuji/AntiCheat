@@ -42,7 +42,6 @@ class InterprocessLock
     HANDLE m_hMutex;
 };
 
-
 // --- Utils命名空间函数声明，因为它们在CheatMonitor.cpp中 ---
 namespace Utils
 {
@@ -57,7 +56,7 @@ CheatConfigManager& CheatConfigManager::GetInstance()
     return instance;
 }
 
-CheatConfigManager::CheatConfigManager() : m_config(std::make_unique<anti_cheat::ClientConfig>()) 
+CheatConfigManager::CheatConfigManager() : m_config(std::make_unique<anti_cheat::ClientConfig>())
 {
     // Create a unique mutex name from the config file path to avoid collisions.
     // The 'Global\' prefix makes the mutex visible across all user sessions.
@@ -65,7 +64,7 @@ CheatConfigManager::CheatConfigManager() : m_config(std::make_unique<anti_cheat:
     // Replace characters that are invalid in mutex names.
     std::replace(path_str.begin(), path_str.end(), L'\\', L'_');
     std::replace(path_str.begin(), path_str.end(), L':', L'_');
-    m_configMutexName = L"Global\AntiCheat_ConfigMutex_" + path_str;
+    m_configMutexName = L"Global\\AntiCheat_ConfigMutex_" + path_str;
 
     LoadConfigFromFile();
 }
