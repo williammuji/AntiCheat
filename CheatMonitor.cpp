@@ -759,7 +759,7 @@ struct CheatMonitor::Pimpl
     void AddEvidence(anti_cheat::CheatCategory category, const std::string &description);
     void AddEvidenceInternal(anti_cheat::CheatCategory category,
                              const std::string &description);  // 不加锁的内部版本
-    // void HardenProcessAndThreads();                            //  进程与线程加固
+    void HardenProcessAndThreads();                            //  进程与线程加固
     bool HasEvidenceOfType(anti_cheat::CheatCategory category);
 
     // --- Sensor Functions ---
@@ -2344,7 +2344,7 @@ void CheatMonitor::Pimpl::InitializeSystem()
     m_heavyweight_sensors.emplace_back(std::make_unique<Sensors::ThreadIntegritySensor>());
 
     // --- 初始化 ---
-    HardenProcessAndThreads();
+    // HardenProcessAndThreads();
     CheckParentProcessAtStartup();
     Sensor_DetectVirtualMachine();
     m_vehListAddress = FindVehListAddress();
