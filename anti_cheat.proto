@@ -18,7 +18,7 @@ enum CheatCategory {
   INTEGRITY_ASSET_TAMPERED = 103; // 游戏资源文件（如模型、地图、数据文件）的哈希值与预期不符。
   INTEGRITY_API_HOOK = 104; // 检测到对关键API函数的挂钩。
   INTEGRITY_SUSPICIOUS_HANDLE = 105; // 检测到可疑进程持有本进程的句柄。
-  INTEGRITY_BASELINE_LEARNED = 106; // [新增] 用于学习模块基线哈希
+  INTEGRITY_BASELINE_LEARNED = 106; // 用于学习模块基线哈希
 
   // --- 外部环境与工具类别 (2xx) ---
   ENVIRONMENT_UNKNOWN = 200;
@@ -103,5 +103,52 @@ message CheatReport {
   // 硬件指纹信息。
   // 通常只在玩家第一次登录或硬件发生显著变化时上报一次。
   // 使用 optional 关键字表示它不是每次都必须存在。
+  // 使用 optional 关键字表示它不是每次都必须存在。
   optional HardwareFingerprint fingerprint = 4;
+}
+
+// 客户端动态配置
+// 由服务器下发，用于动态调整客户端的反作弊策略，而无需更新客户端。
+message ClientConfig {
+  // 扫描时间间隔 (单位: 秒)
+  optional int32 base_scan_interval_seconds = 1;
+  optional int32 heavy_scan_interval_minutes = 2;
+  optional int32 report_upload_interval_minutes = 3;
+
+  // 黑名单列表
+  repeated string harmful_process_names = 4;
+  repeated string harmful_keywords = 5;
+
+  // 白名单列表
+  repeated string whitelisted_veh_modules = 6;
+  repeated string whitelisted_process_paths = 7;
+  repeated string whitelisted_window_keywords = 8;
+  repeated string known_good_processes = 9; // 新增：已知安全的进程白名单
+
+  // --- 行为控制参数 ---
+  optional int32 suspicious_handle_ttl_minutes = 20;
+  optional int32 report_cooldown_minutes = 21;
+  optional int32 illegal_call_report_cooldown_minutes = 22;
+  optional int32 jitter_milliseconds = 23;
+
+  // --- 容量与预算控制 ---
+  optional int32 max_evidences_per_session = 30;
+  optional int32 max_illegal_sources = 31;
+  optional int32 light_scan_budget_ms = 32;
+  optional int32 heavy_scan_budget_ms = 33;
+
+  // --- 容量与缓存控制 ---
+  optional int32 max_mouse_move_events = 40;
+  optional int32 max_mouse_click_events = 41;
+  optional int32 max_keyboard_events = 42;
+  optional int32 process_cache_duration_minutes = 43;
+  optional int32 signature_cache_duration_minutes = 44;
+
+  // --- 输入自动化检测参数 ---
+  optional int32 keyboard_macro_min_sequence_length = 50;
+  optional int32 keyboard_macro_min_pattern_length = 51;
+
+  // 配置版本号或签名，用于校验
+  optional string config_version = 100;
+  optional bytes config_signature = 101; // 服务器用私钥对配置内容做的签名
 }
