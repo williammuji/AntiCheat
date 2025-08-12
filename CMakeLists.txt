@@ -18,6 +18,8 @@ protobuf_generate_cpp(PROTO_SRCS PROTO_HDRS anti_cheat.proto)
 add_library(CheatMonitorLib STATIC
     CheatMonitor.h
     CheatMonitor.cpp
+    CheatConfigManager.h
+    CheatConfigManager.cpp
     ${PROTO_SRCS}
     ${PROTO_HDRS}
 )
