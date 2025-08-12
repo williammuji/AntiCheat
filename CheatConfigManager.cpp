@@ -4,8 +4,6 @@
 #include <filesystem>
 #include <stdexcept>
 #include <Wincrypt.h>
-#pragma comment(lib, "crypt32.lib")
-#pragma comment(lib, "bcrypt.lib")
 
 // --- Utils命名空间函数声明，因为它们在CheatMonitor.cpp中 ---
 namespace Utils
@@ -464,45 +462,50 @@ bool CheatConfigManager::VerifySignature(const anti_cheat::ClientConfig& config)
 
 std::string CheatConfigManager::CalculateHash(const std::string& data) const
 {
-    BCRYPT_ALG_HANDLE hAlg = NULL;
-    BCRYPT_HASH_HANDLE hHash = NULL;
-    NTSTATUS status;
+    HCRYPTPROV hProv = 0;
+    HCRYPTHASH hHash = 0;
     std::string hashResult;
     std::vector<BYTE> hashBuffer;
 
-    // 打开算法句柄
-    status = BCryptOpenAlgorithmProvider(&hAlg, BCRYPT_SHA256_ALGORITHM, NULL, 0);
-    if (status < 0)
+    // 1. 获取加密服务提供程序(CSP)的句柄。
+    // PROV_RSA_AES 在 Windows XP SP2 及以上版本可用，并支持 SHA-256。
+    if (!CryptAcquireContextW(&hProv, NULL, NULL, PROV_RSA_AES, CRYPT_VERIFYCONTEXT))
+    {
         goto cleanup;
+    }
 
-    // 创建哈希对象
-    status = BCryptCreateHash(hAlg, &hHash, NULL, 0, NULL, 0, 0);
-    if (status < 0)
+    // 2. 创建一个哈希对象。
+    if (!CryptCreateHash(hProv, CALG_SHA_256, 0, 0, &hHash))
+    {
         goto cleanup;
+    }
 
-    // 哈希数据
-    status = BCryptHashData(hHash, (PBYTE)data.c_str(), data.length(), 0);
-    if (status < 0)
+    // 3. 对数据进行哈希计算。
+    if (!CryptHashData(hHash, (const BYTE*)data.c_str(), data.length(), 0))
+    {
         goto cleanup;
+    }
 
-    // 获取哈希值长度
-    DWORD cbHash;
-    DWORD cbData;
-    status = BCryptGetProperty(hAlg, BCRYPT_HASH_LENGTH, (PBYTE)&cbHash, sizeof(DWORD), &cbData, 0);
-    if (status < 0)
+    // 4. 获取哈希值。
+    DWORD cbHash = 0;
+    DWORD cbData = sizeof(DWORD);
+    if (!CryptGetHashParam(hHash, HP_HASHSIZE, (BYTE*)&cbHash, &cbData, 0))
+    {
         goto cleanup;
+    }
 
     hashBuffer.resize(cbHash);
-    status = BCryptFinishHash(hHash, hashBuffer.data(), cbHash, 0);
-    if (status < 0)
+    if (!CryptGetHashParam(hHash, HP_HASHVAL, hashBuffer.data(), &cbHash, 0))
+    {
         goto cleanup;
+    }
 
     hashResult.assign(reinterpret_cast<char*>(hashBuffer.data()), hashBuffer.size());
 
 cleanup:
     if (hHash)
-        BCryptDestroyHash(hHash);
-    if (hAlg)
-        BCryptCloseAlgorithmProvider(hAlg, 0);
+        CryptDestroyHash(hHash);
+    if (hProv)
+        CryptReleaseContext(hProv, 0);
     return hashResult;
 }
