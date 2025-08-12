@@ -36,7 +36,6 @@
 #include <vector>
 
 #pragma comment(lib, "Ole32.lib")
-#pragma comment(lib, "Bcrypt.lib")  // for BCryptGenRandom
 #pragma comment(lib, "psapi.lib")
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "advapi32.lib")  // 为注册表函数 (Reg*) 添加库链接
@@ -760,7 +759,7 @@ struct CheatMonitor::Pimpl
     void AddEvidence(anti_cheat::CheatCategory category, const std::string &description);
     void AddEvidenceInternal(anti_cheat::CheatCategory category,
                              const std::string &description);  // 不加锁的内部版本
-    void HardenProcessAndThreads();                            //  进程与线程加固
+    // void HardenProcessAndThreads();                            //  进程与线程加固
     bool HasEvidenceOfType(anti_cheat::CheatCategory category);
 
     // --- Sensor Functions ---
@@ -1479,11 +1478,21 @@ class OverlaySensor : public ISensor
             return;
         }
 
+        struct EnumWindowsCallbackData
+        {
+            ScanContext *pContext;
+            HWND hGameWnd;
+            RECT gameRect;
+        };
+
+        EnumWindowsCallbackData callbackData = {&context, hGameWnd, gameRect};
+
         EnumWindows(
                 [](HWND hWnd, LPARAM lParam) -> BOOL {
-                    ScanContext *pContext = reinterpret_cast<ScanContext *>(lParam);
-                    HWND hGameWnd = pContext->GetGameWindow();
-                    RECT *pGameRect = reinterpret_cast<RECT *>(GetWindowLongPtr(hGameWnd, GWLP_USERDATA));
+                    EnumWindowsCallbackData *pCallbackData = reinterpret_cast<EnumWindowsCallbackData *>(lParam);
+                    ScanContext *pContext = pCallbackData->pContext;
+                    HWND hGameWnd = pCallbackData->hGameWnd;
+                    const RECT *pGameRect = &pCallbackData->gameRect;
 
                     if (hWnd == hGameWnd || !IsWindowVisible(hWnd))
                     {
@@ -1526,7 +1535,7 @@ class OverlaySensor : public ISensor
                     }
                     return TRUE;
                 },
-                reinterpret_cast<LPARAM>(&context));
+                reinterpret_cast<LPARAM>(&callbackData));
     }
 };
 
@@ -2716,16 +2725,29 @@ void CheatMonitor::Pimpl::MonitorLoop()
 void CheatMonitor::Pimpl::HardenProcessAndThreads()
 {
     // 1. 启用进程缓解策略 (DEP, 禁止创建子进程等)
-    // 启用DEP
-    PROCESS_MITIGATION_DEP_POLICY depPolicy = {};
-    depPolicy.Enable = 1;
-    depPolicy.Permanent = true;
-    SetProcessMitigationPolicy(ProcessDEPPolicy, &depPolicy, sizeof(depPolicy));
+    // 动态加载 SetProcessMitigationPolicy
+    typedef BOOL(WINAPI * PSetProcessMitigationPolicy)(PROCESS_MITIGATION_POLICY Policy, PVOID lpBuffer,
+                                                       SIZE_T dwLength);
+    static PSetProcessMitigationPolicy pSetProcessMitigationPolicy = (PSetProcessMitigationPolicy)GetProcAddress(
+            GetModuleHandleW(L"kernel32.dll"), "SetProcessMitigationPolicy");
 
-    // 禁止创建子进程
-    PROCESS_MITIGATION_CHILD_PROCESS_POLICY childPolicy = {};
-    childPolicy.NoChildProcessCreation = 1;
-    SetProcessMitigationPolicy(ProcessChildProcessPolicy, &childPolicy, sizeof(childPolicy));
+    if (pSetProcessMitigationPolicy)
+    {
+        // 启用DEP
+        PROCESS_MITIGATION_DEP_POLICY depPolicy = {};
+        depPolicy.Enable = 1;
+        depPolicy.Permanent = true;
+        pSetProcessMitigationPolicy(ProcessDEPPolicy, &depPolicy, sizeof(depPolicy));
+
+        // 禁止创建子进程
+        PROCESS_MITIGATION_CHILD_PROCESS_POLICY childPolicy = {};
+        childPolicy.NoChildProcessCreation = 1;
+        pSetProcessMitigationPolicy(ProcessChildProcessPolicy, &childPolicy, sizeof(childPolicy));
+    }
+    else
+    {
+        AddEvidence(anti_cheat::RUNTIME_ERROR, "SetProcessMitigationPolicy API 不可用，无法启用进程缓解策略。");
+    }
 
     // 2. 隐藏我们自己的监控线程，增加逆向分析难度
     if (g_pNtSetInformationThread)
@@ -2900,14 +2922,35 @@ void CheatMonitor::Pimpl::Sensor_CollectHardwareFingerprint()
     }
 
     // 4. OS Version
-    OSVERSIONINFOEXW osInfo;
-    osInfo.dwOSVersionInfoSize = sizeof(OSVERSIONINFOEXW);
-    if (GetVersionExW((LPOSVERSIONINFOW)&osInfo))
+    // 使用 RtlGetVersion 获取准确的OS版本信息
+    typedef NTSTATUS(WINAPI * RtlGetVersion_t)(LPOSVERSIONINFOEXW lpVersionInformation);
+    static RtlGetVersion_t pRtlGetVersion =
+            (RtlGetVersion_t)GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "RtlGetVersion");
+
+    if (pRtlGetVersion)
     {
-        std::wstringstream wss;
-        wss << L"Windows " << osInfo.dwMajorVersion << L"." << osInfo.dwMinorVersion << L" (Build "
-            << osInfo.dwBuildNumber << L")";
-        m_fingerprint->set_os_version(Utils::WideToString(wss.str()));
+        OSVERSIONINFOEXW osInfo = {0};
+        osInfo.dwOSVersionInfoSize = sizeof(osInfo);
+        if (NT_SUCCESS(pRtlGetVersion(&osInfo)))
+        {
+            std::wstringstream wss;
+            wss << L"Windows " << osInfo.dwMajorVersion << L"." << osInfo.dwMinorVersion << L" (Build "
+                << osInfo.dwBuildNumber << L")";
+            m_fingerprint->set_os_version(Utils::WideToString(wss.str()));
+        }
+    }
+    else
+    {
+        // Fallback for very old systems if RtlGetVersion is not available
+        OSVERSIONINFOEXW osInfo;
+        osInfo.dwOSVersionInfoSize = sizeof(OSVERSIONINFOEXW);
+        if (GetVersionExW((LPOSVERSIONINFOW)&osInfo))
+        {
+            std::wstringstream wss;
+            wss << L"Windows " << osInfo.dwMajorVersion << L"." << osInfo.dwMinorVersion << L" (Build "
+                << osInfo.dwBuildNumber << L")";
+            m_fingerprint->set_os_version(Utils::WideToString(wss.str()));
+        }
     }
 
     // 5. CPU Info

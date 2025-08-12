@@ -37,5 +37,6 @@ target_link_libraries(CheatMonitorLib PUBLIC ${Protobuf_LIBRARIES})
 # 添加Windows平台特定的库。这取代了在代码中使用 #pragma comment(lib, ...)，
 # 使得构建脚本更加清晰和可移植。
 if(WIN32)
-    target_link_libraries(CheatMonitorLib PUBLIC ole32 psapi user32 advapi32 iphlpapi wintrust)
+    # crypt32.lib 用于 CryptProtectData, advapi32.lib 包含旧版 CryptoAPI (用于哈希)
+    target_link_libraries(CheatMonitorLib PUBLIC ole32 psapi user32 advapi32 iphlpapi wintrust crypt32)
 endif()
