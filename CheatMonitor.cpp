@@ -175,6 +175,26 @@ typedef struct _SYSTEM_KERNEL_DEBUGGER_INFORMATION
     BOOLEAN KernelDebuggerNotPresent;
 } SYSTEM_KERNEL_DEBUGGER_INFORMATION, *PSYSTEM_KERNEL_DEBUGGER_INFORMATION;
 
+// Win8+: SRWLOCK + 双LIST_ENTRY
+typedef struct _VECTORED_HANDLER_LIST_WIN8
+{
+    SRWLOCK LockException;
+    LIST_ENTRY ExceptionList;
+    SRWLOCK LockContinue;
+    LIST_ENTRY ContinueList;
+} VECTORED_HANDLER_LIST_WIN8;
+
+// 枚举版本
+enum WindowsVersion
+{
+    Win_XP,
+    Win_Vista_Win7,
+    Win_8_Win81,
+    Win_10,
+    Win_11,
+    Win_Unknown
+};
+
 namespace Utils
 {
 
@@ -3073,46 +3093,225 @@ bool CheatMonitor::Pimpl::IsAddressInLegitimateModule(PVOID address, std::wstrin
     return false;
 }
 
+// 获取版本
+WindowsVersion GetWindowsVersion()
+{
+    RTL_OSVERSIONINFOW osInfo = {sizeof(osInfo)};
+    if (NT_SUCCESS(RtlGetVersion(&osInfo)))
+    {
+        if (osInfo.dwMajorVersion == 5 && (osInfo.dwMinorVersion == 1 || osInfo.dwMinorVersion == 2))
+            return Win_XP;
+        if (osInfo.dwMajorVersion == 6 && osInfo.dwMinorVersion == 0)
+            return Win_Vista_Win7;  // Vista
+        if (osInfo.dwMajorVersion == 6 && osInfo.dwMinorVersion == 1)
+            return Win_Vista_Win7;  // Win7
+        if (osInfo.dwMajorVersion == 6 && (osInfo.dwMinorVersion == 2 || osInfo.dwMinorVersion == 3))
+            return Win_8_Win81;
+        if (osInfo.dwMajorVersion == 10 && osInfo.dwBuildNumber < 22000)
+            return Win_10;
+        if (osInfo.dwMajorVersion == 10 && osInfo.dwBuildNumber >= 22000)
+            return Win_11;
+    }
+    return Win_Unknown;
+}
+
+// 模式扫描（x86）
+PBYTE FindPattern(PBYTE base, SIZE_T size, const BYTE *pattern, SIZE_T patternSize, BYTE wildcard = 0x00)
+{
+    for (SIZE_T i = 0; i < size - patternSize; ++i)
+    {
+        bool found = true;
+        for (SIZE_T j = 0; j < patternSize; ++j)
+        {
+            if (pattern[j] != wildcard && base[i + j] != pattern[j])
+            {
+                found = false;
+                break;
+            }
+        }
+        if (found)
+            return base + i;
+    }
+    return nullptr;
+}
+
 uintptr_t CheatMonitor::Pimpl::FindVehListAddress()
 {
-    PVOID pVehHandler = AddVectoredExceptionHandler(1, DecoyVehHandler);
+    HMODULE hNtdll = GetModuleHandleA("ntdll.dll");
+    if (!hNtdll)
+    {
+        LogError("Failed to get ntdll handle");
+        return 0;
+    }
+
+    // 获取.text段
+    PIMAGE_DOS_HEADER dosHeader = reinterpret_cast<PIMAGE_DOS_HEADER>(hNtdll);
+    PIMAGE_NT_HEADERS ntHeader =
+            reinterpret_cast<PIMAGE_NT_HEADERS>(reinterpret_cast<BYTE *>(hNtdll) + dosHeader->e_lfanew);
+    PIMAGE_SECTION_HEADER section = IMAGE_FIRST_SECTION(ntHeader);
+    PBYTE textBase = nullptr;
+    SIZE_T textSize = 0;
+    for (WORD i = 0; i < ntHeader->FileHeader.NumberOfSections; ++i)
+    {
+        if (strncmp(reinterpret_cast<char *>(section->Name), ".text", 6) == 0)
+        {
+            textBase = reinterpret_cast<PBYTE>(hNtdll) + section->VirtualAddress;
+            textSize = section->Misc.VirtualSize;
+            break;
+        }
+        ++section;
+    }
+    if (!textBase || textSize == 0)
+    {
+        LogError("Failed to find .text section");
+        return 0;
+    }
+
+    WindowsVersion ver = GetWindowsVersion();
+    if (ver == Win_Unknown)
+    {
+        LogError("Unknown Windows version");
+        return FallbackFindVehListAddress(ver);
+    }
+
+    // 版本特定x86 pattern：基于逆向，针对RtlAddVectoredExceptionHandler开头 + lea eax, [LdrpVectorHandlerList]
+    // XP: 简单push ebp; mov ebp,esp; sub esp,10h; ... lea eax, [addr]
+    BYTE patternXP[] = {0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x10, 0x8B, 0x45, 0x08, 0x8D, 0x0D};  // 通配偏移
+    // Vista/Win7: sub esp,20h; mov edi, [esp+24h]; lea ecx, [Ldrp...]
+    BYTE patternVista[] = {0x83, 0xEC, 0x20, 0x8B, 0x7C, 0x24, 0x24, 0x8D, 0x0D};
+    // Win8/Win81: 类似Win7，但偏移变
+    BYTE patternWin8[] = {0x83, 0xEC, 0x20, 0x8B, 0xF9, 0x8D, 0x0D};  // lea ecx, [...]
+    // Win10: push ebp; mov ebp,esp; sub esp,20h; mov esi, [ebp+8]; lea ecx, [...]
+    BYTE patternWin10[] = {0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x20, 0x8B, 0x75, 0x08, 0x8D, 0x0D};
+    // Win11 (24H2兼容): 类似Win10，无重大变
+    BYTE patternWin11[] = {0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x20, 0x8B, 0xF2, 0x8D, 0x0D};
+
+    const BYTE *pattern = nullptr;
+    SIZE_T patternSize = 0;
+    SIZE_T offsetAdj = 0;  // 模式后到偏移的字节
+
+    switch (ver)
+    {
+        case Win_XP:
+            pattern = patternXP;
+            patternSize = sizeof(patternXP);
+            offsetAdj = 7;  // 调整基于逆向
+            break;
+        case Win_Vista_Win7:
+            pattern = patternVista;
+            patternSize = sizeof(patternVista);
+            offsetAdj = 8;
+            break;
+        case Win_8_Win81:
+            pattern = patternWin8;
+            patternSize = sizeof(patternWin8);
+            offsetAdj = 6;
+            break;
+        case Win_10:
+            pattern = patternWin10;
+            patternSize = sizeof(patternWin10);
+            offsetAdj = 9;
+            break;
+        case Win_11:
+            pattern = patternWin11;
+            patternSize = sizeof(patternWin11);
+            offsetAdj = 9;
+            break;
+    }
+
+    PBYTE match = FindPattern(textBase, textSize, pattern, patternSize);
+    if (!match)
+    {
+        LogError("Pattern not found");
+        return FallbackFindVehListAddress(ver);
+    }
+
+    // 提取相对偏移 (x86: EIP-relative, 4字节)
+    INT32 offset = *reinterpret_cast<INT32 *>(match + patternSize);
+    uintptr_t address = reinterpret_cast<uintptr_t>(match + patternSize + 4 + offset);  // EIP + offset
+
+    // 验证内存（.data或.mrdata，可读）
+    MEMORY_BASIC_INFORMATION mbi;
+    if (VirtualQuery(reinterpret_cast<LPCVOID>(address), &mbi, sizeof(mbi)) == 0 || mbi.State != MEM_COMMIT ||
+        (mbi.Protect & PAGE_READWRITE) == 0)
+    {
+        LogError("Invalid VEH list memory");
+        return 0;
+    }
+
+    // 调整地址到ExceptionList（基于版本偏移）
+    switch (ver)
+    {
+        case Win_XP:
+            address += offsetof(VECTORED_HANDLER_LIST_XP, List);
+            break;
+        case Win_Vista_Win7:
+            address += offsetof(VECTORED_HANDLER_LIST_VISTA, ExceptionList);
+            break;
+        default:  // Win8+
+            address += offsetof(VECTORED_HANDLER_LIST_WIN8, ExceptionList);
+            break;
+    }
+
+    return address;
+}
+
+// Fallback: 增强遍历，版本适应
+uintptr_t CheatMonitor::Pimpl::FallbackFindVehListAddress(WindowsVersion ver)
+{
+    PVOID pVehHandler = AddVectoredExceptionHandler(
+            1, DecoyVehHandler);  // DecoyVehHandler需定义为LONG CALLBACK (EXCEPTION_POINTERS*)
     if (!pVehHandler)
     {
+        LogError("Failed to add VEH in fallback");
         return 0;
     }
 
     uintptr_t address = 0;
     __try
     {
-        // The VECTORED_HANDLER_ENTRY structure is what our pVehHandler points to.
-        // It contains the LIST_ENTRY and the handler function pointer.
-        // The list head is part of a _VECTORED_HANDLER_LIST structure in ntdll's
-        // data section. We scan for our handler's address to find the entry,
-        // then walk the list back to find the head.
-        const auto *pEntry = reinterpret_cast<const VECTORED_HANDLER_ENTRY *>(pVehHandler);
+        const auto *pEntry = reinterpret_cast<const PVECTORED_HANDLER_ENTRY>(pVehHandler);
         const LIST_ENTRY *pCurrent = &pEntry->List;
 
-        // Walk the list backwards to find the list head.
-        // The list head is not part of an entry, so its Flink/Blink will point
-        // to actual entries, but it won't have our handler pointer next to it.
-        // We assume the list head is within a reasonable range of the entry.
-        for (int i = 0; i < 10; ++i)
+        // 增加深度到100，XP考虑循环链表
+        for (int i = 0; i < 100; ++i)
         {
-            // A list head's Flink points to the first entry, and its Blink to the
-            // last. If pCurrent->Blink->Flink == pCurrent, we've likely found the
-            // head.
-            if (pCurrent->Blink->Flink == pCurrent)
+            MEMORY_BASIC_INFORMATION mbi;
+            if (VirtualQuery(pCurrent->Blink, &mbi, sizeof(mbi)) == 0 || mbi.State != MEM_COMMIT ||
+                (mbi.Protect & (PAGE_READWRITE | PAGE_READONLY)) == 0)
             {
-                // The _VECTORED_HANDLER_LIST struct starts just before the LIST_ENTRY
-                // member, typically aligned. We assume it's at offsetof(SRWLOCK).
-                address = reinterpret_cast<uintptr_t>(pCurrent) - offsetof(VECTORED_HANDLER_LIST, List);
+                break;
+            }
+
+            if (pCurrent->Blink->Flink == pCurrent)
+            {  // 头检测
+                // 版本偏移
+                if (ver == Win_XP)
+                {
+                    address = reinterpret_cast<uintptr_t>(pCurrent) - offsetof(VECTORED_HANDLER_LIST_XP, List);
+                }
+                else if (ver == Win_Vista_Win7)
+                {
+                    address = reinterpret_cast<uintptr_t>(pCurrent) -
+                              offsetof(VECTORED_HANDLER_LIST_VISTA, ExceptionList);
+                }
+                else
+                {
+                    address =
+                            reinterpret_cast<uintptr_t>(pCurrent) - offsetof(VECTORED_HANDLER_LIST_WIN8, ExceptionList);
+                }
                 break;
             }
             pCurrent = pCurrent->Blink;
+
+            // XP防循环：如果回自身，break
+            if (ver == Win_XP && pCurrent == &pEntry->List)
+                break;
         }
     }
     __except (EXCEPTION_EXECUTE_HANDLER)
     {
+        LogError("Exception in fallback", GetExceptionCode());
         address = 0;
     }
 
