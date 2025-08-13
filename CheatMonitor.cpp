@@ -151,6 +151,12 @@ typedef struct _SYSTEM_CODE_INTEGRITY_INFORMATION
 // 这些结构基于逆向工程，可能在不同Windows版本间有差异。
 // __try/__except 块对于保证稳定性至关重要。
 
+// typedef struct _LIST_ENTRY
+// {
+//     struct _LIST_ENTRY *Flink;
+//     struct _LIST_ENTRY *Blink;
+// } LIST_ENTRY, *PLIST_ENTRY;
+
 // PEB->VectoredExceptionHandlers 指向的结构体
 typedef struct _VECTORED_HANDLER_LIST
 {
@@ -174,6 +180,20 @@ typedef struct _SYSTEM_KERNEL_DEBUGGER_INFORMATION
     BOOLEAN KernelDebuggerEnabled;
     BOOLEAN KernelDebuggerNotPresent;
 } SYSTEM_KERNEL_DEBUGGER_INFORMATION, *PSYSTEM_KERNEL_DEBUGGER_INFORMATION;
+
+// Windows XP VEH list structure (simplified, adjust based on your needs)
+struct VECTORED_HANDLER_LIST_XP
+{
+    CRITICAL_SECTION Lock;
+    LIST_ENTRY List;
+};
+
+// Windows Vista/Win7 VEH list structure (simplified, adjust based on your needs)
+struct VECTORED_HANDLER_LIST_VISTA
+{
+    SRWLOCK LockException;
+    LIST_ENTRY ExceptionList;
+};
 
 // Win8+: SRWLOCK + 双LIST_ENTRY
 typedef struct _VECTORED_HANDLER_LIST_WIN8
@@ -3097,7 +3117,7 @@ bool CheatMonitor::Pimpl::IsAddressInLegitimateModule(PVOID address, std::wstrin
 WindowsVersion GetWindowsVersion()
 {
     RTL_OSVERSIONINFOW osInfo = {sizeof(osInfo)};
-    if (NT_SUCCESS(RtlGetVersion(&osInfo)))
+    if (GetVersionExW((LPOSVERSIONINFOW)&osInfo))
     {
         if (osInfo.dwMajorVersion == 5 && (osInfo.dwMinorVersion == 1 || osInfo.dwMinorVersion == 2))
             return Win_XP;
@@ -3135,12 +3155,76 @@ PBYTE FindPattern(PBYTE base, SIZE_T size, const BYTE *pattern, SIZE_T patternSi
     return nullptr;
 }
 
+// Fallback: 增强遍历，版本适应
+uintptr_t FallbackFindVehListAddress(WindowsVersion ver)
+{
+    PVOID pVehHandler = AddVectoredExceptionHandler(
+            1, DecoyVehHandler);  // DecoyVehHandler需定义为LONG CALLBACK (EXCEPTION_POINTERS*)
+    if (!pVehHandler)
+    {
+        std::cout << "Failed to add VEH in fallback" << std::endl;
+        return 0;
+    }
+
+    uintptr_t address = 0;
+    __try
+    {
+        const auto *pEntry = reinterpret_cast<const PVECTORED_HANDLER_ENTRY>(pVehHandler);
+        const LIST_ENTRY *pCurrent = &pEntry->List;
+
+        // 增加深度到100，XP考虑循环链表
+        for (int i = 0; i < 100; ++i)
+        {
+            MEMORY_BASIC_INFORMATION mbi;
+            if (VirtualQuery(pCurrent->Blink, &mbi, sizeof(mbi)) == 0 || mbi.State != MEM_COMMIT ||
+                (mbi.Protect & (PAGE_READWRITE | PAGE_READONLY)) == 0)
+            {
+                break;
+            }
+
+            if (pCurrent->Blink->Flink == pCurrent)
+            {  // 头检测
+                // 版本偏移
+                if (ver == Win_XP)
+                {
+                    address = reinterpret_cast<uintptr_t>(pCurrent) - offsetof(VECTORED_HANDLER_LIST_XP, List);
+                }
+                else if (ver == Win_Vista_Win7)
+                {
+                    address = reinterpret_cast<uintptr_t>(pCurrent) -
+                              offsetof(VECTORED_HANDLER_LIST_VISTA, ExceptionList);
+                }
+                else
+                {
+                    address =
+                            reinterpret_cast<uintptr_t>(pCurrent) - offsetof(VECTORED_HANDLER_LIST_WIN8, ExceptionList);
+                }
+                break;
+            }
+            pCurrent = pCurrent->Blink;
+
+            // XP防循环：如果回自身，break
+            if (ver == Win_XP && pCurrent == &pEntry->List)
+                break;
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        std::cout << "Exception in fallback" << GetExceptionCode() << std::endl;
+        address = 0;
+    }
+
+    RemoveVectoredExceptionHandler(pVehHandler);
+    return address;
+}
+
 uintptr_t CheatMonitor::Pimpl::FindVehListAddress()
 {
     HMODULE hNtdll = GetModuleHandleA("ntdll.dll");
     if (!hNtdll)
     {
-        LogError("Failed to get ntdll handle");
+        std::cout << "Failed to get ntdll handle" << std::endl;
+        ;
         return 0;
     }
 
@@ -3163,14 +3247,14 @@ uintptr_t CheatMonitor::Pimpl::FindVehListAddress()
     }
     if (!textBase || textSize == 0)
     {
-        LogError("Failed to find .text section");
+        std::cout << "Failed to find .text section" << std::endl;
         return 0;
     }
 
     WindowsVersion ver = GetWindowsVersion();
     if (ver == Win_Unknown)
     {
-        LogError("Unknown Windows version");
+        std::cout << "Unknown Windows version" << std::endl;
         return FallbackFindVehListAddress(ver);
     }
 
@@ -3222,7 +3306,7 @@ uintptr_t CheatMonitor::Pimpl::FindVehListAddress()
     PBYTE match = FindPattern(textBase, textSize, pattern, patternSize);
     if (!match)
     {
-        LogError("Pattern not found");
+        std::cout << "Pattern not found" << std::endl;
         return FallbackFindVehListAddress(ver);
     }
 
@@ -3235,7 +3319,7 @@ uintptr_t CheatMonitor::Pimpl::FindVehListAddress()
     if (VirtualQuery(reinterpret_cast<LPCVOID>(address), &mbi, sizeof(mbi)) == 0 || mbi.State != MEM_COMMIT ||
         (mbi.Protect & PAGE_READWRITE) == 0)
     {
-        LogError("Invalid VEH list memory");
+        std::cout << "Invalid VEH list memory" << std::endl;
         return 0;
     }
 
@@ -3256,69 +3340,6 @@ uintptr_t CheatMonitor::Pimpl::FindVehListAddress()
     return address;
 }
 
-// Fallback: 增强遍历，版本适应
-uintptr_t CheatMonitor::Pimpl::FallbackFindVehListAddress(WindowsVersion ver)
-{
-    PVOID pVehHandler = AddVectoredExceptionHandler(
-            1, DecoyVehHandler);  // DecoyVehHandler需定义为LONG CALLBACK (EXCEPTION_POINTERS*)
-    if (!pVehHandler)
-    {
-        LogError("Failed to add VEH in fallback");
-        return 0;
-    }
-
-    uintptr_t address = 0;
-    __try
-    {
-        const auto *pEntry = reinterpret_cast<const PVECTORED_HANDLER_ENTRY>(pVehHandler);
-        const LIST_ENTRY *pCurrent = &pEntry->List;
-
-        // 增加深度到100，XP考虑循环链表
-        for (int i = 0; i < 100; ++i)
-        {
-            MEMORY_BASIC_INFORMATION mbi;
-            if (VirtualQuery(pCurrent->Blink, &mbi, sizeof(mbi)) == 0 || mbi.State != MEM_COMMIT ||
-                (mbi.Protect & (PAGE_READWRITE | PAGE_READONLY)) == 0)
-            {
-                break;
-            }
-
-            if (pCurrent->Blink->Flink == pCurrent)
-            {  // 头检测
-                // 版本偏移
-                if (ver == Win_XP)
-                {
-                    address = reinterpret_cast<uintptr_t>(pCurrent) - offsetof(VECTORED_HANDLER_LIST_XP, List);
-                }
-                else if (ver == Win_Vista_Win7)
-                {
-                    address = reinterpret_cast<uintptr_t>(pCurrent) -
-                              offsetof(VECTORED_HANDLER_LIST_VISTA, ExceptionList);
-                }
-                else
-                {
-                    address =
-                            reinterpret_cast<uintptr_t>(pCurrent) - offsetof(VECTORED_HANDLER_LIST_WIN8, ExceptionList);
-                }
-                break;
-            }
-            pCurrent = pCurrent->Blink;
-
-            // XP防循环：如果回自身，break
-            if (ver == Win_XP && pCurrent == &pEntry->List)
-                break;
-        }
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER)
-    {
-        LogError("Exception in fallback", GetExceptionCode());
-        address = 0;
-    }
-
-    RemoveVectoredExceptionHandler(pVehHandler);
-    return address;
-}
-
 void CheatMonitor::Pimpl::InstallExtendedApiHooks()
 {
     // TODO: Implement safe IAT hooking for extended APIs
@@ -3327,4 +3348,45 @@ void CheatMonitor::Pimpl::InstallExtendedApiHooks()
 void CheatMonitor::Pimpl::UninstallExtendedApiHooks()
 {
     // TODO: Implement safe IAT unhooking for extended APIs
+}
+
+LRESULT CALLBACK CheatMonitor::Pimpl::LowLevelMouseProc(int nCode, WPARAM wParam, LPARAM lParam)
+{
+    if (nCode == HC_ACTION && s_pimpl_for_hooks)
+    {
+        MSLLHOOKSTRUCT *pMouseStruct = (MSLLHOOKSTRUCT *)lParam;
+        if (!pMouseStruct)
+        {
+            s_pimpl_for_hooks->AddEvidence(anti_cheat::RUNTIME_ERROR, "鼠标钩子回调中lParam为空。");
+            return CallNextHookEx(s_pimpl_for_hooks->m_hMouseHook, nCode, wParam, lParam);
+        }
+
+        if (pMouseStruct->flags & LLMHF_INJECTED)
+        {
+            s_pimpl_for_hooks->AddEvidence(anti_cheat::INPUT_AUTOMATION_DETECTED,
+                                           "检测到注入的鼠标事件 (LLMHF_INJECTED flag)");
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(s_pimpl_for_hooks->m_inputMutex);  // [修复] 加锁保护并发写入
+            if (wParam == WM_LBUTTONDOWN || wParam == WM_RBUTTONDOWN)
+            {
+                if (s_pimpl_for_hooks->m_mouseClickEvents.size() <
+                    (size_t)CheatConfigManager::GetInstance().GetMaxMouseClickEvents())
+                {
+                    s_pimpl_for_hooks->m_mouseClickEvents.push({pMouseStruct->time});
+                }
+            }
+            else if (wParam == WM_MOUSEMOVE)
+            {
+                if (s_pimpl_for_hooks->m_mouseMoveEvents.size() <
+                    (size_t)CheatConfigManager::GetInstance().GetMaxMouseClickEvents())
+                {
+                    s_pimpl_for_hooks->m_mouseMoveEvents.push({pMouseStruct->pt, pMouseStruct->time});
+                }
+            }
+        }
+    }
+    // 务必调用 CallNextHookEx 将消息传递给钩子链中的下一个钩子
+    return CallNextHookEx(s_pimpl_for_hooks->m_hMouseHook, nCode, wParam, lParam);
 }

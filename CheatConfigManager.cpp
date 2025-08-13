@@ -519,14 +519,14 @@ std::string CheatConfigManager::CalculateHash(const std::string& data) const
     std::vector<BYTE> hashBuffer;
 
     // 1. 获取加密服务提供程序(CSP)的句柄。
-    // PROV_RSA_AES 在 Windows XP SP2 及以上版本可用，并支持 SHA-256。
+    // PROV_RSA_AES 在 Windows XP SP2 及以上版本可用，并支持 SHA-1。
     if (!CryptAcquireContextW(&hProv, NULL, NULL, PROV_RSA_AES, CRYPT_VERIFYCONTEXT))
     {
         goto cleanup;
     }
 
     // 2. 创建一个哈希对象。
-    if (!CryptCreateHash(hProv, CALG_SHA_256, 0, 0, &hHash))
+    if (!CryptCreateHash(hProv, CALG_SHA1, 0, 0, &hHash))
     {
         goto cleanup;
     }
