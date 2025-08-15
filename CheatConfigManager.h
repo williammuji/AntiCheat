@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include "anti_cheat.pb.h"
 #include <cstdint>
@@ -10,7 +10,7 @@
 
 class CheatConfigManager
 {
-public:
+   public:
     static CheatConfigManager& GetInstance();
 
     CheatConfigManager(const CheatConfigManager&) = delete;
@@ -53,7 +53,7 @@ public:
     int32_t GetKeyboardMacroMinSequenceLength() const;
     int32_t GetKeyboardMacroMinPatternLength() const;
 
-private:
+   private:
     struct ConfigData
     {
         std::unique_ptr<anti_cheat::ClientConfig> config;
@@ -64,7 +64,9 @@ private:
         std::unordered_set<std::wstring> whitelistedWindowKeywords_w;
         std::unordered_set<std::wstring> knownGoodProcesses_w;
 
-        ConfigData() : config(std::make_unique<anti_cheat::ClientConfig>()) {}
+        ConfigData() : config(std::make_unique<anti_cheat::ClientConfig>())
+        {
+        }
     };
 
     CheatConfigManager();

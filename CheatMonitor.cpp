@@ -896,23 +896,23 @@ class ScanContext
     }
 
     // --- 提供对配置的只读访问 ---
-    const std::vector<std::wstring> &GetHarmfulProcessNames() const
+    std::shared_ptr<const std::vector<std::wstring>> GetHarmfulProcessNames() const
     {
         return CheatConfigManager::GetInstance().GetHarmfulProcessNames();
     }
-    const std::vector<std::wstring> &GetHarmfulKeywords() const
+    std::shared_ptr<const std::vector<std::wstring>> GetHarmfulKeywords() const
     {
         return CheatConfigManager::GetInstance().GetHarmfulKeywords();
     }
-    const std::unordered_set<std::wstring> &GetWhitelistedProcessPaths() const
+    std::shared_ptr<const std::unordered_set<std::wstring>> GetWhitelistedProcessPaths() const
     {
         return CheatConfigManager::GetInstance().GetWhitelistedProcessPaths();
     }
-    const std::unordered_set<std::wstring> &GetWhitelistedWindowKeywords() const
+    std::shared_ptr<const std::unordered_set<std::wstring>> GetWhitelistedWindowKeywords() const
     {
         return CheatConfigManager::GetInstance().GetWhitelistedWindowKeywords();
     }
-    const std::unordered_set<std::wstring> &GetWhitelistedVEHModules() const
+    std::shared_ptr<const std::unordered_set<std::wstring>> GetWhitelistedVEHModules() const
     {
         return CheatConfigManager::GetInstance().GetWhitelistedVEHModules();
     }
@@ -1409,7 +1409,8 @@ class VehHookSensor : public ISensor
                 // 将模块路径转换为小写以进行比较
                 std::wstring lowerModulePath = modulePath;
                 std::transform(lowerModulePath.begin(), lowerModulePath.end(), lowerModulePath.begin(), ::towlower);
-                if (context.GetWhitelistedVEHModules().count(lowerModulePath) == 0)
+                auto whitelistedVEHModules = context.GetWhitelistedVEHModules();
+                if (whitelistedVEHModules && whitelistedVEHModules->count(lowerModulePath) == 0)
                 {
                     std::wostringstream woss;
                     woss << L"检测到可疑的VEH Hook (Handler #" << index << L").来源: " << modulePath << L", 地址: 0x"
@@ -1776,7 +1777,7 @@ class ProcessHandleSensor : public ISensor
             CheatMonitor::Pimpl::ProcessVerdict currentVerdict;
             Utils::SignatureStatus signatureStatus = Utils::VerifyFileSignature(ownerProcessPath);
 
-            if (knownGoodProcesses.count(lowerProcessName) > 0 && signatureStatus == Utils::SignatureStatus::TRUSTED)
+            if (knownGoodProcesses->count(lowerProcessName) > 0 && signatureStatus == Utils::SignatureStatus::TRUSTED)
             {
                 suspiciousHandleHolders[handle.UniqueProcessId] = now;
                 currentVerdict = CheatMonitor::Pimpl::ProcessVerdict::SIGNED_AND_TRUSTED;
@@ -1938,7 +1939,7 @@ class EnvironmentSensor : public ISensor
     }
     void Execute(ScanContext &context) override
     {
-        const auto &knownGoodProcesses = CheatConfigManager::GetInstance().GetKnownGoodProcesses();
+        auto knownGoodProcesses = CheatConfigManager::GetInstance().GetKnownGoodProcesses();
 
         // 1. 首先，一次性遍历所有窗口，构建一个 PID -> WindowTitles 的映射
         std::unordered_map<DWORD, std::vector<std::wstring>> windowTitlesByPid;
@@ -1976,19 +1977,23 @@ class EnvironmentSensor : public ISensor
                 std::transform(processName.begin(), processName.end(), processName.begin(), ::towlower);
 
                 // 新增优化：首先通过进程名快速过滤已知的安全进程。
-                if (knownGoodProcesses.count(processName) > 0)
+                if (knownGoodProcesses && knownGoodProcesses->count(processName) > 0)
                 {
                     continue;
                 }
 
                 // 检查点 1: 廉价的进程名黑名单检查
-                for (const auto &harmful : context.GetHarmfulProcessNames())
+                auto harmfulProcessNames = context.GetHarmfulProcessNames();
+                if (harmfulProcessNames)
                 {
-                    if (processName.find(harmful) != std::wstring::npos)
+                    for (const auto &harmful : *harmfulProcessNames)
                     {
-                        context.AddEvidence(anti_cheat::ENVIRONMENT_HARMFUL_PROCESS,
-                                            "有害进程(文件名): " + Utils::WideToString(pe.szExeFile));
-                        goto next_process_loop;  // 发现有害进程，直接跳到下一个进程的检查
+                        if (processName.find(harmful) != std::wstring::npos)
+                        {
+                            context.AddEvidence(anti_cheat::ENVIRONMENT_HARMFUL_PROCESS,
+                                                "有害进程(文件名): " + Utils::WideToString(pe.szExeFile));
+                            goto next_process_loop;  // 发现有害进程，直接跳到下一个进程的检查
+                        }
                     }
                 }
 
@@ -2002,7 +2007,8 @@ class EnvironmentSensor : public ISensor
                     {
                         std::transform(fullProcessPath.begin(), fullProcessPath.end(), fullProcessPath.begin(),
                                        ::towlower);
-                        if (context.GetWhitelistedProcessPaths().count(fullProcessPath) > 0)
+                        auto whitelistedProcessPaths = context.GetWhitelistedProcessPaths();
+                        if (whitelistedProcessPaths && whitelistedProcessPaths->count(fullProcessPath) > 0)
                         {
                             continue;  // 进程在路径白名单中，安全，继续检查下一个进程
                         }
@@ -2019,12 +2025,16 @@ class EnvironmentSensor : public ISensor
 
                         // 检查窗口标题是否在白名单中
                         bool isWhitelistedWindow = false;
-                        for (const auto &whitelistedKeyword : context.GetWhitelistedWindowKeywords())
+                        auto whitelistedWindowKeywords = context.GetWhitelistedWindowKeywords();
+                        if (whitelistedWindowKeywords)
                         {
-                            if (lowerTitle.find(whitelistedKeyword) != std::wstring::npos)
+                            for (const auto &whitelistedKeyword : *whitelistedWindowKeywords)
                             {
-                                isWhitelistedWindow = true;
-                                break;
+                                if (lowerTitle.find(whitelistedKeyword) != std::wstring::npos)
+                                {
+                                    isWhitelistedWindow = true;
+                                    break;
+                                }
                             }
                         }
                         if (isWhitelistedWindow)
@@ -2033,13 +2043,17 @@ class EnvironmentSensor : public ISensor
                         }
 
                         // 检查窗口标题是否包含有害关键词
-                        for (const auto &keyword : context.GetHarmfulKeywords())
+                        auto harmfulKeywords = context.GetHarmfulKeywords();
+                        if (harmfulKeywords)
                         {
-                            if (lowerTitle.find(keyword) != std::wstring::npos)
+                            for (const auto &keyword : *harmfulKeywords)
                             {
-                                context.AddEvidence(anti_cheat::ENVIRONMENT_HARMFUL_PROCESS,
-                                                    "有害进程(窗口标题): " + Utils::WideToString(title));
-                                goto next_process_loop;  // 跳出内外两层循环，检查下一个进程
+                                if (lowerTitle.find(keyword) != std::wstring::npos)
+                                {
+                                    context.AddEvidence(anti_cheat::ENVIRONMENT_HARMFUL_PROCESS,
+                                                        "有害进程(窗口标题): " + Utils::WideToString(title));
+                                    goto next_process_loop;  // 跳出内外两层循环，检查下一个进程
+                                }
                             }
                         }
                     }

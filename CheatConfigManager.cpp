@@ -1,7 +1,8 @@
-#include "CheatConfigManager.h"
+﻿#include "CheatConfigManager.h"
 #include "CheatMonitor.h"  // 为了访问 Utils::StringToWide 和通知 CheatMonitor
 #include <stdexcept>
-#include <algorithm>   // for std::replace
+#include <algorithm>  // for std::replace
+#include <Windows.h>
 #include <Wincrypt.h>  // for Crypt* functions
 #include <memory>      // for std::shared_ptr
 
