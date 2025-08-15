@@ -1,8 +1,9 @@
-﻿#include "CheatConfigManager.h"
+#include "CheatConfigManager.h"
 #include "CheatMonitor.h"  // 为了访问 Utils::StringToWide 和通知 CheatMonitor
 #include <stdexcept>
 #include <algorithm>   // for std::replace
 #include <Wincrypt.h>  // for Crypt* functions
+#include <memory>      // for std::shared_ptr
 
 #pragma comment(lib, "crypt32.lib")  // For Crypt* functions
 
@@ -20,33 +21,46 @@ CheatConfigManager& CheatConfigManager::GetInstance()
     return instance;
 }
 
-CheatConfigManager::CheatConfigManager() : m_config(std::make_unique<anti_cheat::ClientConfig>())
+CheatConfigManager::CheatConfigManager() : m_configData(std::make_shared<ConfigData>())
 {
     // 启动后这组数据等服务器下发，再设置m_isSessionActive为true
-    // SetDefaultValues();
+    // SetDefaultValues(*m_configData);
+}
+
+// --- 私有辅助函数 ---
+std::shared_ptr<CheatConfigManager::ConfigData> CheatConfigManager::GetCurrentConfig() const
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    return m_configData;
 }
 
 // --- 公共接口实现 ---
 
 void CheatConfigManager::UpdateConfigFromServer(const std::string& server_data)
 {
-    auto new_config = std::make_unique<anti_cheat::ClientConfig>();
-    if (!new_config->ParseFromString(server_data))
+    auto new_config_proto = std::make_unique<anti_cheat::ClientConfig>();
+    if (!new_config_proto->ParseFromString(server_data))
     {
         // Log error: "Failed to parse server config"
         return;
     }
 
-    if (!VerifySignature(*new_config))
+    if (!VerifySignature(*new_config_proto))
     {
         // Log error: "Server config signature verification failed"
         return;
     }
 
-    // 锁定并更新内存中的配置
-    std::lock_guard<std::mutex> lock(m_mutex);
-    m_config = std::move(new_config);
-    UpdateWideStringCaches();
+    // 创建新的配置数据副本
+    auto new_config_data = std::make_shared<ConfigData>();
+    new_config_data->config = std::move(new_config_proto);
+    UpdateWideStringCaches(*new_config_data);
+
+    // 原子地交换指针
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_configData = std::move(new_config_data);
+    }
 
     // 通知 CheatMonitor 配置已更新
     CheatMonitor::GetInstance().OnServerConfigUpdated();
@@ -56,226 +70,208 @@ void CheatConfigManager::UpdateConfigFromServer(const std::string& server_data)
 
 int32_t CheatConfigManager::GetBaseScanInterval() const
 {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    return m_config->base_scan_interval_seconds();
+    return GetCurrentConfig()->config->base_scan_interval_seconds();
 }
 
 int32_t CheatConfigManager::GetHeavyScanIntervalMinutes() const
 {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    return m_config->heavy_scan_interval_minutes();
+    return GetCurrentConfig()->config->heavy_scan_interval_minutes();
 }
 
 int32_t CheatConfigManager::GetReportUploadIntervalMinutes() const
 {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    return m_config->report_upload_interval_minutes();
+    return GetCurrentConfig()->config->report_upload_interval_minutes();
 }
 
-const std::vector<std::wstring>& CheatConfigManager::GetHarmfulProcessNames() const
+std::shared_ptr<const std::vector<std::wstring>> CheatConfigManager::GetHarmfulProcessNames() const
 {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    return m_harmfulProcessNames_w;
+    auto config = GetCurrentConfig();
+    return std::shared_ptr<const std::vector<std::wstring>>(config, &config->harmfulProcessNames_w);
 }
 
-const std::vector<std::wstring>& CheatConfigManager::GetHarmfulKeywords() const
+std::shared_ptr<const std::vector<std::wstring>> CheatConfigManager::GetHarmfulKeywords() const
 {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    return m_harmfulKeywords_w;
+    auto config = GetCurrentConfig();
+    return std::shared_ptr<const std::vector<std::wstring>>(config, &config->harmfulKeywords_w);
 }
 
-const std::unordered_set<std::wstring>& CheatConfigManager::GetWhitelistedVEHModules() const
+std::shared_ptr<const std::unordered_set<std::wstring>> CheatConfigManager::GetWhitelistedVEHModules() const
 {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    return m_whitelistedVEHModules_w;
+    auto config = GetCurrentConfig();
+    return std::shared_ptr<const std::unordered_set<std::wstring>>(config, &config->whitelistedVEHModules_w);
 }
 
-const std::unordered_set<std::wstring>& CheatConfigManager::GetWhitelistedProcessPaths() const
+std::shared_ptr<const std::unordered_set<std::wstring>> CheatConfigManager::GetWhitelistedProcessPaths() const
 {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    return m_whitelistedProcessPaths_w;
+    auto config = GetCurrentConfig();
+    return std::shared_ptr<const std::unordered_set<std::wstring>>(config, &config->whitelistedProcessPaths_w);
 }
 
-const std::unordered_set<std::wstring>& CheatConfigManager::GetWhitelistedWindowKeywords() const
+std::shared_ptr<const std::unordered_set<std::wstring>> CheatConfigManager::GetWhitelistedWindowKeywords() const
 {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    return m_whitelistedWindowKeywords_w;
+    auto config = GetCurrentConfig();
+    return std::shared_ptr<const std::unordered_set<std::wstring>>(config, &config->whitelistedWindowKeywords_w);
 }
 
-const std::unordered_set<std::wstring>& CheatConfigManager::GetKnownGoodProcesses() const
+std::shared_ptr<const std::unordered_set<std::wstring>> CheatConfigManager::GetKnownGoodProcesses() const
 {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    return m_knownGoodProcesses_w;
+    auto config = GetCurrentConfig();
+    return std::shared_ptr<const std::unordered_set<std::wstring>>(config, &config->knownGoodProcesses_w);
 }
 
 // --- 行为控制参数 ---
 int32_t CheatConfigManager::GetSuspiciousHandleTTLMinutes() const
 {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    return m_config->suspicious_handle_ttl_minutes();
+    return GetCurrentConfig()->config->suspicious_handle_ttl_minutes();
 }
 int32_t CheatConfigManager::GetReportCooldownMinutes() const
 {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    return m_config->report_cooldown_minutes();
+    return GetCurrentConfig()->config->report_cooldown_minutes();
 }
 int32_t CheatConfigManager::GetIllegalCallReportCooldownMinutes() const
 {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    return m_config->illegal_call_report_cooldown_minutes();
+    return GetCurrentConfig()->config->illegal_call_report_cooldown_minutes();
 }
 int32_t CheatConfigManager::GetJitterMilliseconds() const
 {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    return m_config->jitter_milliseconds();
+    return GetCurrentConfig()->config->jitter_milliseconds();
 }
 
 // --- 容量与预算控制 ---
 int32_t CheatConfigManager::GetMaxEvidencesPerSession() const
 {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    return m_config->max_evidences_per_session();
+    return GetCurrentConfig()->config->max_evidences_per_session();
 }
 int32_t CheatConfigManager::GetMaxIllegalSources() const
 {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    return m_config->max_illegal_sources();
+    return GetCurrentConfig()->config->max_illegal_sources();
 }
 int32_t CheatConfigManager::GetLightScanBudgetMs() const
 {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    return m_config->light_scan_budget_ms();
+    return GetCurrentConfig()->config->light_scan_budget_ms();
 }
 int32_t CheatConfigManager::GetHeavyScanBudgetMs() const
 {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    return m_config->heavy_scan_budget_ms();
+    return GetCurrentConfig()->config->heavy_scan_budget_ms();
 }
 
 // --- 容量与缓存控制 ---
 int32_t CheatConfigManager::GetMaxMouseMoveEvents() const
 {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    return m_config->max_mouse_move_events();
+    return GetCurrentConfig()->config->max_mouse_move_events();
 }
 int32_t CheatConfigManager::GetMaxMouseClickEvents() const
 {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    return m_config->max_mouse_click_events();
+    return GetCurrentConfig()->config->max_mouse_click_events();
 }
 int32_t CheatConfigManager::GetMaxKeyboardEvents() const
 {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    return m_config->max_keyboard_events();
+    return GetCurrentConfig()->config->max_keyboard_events();
 }
 int32_t CheatConfigManager::GetProcessCacheDurationMinutes() const
 {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    return m_config->process_cache_duration_minutes();
+    return GetCurrentConfig()->config->process_cache_duration_minutes();
 }
 int32_t CheatConfigManager::GetSignatureCacheDurationMinutes() const
 {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    return m_config->signature_cache_duration_minutes();
+    return GetCurrentConfig()->config->signature_cache_duration_minutes();
 }
 
 // --- 输入自动化检测参数 ---
 int32_t CheatConfigManager::GetKeyboardMacroMinSequenceLength() const
 {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    return m_config->keyboard_macro_min_sequence_length();
+    return GetCurrentConfig()->config->keyboard_macro_min_sequence_length();
 }
 int32_t CheatConfigManager::GetKeyboardMacroMinPatternLength() const
 {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    return m_config->keyboard_macro_min_pattern_length();
+    return GetCurrentConfig()->config->keyboard_macro_min_pattern_length();
 }
 
 // --- 私有辅助函数 ---
 
-void CheatConfigManager::SetDefaultValues()
+void CheatConfigManager::SetDefaultValues(ConfigData& configData)
 {
     // 这些值应该与你之前在 Pimpl 中的硬编码值一致
-    m_config->set_base_scan_interval_seconds(15);
-    m_config->set_heavy_scan_interval_minutes(30);
-    m_config->set_report_upload_interval_minutes(15);
+    configData.config->set_base_scan_interval_seconds(15);
+    configData.config->set_heavy_scan_interval_minutes(30);
+    configData.config->set_report_upload_interval_minutes(15);
 
-    m_config->clear_harmful_process_names();
-    m_config->add_harmful_process_names("cheatengine");
-    m_config->add_harmful_process_names("ollydbg");
-    m_config->add_harmful_process_names("x64dbg");
-    m_config->add_harmful_process_names("ida64");
-    m_config->add_harmful_process_names("fiddler");
+    configData.config->clear_harmful_process_names();
+    configData.config->add_harmful_process_names("cheatengine");
+    configData.config->add_harmful_process_names("ollydbg");
+    configData.config->add_harmful_process_names("x64dbg");
+    configData.config->add_harmful_process_names("ida64");
+    configData.config->add_harmful_process_names("fiddler");
 
-    m_config->clear_harmful_keywords();
-    m_config->add_harmful_keywords("外挂");
-    m_config->add_harmful_keywords("辅助");
-    m_config->add_harmful_keywords("cheat engine");
-    m_config->add_harmful_keywords("memory editor");
+    configData.config->clear_harmful_keywords();
+    configData.config->add_harmful_keywords("外挂");
+    configData.config->add_harmful_keywords("辅助");
+    configData.config->add_harmful_keywords("cheat engine");
+    configData.config->add_harmful_keywords("memory editor");
 
-    m_config->clear_whitelisted_window_keywords();
-    m_config->add_whitelisted_window_keywords(Utils::WideToString(L"visual studio"));
-    m_config->add_whitelisted_window_keywords(Utils::WideToString(L"obs"));
-    m_config->add_whitelisted_window_keywords(Utils::WideToString(L"discord"));
+    configData.config->clear_whitelisted_window_keywords();
+    configData.config->add_whitelisted_window_keywords(Utils::WideToString(L"visual studio"));
+    configData.config->add_whitelisted_window_keywords(Utils::WideToString(L"obs"));
+    configData.config->add_whitelisted_window_keywords(Utils::WideToString(L"discord"));
 
-    m_config->clear_known_good_processes();
-    m_config->add_known_good_processes("explorer.exe");
-    m_config->add_known_good_processes("svchost.exe");
-    m_config->add_known_good_processes("lsass.exe");
-    m_config->add_known_good_processes("wininit.exe");
-    m_config->add_known_good_processes("services.exe");
-    m_config->add_known_good_processes("sogoucloud.exe");
-    m_config->add_known_good_processes("sogouinput.exe");
-    m_config->add_known_good_processes("qqpinyin.exe");
-    m_config->add_known_good_processes("msime.exe");
-    m_config->add_known_good_processes("chsime.exe");
-    m_config->add_known_good_processes("nvcontainer.exe");
-    m_config->add_known_good_processes("nvidia share.exe");
-    m_config->add_known_good_processes("amdow.exe");
-    m_config->add_known_good_processes("radeonsoftware.exe");
-    m_config->add_known_good_processes("yy.exe");
-    m_config->add_known_good_processes("yylive.exe");
-    m_config->add_known_good_processes("qt.exe");
-    m_config->add_known_good_processes("360safe.exe");
-    m_config->add_known_good_processes("360sd.exe");
-    m_config->add_known_good_processes("qqpctray.exe");
-    m_config->add_known_good_processes("huorong.exe");
-    m_config->add_known_good_processes("wspsafesvc.exe");
+    configData.config->clear_known_good_processes();
+    configData.config->add_known_good_processes("explorer.exe");
+    configData.config->add_known_good_processes("svchost.exe");
+    configData.config->add_known_good_processes("lsass.exe");
+    configData.config->add_known_good_processes("wininit.exe");
+    configData.config->add_known_good_processes("services.exe");
+    configData.config->add_known_good_processes("sogoucloud.exe");
+    configData.config->add_known_good_processes("sogouinput.exe");
+    configData.config->add_known_good_processes("qqpinyin.exe");
+    configData.config->add_known_good_processes("msime.exe");
+    configData.config->add_known_good_processes("chsime.exe");
+    configData.config->add_known_good_processes("nvcontainer.exe");
+    configData.config->add_known_good_processes("nvidia share.exe");
+    configData.config->add_known_good_processes("amdow.exe");
+    configData.config->add_known_good_processes("radeonsoftware.exe");
+    configData.config->add_known_good_processes("yy.exe");
+    configData.config->add_known_good_processes("yylive.exe");
+    configData.config->add_known_good_processes("qt.exe");
+    configData.config->add_known_good_processes("360safe.exe");
+    configData.config->add_known_good_processes("360sd.exe");
+    configData.config->add_known_good_processes("qqpctray.exe");
+    configData.config->add_known_good_processes("huorong.exe");
+    configData.config->add_known_good_processes("wspsafesvc.exe");
 
     // --- 行为控制参数 ---
-    m_config->set_suspicious_handle_ttl_minutes(2);
-    m_config->set_report_cooldown_minutes(30);
-    m_config->set_illegal_call_report_cooldown_minutes(5);
-    m_config->set_jitter_milliseconds(5000);
+    configData.config->set_suspicious_handle_ttl_minutes(2);
+    configData.config->set_report_cooldown_minutes(30);
+    configData.config->set_illegal_call_report_cooldown_minutes(5);
+    configData.config->set_jitter_milliseconds(5000);
 
     // --- 容量与预算控制 ---
-    m_config->set_max_evidences_per_session(512);
-    m_config->set_max_illegal_sources(1024);
-    m_config->set_light_scan_budget_ms(6000);
-    m_config->set_heavy_scan_budget_ms(30000);
+    configData.config->set_max_evidences_per_session(512);
+    configData.config->set_max_illegal_sources(1024);
+    configData.config->set_light_scan_budget_ms(6000);
+    configData.config->set_heavy_scan_budget_ms(30000);
 
     // --- 容量与缓存控制 ---
-    m_config->set_max_mouse_move_events(5000);
-    m_config->set_max_mouse_click_events(500);
-    m_config->set_max_keyboard_events(2048);
-    m_config->set_process_cache_duration_minutes(15);
-    m_config->set_signature_cache_duration_minutes(60);
+    configData.config->set_max_mouse_move_events(5000);
+    configData.config->set_max_mouse_click_events(500);
+    configData.config->set_max_keyboard_events(2048);
+    configData.config->set_process_cache_duration_minutes(15);
+    configData.config->set_signature_cache_duration_minutes(60);
 
     // --- 输入自动化检测参数 ---
-    m_config->set_keyboard_macro_min_sequence_length(40);
-    m_config->set_keyboard_macro_min_pattern_length(10);
+    configData.config->set_keyboard_macro_min_sequence_length(40);
+    configData.config->set_keyboard_macro_min_pattern_length(10);
 
-    m_config->set_config_version("default_fallback_v1");
+    configData.config->set_config_version("default_fallback_v1");
 
     // 为默认配置生成一个“签名”
     std::string serialized_config;
-    m_config->SerializeToString(&serialized_config);
-    m_config->set_config_signature(CalculateHash(serialized_config + GetServerPublicKey()));
+    configData.config->SerializeToString(&serialized_config);
+    configData.config->set_config_signature(CalculateHash(serialized_config + GetServerPublicKey()));
 
-    UpdateWideStringCaches();
+    UpdateWideStringCaches(configData);
 }
 
-void CheatConfigManager::UpdateWideStringCaches()
+void CheatConfigManager::UpdateWideStringCaches(ConfigData& configData)
 {
     auto convert_to_vector = [](const auto& source, auto& dest) {
         dest.clear();
@@ -294,12 +290,12 @@ void CheatConfigManager::UpdateWideStringCaches()
         }
     };
 
-    convert_to_vector(m_config->harmful_process_names(), m_harmfulProcessNames_w);
-    convert_to_vector(m_config->harmful_keywords(), m_harmfulKeywords_w);
-    convert_to_set(m_config->whitelisted_veh_modules(), m_whitelistedVEHModules_w);
-    convert_to_set(m_config->whitelisted_process_paths(), m_whitelistedProcessPaths_w);
-    convert_to_set(m_config->whitelisted_window_keywords(), m_whitelistedWindowKeywords_w);
-    convert_to_set(m_config->known_good_processes(), m_knownGoodProcesses_w);
+    convert_to_vector(configData.config->harmful_process_names(), configData.harmfulProcessNames_w);
+    convert_to_vector(configData.config->harmful_keywords(), configData.harmfulKeywords_w);
+    convert_to_set(configData.config->whitelisted_veh_modules(), configData.whitelistedVEHModules_w);
+    convert_to_set(configData.config->whitelisted_process_paths(), configData.whitelistedProcessPaths_w);
+    convert_to_set(configData.config->whitelisted_window_keywords(), configData.whitelistedWindowKeywords_w);
+    convert_to_set(configData.config->known_good_processes(), configData.knownGoodProcesses_w);
 }
 
 // --- 安全相关函数 ---
