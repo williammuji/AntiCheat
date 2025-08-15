@@ -23,10 +23,6 @@ class CheatConfigManager
     // 获取单例实例
     static CheatConfigManager& GetInstance();
 
-    // 在 CheatMonitor::Pimpl::InitializeSystem() 中调用
-    // 从本地缓存文件加载配置。如果失败，则使用安全默认值。
-    void LoadConfigFromFile();
-
     // 在与服务器通讯后调用，用服务器下发的数据更新配置
     // 数据应为序列化后的 ClientConfig protobuf
     void UpdateConfigFromServer(const std::string& server_data);
@@ -79,17 +75,13 @@ class CheatConfigManager
     void UpdateWideStringCaches();  // 更新宽字符版本的缓存
 
     // 安全相关辅助函数
-    std::string EncryptData(const std::string& plain_text) const;
-    std::string DecryptData(const std::string& cipher_text) const;
     bool VerifySignature(const anti_cheat::ClientConfig& config) const;
     std::string CalculateHash(const std::string& data) const;
-    std::wstring GetConfigFilePath() const;
     std::string GetServerPublicKey() const;
 
     // 内部状态
     std::unique_ptr<anti_cheat::ClientConfig> m_config;
     mutable std::mutex m_mutex;
-    std::wstring m_configMutexName;  // 用于跨进程文件访问的命名互斥锁的名称
 
     // 为频繁访问的字符串列表提供宽字符缓存，避免重复转换
     std::vector<std::wstring> m_harmfulProcessNames_w;

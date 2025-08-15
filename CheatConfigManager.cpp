@@ -1,46 +1,10 @@
 ﻿#include "CheatConfigManager.h"
-#include "CheatMonitor.h"  // 为了访问 Utils::StringToWide
-#include <fstream>
-#include <filesystem>
+#include "CheatMonitor.h"  // 为了访问 Utils::StringToWide 和通知 CheatMonitor
 #include <stdexcept>
-#include <Wincrypt.h>
-#include <algorithm>  // for std::replace
+#include <algorithm>   // for std::replace
+#include <Wincrypt.h>  // for Crypt* functions
 
-// --- InterprocessLock RAII arapper for named mutex ---
-// This helper class ensures that the named mutex is always released,
-// even if exceptions occur.
-class InterprocessLock
-{
-   public:
-    explicit InterprocessLock(const std::wstring& name)
-    {
-        // The "Global\" prefix makes the mutex visible across all user sessions.
-        m_hMutex = CreateMutexW(NULL, FALSE, name.c_str());
-        if (m_hMutex != NULL)
-        {
-            // Wait indefinitely for ownership of the mutex.
-            WaitForSingleObject(m_hMutex, INFINITE);
-        }
-        // In a production scenario, you might want to handle the case where m_hMutex is NULL
-        // (e.g., by throwing an exception), but for this fix, we'll keep it simple.
-    }
-
-    ~InterprocessLock()
-    {
-        if (m_hMutex != NULL)
-        {
-            ReleaseMutex(m_hMutex);
-            CloseHandle(m_hMutex);
-        }
-    }
-
-    // Delete copy and assignment operators to prevent misuse.
-    InterprocessLock(const InterprocessLock&) = delete;
-    InterprocessLock& operator=(const InterprocessLock&) = delete;
-
-   private:
-    HANDLE m_hMutex;
-};
+#pragma comment(lib, "crypt32.lib")  // For Crypt* functions
 
 // --- Utils命名空间函数声明，因为它们在CheatMonitor.cpp中 ---
 namespace Utils
@@ -58,81 +22,11 @@ CheatConfigManager& CheatConfigManager::GetInstance()
 
 CheatConfigManager::CheatConfigManager() : m_config(std::make_unique<anti_cheat::ClientConfig>())
 {
-    // Create a unique mutex name from the config file path to avoid collisions.
-    // The 'Global\' prefix makes the mutex visible across all user sessions.
-    std::wstring path_str = GetConfigFilePath();
-    // Replace characters that are invalid in mutex names.
-    std::replace(path_str.begin(), path_str.end(), L'\\', L'_');
-    std::replace(path_str.begin(), path_str.end(), L':', L'_');
-    m_configMutexName = L"Global\\AntiCheat_ConfigMutex_" + path_str;
-
-    LoadConfigFromFile();
+    // 启动后这组数据等服务器下发，再设置m_isSessionActive为true
+    // SetDefaultValues();
 }
 
 // --- 公共接口实现 ---
-
-void CheatConfigManager::LoadConfigFromFile()
-{
-    // Acquire an inter-process lock to prevent race conditions with other clients.
-    InterprocessLock proc_lock(m_configMutexName);
-    // Acquire an intra-process lock for thread safety within this client.
-    std::lock_guard<std::mutex> lock(m_mutex);
-
-    std::wstring path = GetConfigFilePath();
-    std::ifstream file(path, std::ios::binary);
-
-    if (!file.is_open())
-    {
-        // 文件不存在，使用默认值并尝试创建缓存文件
-        SetDefaultValues();
-        std::string serialized_config;
-        if (m_config->SerializeToString(&serialized_config))
-        {
-            std::string encrypted_data = EncryptData(serialized_config);
-            if (!encrypted_data.empty())
-            {
-                // 确保目录存在
-                std::filesystem::path fs_path(path);
-                if (!std::filesystem::exists(fs_path.parent_path()))
-                {
-                    std::filesystem::create_directories(fs_path.parent_path());
-                }
-                std::ofstream outfile(path, std::ios::binary);
-                outfile.write(encrypted_data.c_str(), encrypted_data.size());
-            }
-        }
-        return;
-    }
-
-    std::string encrypted_data((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-    file.close();
-
-    if (encrypted_data.empty())
-    {
-        SetDefaultValues();
-        return;
-    }
-
-    std::string decrypted_data = DecryptData(encrypted_data);
-    if (decrypted_data.empty())
-    {
-        // 解密失败，可能文件损坏或来自不同机器
-        SetDefaultValues();
-        return;
-    }
-
-    auto new_config = std::make_unique<anti_cheat::ClientConfig>();
-    if (!new_config->ParseFromString(decrypted_data) || !VerifySignature(*new_config))
-    {
-        // 解析或验签失败，文件被篡改
-        SetDefaultValues();
-        return;
-    }
-
-    // 一切正常，替换当前配置
-    m_config = std::move(new_config);
-    UpdateWideStringCaches();
-}
 
 void CheatConfigManager::UpdateConfigFromServer(const std::string& server_data)
 {
@@ -149,27 +43,13 @@ void CheatConfigManager::UpdateConfigFromServer(const std::string& server_data)
         return;
     }
 
-    // Acquire locks before modifying shared resources (memory and file).
-    InterprocessLock proc_lock(m_configMutexName);
+    // 锁定并更新内存中的配置
     std::lock_guard<std::mutex> lock(m_mutex);
-
     m_config = std::move(new_config);
     UpdateWideStringCaches();
 
-    // 将新配置加密并写入本地缓存
-    std::string encrypted_data = EncryptData(server_data);
-    if (!encrypted_data.empty())
-    {
-        std::wstring path = GetConfigFilePath();
-        // 确保目录存在
-        std::filesystem::path fs_path(path);
-        if (!std::filesystem::exists(fs_path.parent_path()))
-        {
-            std::filesystem::create_directories(fs_path.parent_path());
-        }
-        std::ofstream file(path, std::ios::binary | std::ios::trunc);
-        file.write(encrypted_data.c_str(), encrypted_data.size());
-    }
+    // 通知 CheatMonitor 配置已更新
+    CheatMonitor::GetInstance().OnServerConfigUpdated();
 }
 
 // --- Getters ---
@@ -317,7 +197,7 @@ void CheatConfigManager::SetDefaultValues()
 {
     // 这些值应该与你之前在 Pimpl 中的硬编码值一致
     m_config->set_base_scan_interval_seconds(15);
-    m_config->set_heavy_scan_interval_minutes(120);
+    m_config->set_heavy_scan_interval_minutes(30);
     m_config->set_report_upload_interval_minutes(15);
 
     m_config->clear_harmful_process_names();
@@ -422,15 +302,6 @@ void CheatConfigManager::UpdateWideStringCaches()
     convert_to_set(m_config->known_good_processes(), m_knownGoodProcesses_w);
 }
 
-std::wstring CheatConfigManager::GetConfigFilePath() const
-{
-    wchar_t path[MAX_PATH];
-    GetModuleFileNameW(NULL, path, MAX_PATH);
-    std::filesystem::path exePath(path);
-    // 在可执行文件目录下创建一个不易读的路径
-    return exePath.parent_path() / L"dat" / L"bin" / L"cfg.dat";
-}
-
 // --- 安全相关函数 ---
 
 std::string CheatConfigManager::GetServerPublicKey() const
@@ -450,40 +321,6 @@ std::string CheatConfigManager::GetServerPublicKey() const
         key += g_encryptedPublicKey[i] ^ g_xorKey[i % (sizeof(g_xorKey) - 1)];
     }
     return key;
-}
-
-std::string CheatConfigManager::EncryptData(const std::string& plain_text) const
-{
-    DATA_BLOB in;
-    DATA_BLOB out;
-    in.pbData = (BYTE*)plain_text.c_str();
-    in.cbData = plain_text.length();
-    // 转换为窄字符
-    std::wstring wdesc = L"AntiCheatConfig";
-    std::string desc = Utils::WideToString(wdesc);  // 使用现有工具函数
-    if (CryptProtectData(&in, wdesc.c_str(), NULL, NULL, NULL, CRYPTPROTECT_LOCAL_MACHINE, &out))
-    {
-        std::string result(reinterpret_cast<char*>(out.pbData), out.cbData);
-        LocalFree(out.pbData);
-        return result;
-    }
-    return "";
-}
-
-std::string CheatConfigManager::DecryptData(const std::string& cipher_text) const
-{
-    DATA_BLOB in;
-    DATA_BLOB out;
-    in.pbData = (BYTE*)cipher_text.c_str();
-    in.cbData = cipher_text.length();
-
-    if (CryptUnprotectData(&in, NULL, NULL, NULL, NULL, CRYPTPROTECT_LOCAL_MACHINE, &out))
-    {
-        std::string result(reinterpret_cast<char*>(out.pbData), out.cbData);
-        LocalFree(out.pbData);
-        return result;
-    }
-    return "";
 }
 
 bool CheatConfigManager::VerifySignature(const anti_cheat::ClientConfig& config) const

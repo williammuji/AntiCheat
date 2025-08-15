@@ -19,6 +19,7 @@ class CheatMonitor final
     void Shutdown();
     bool IsCallerLegitimate();       // 供游戏逻辑调用的返回地址校验接口
     void SetGameWindow(void *hwnd);  // 允许游戏引擎设置主窗口句柄
+    void OnServerConfigUpdated();    // 由ConfigManager在收到服务器配置后调用
 
     struct Pimpl;
 
