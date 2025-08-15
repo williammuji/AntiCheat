@@ -1,4 +1,4 @@
-#\include "CheatMonitor.h"
+﻿#include "CheatMonitor.h"
 #include "CheatConfigManager.h"
 
 // 定义 NOMINMAX 宏以防止 Windows.h 定义 min/max 宏,
@@ -122,7 +122,7 @@ typedef struct _SYSTEM_HANDLE_INFORMATION
     SYSTEM_HANDLE_TABLE_ENTRY_INFO Handles[1];
 } SYSTEM_HANDLE_INFORMATION, *PSYSTEM_HANDLE_INFORMATION;
 
-typedef NTSTATUS(WINAPI *PNtQuerySystemInformation)(ULONG SystemInformationClass, PVOID SystemInformation, 
+typedef NTSTATUS(WINAPI *PNtQuerySystemInformation)(ULONG SystemInformationClass, PVOID SystemInformation,
                                                     ULONG SystemInformationLength, PULONG ReturnLength);
 
 // --- 为线程隐藏定义必要的结构体和类型 ---
@@ -693,7 +693,7 @@ struct CheatMonitor::Pimpl
 
     std::atomic<bool> m_isSystemActive = false;
     std::atomic<bool> m_isSessionActive = false;
-    std::atomic<bool> m_hasServerConfig = false; // 新增：用于标记是否已收到服务器配置
+    std::atomic<bool> m_hasServerConfig = false;  // 新增：用于标记是否已收到服务器配置
     std::thread m_monitorThread;
     // 用于智能关联父进程缺失事件的状态
     std::atomic<bool> m_parentWasMissingAtStartup = false;
@@ -1134,79 +1134,106 @@ class MemoryScanSensor : public ISensor
     {
         return "MemoryScanSensor";
     }
+
     void Execute(ScanContext &context) override
     {
         const auto &baselineHashes = context.GetModuleBaselineHashes();
-
         std::vector<HMODULE> hMods(1024);
-        DWORD cbNeeded;
-        if (EnumProcessModules(GetCurrentProcess(), hMods.data(), hMods.size() * sizeof(HMODULE), &cbNeeded))
+        DWORD cbNeeded = 0;
+
+        // 获取模块列表
+        if (!EnumProcessModules(GetCurrentProcess(), hMods.data(), hMods.size() * sizeof(HMODULE), &cbNeeded))
         {
-            if (hMods.size() * sizeof(HMODULE) < cbNeeded)
+            return;  // 获取失败，直接返回
+        }
+
+        // 如果缓冲区不足，调整大小并重新获取
+        if (hMods.size() * sizeof(HMODULE) < cbNeeded)
+        {
+            hMods.resize(cbNeeded / sizeof(HMODULE));
+            if (!EnumProcessModules(GetCurrentProcess(), hMods.data(), hMods.size() * sizeof(HMODULE), &cbNeeded))
             {
-                hMods.resize(cbNeeded / sizeof(HMODULE));
-                EnumProcessModules(GetCurrentProcess(), hMods.data(), hMods.size() * sizeof(HMODULE), &cbNeeded);
+                return;  // 再次失败，直接返回
+            }
+        }
+
+        // 遍历模块
+        for (unsigned int i = 0; i < (cbNeeded / sizeof(HMODULE)); ++i)
+        {
+            ProcessModule(hMods[i], context, baselineHashes);
+        }
+    }
+
+   private:
+    // 处理单个模块的逻辑
+    void ProcessModule(HMODULE hModule, ScanContext &context,
+                       const std::unordered_map<std::wstring, std::vector<uint8_t>> &baselineHashes)
+    {
+        __try
+        {
+            if (!hModule)
+            {
+                return;  // 空句柄，直接返回
             }
 
-            for (unsigned int i = 0; i < (cbNeeded / sizeof(HMODULE)); i++)
+            // 获取模块路径
+            wchar_t modulePath_w[MAX_PATH] = {0};
+            if (GetModuleFileNameW(hModule, modulePath_w, MAX_PATH) == 0)
             {
-                // 生产环境加固：使用try/except包裹，以防止因模块被并发卸载而导致的崩溃。
-                __try
+                return;  // 获取路径失败，直接返回
+            }
+
+            // 获取代码节信息
+            PVOID codeBase = nullptr;
+            DWORD codeSize = 0;
+            if (!GetCodeSectionInfo(hModule, codeBase, codeSize))
+            {
+                return;  // 获取代码节信息失败
+            }
+
+            // 将复杂逻辑移到外部处理
+            ProcessModuleData(modulePath_w, codeBase, codeSize, context, baselineHashes);
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            // 捕获模块卸载或其他异常，安全忽略
+            return;
+        }
+    }
+
+    // 处理模块路径和哈希的逻辑
+    void ProcessModuleData(const wchar_t *modulePath_w, PVOID codeBase, DWORD codeSize, ScanContext &context,
+                           const std::unordered_map<std::wstring, std::vector<uint8_t>> &baselineHashes)
+    {
+        std::wstring modulePath(modulePath_w);
+        std::vector<uint8_t> currentHash = CalculateHash(static_cast<BYTE *>(codeBase), codeSize);
+        auto it = baselineHashes.find(modulePath);
+
+        if (it == baselineHashes.end())
+        {
+            // LEARNING MODE: 仅记录一次基线
+            static std::set<std::wstring> learned_modules;
+            if (learned_modules.find(modulePath) == learned_modules.end())
+            {
+                std::string hash_str;
+                char buf[17];  // 用于 "0x" + 8*2 十六进制字符 + 空字符
+                for (uint8_t byte : currentHash)
                 {
-                    HMODULE hModule = hMods[i];
-                    if (!hModule)
-                        continue;
-
-                    wchar_t modulePath_w[MAX_PATH];
-                    if (GetModuleFileNameW(hModule, modulePath_w, MAX_PATH) == 0)
-                    {
-                        continue;
-                    }
-                    std::wstring modulePath(modulePath_w);
-
-                    PVOID codeBase = nullptr;
-                    DWORD codeSize = 0;
-                    if (GetCodeSectionInfo(hModule, codeBase, codeSize))
-                    {
-                        auto it = baselineHashes.find(modulePath);
-
-                        std::vector<uint8_t> currentHash = CalculateHash(static_cast<BYTE *>(codeBase), codeSize);
-
-                        if (it == baselineHashes.end())
-                        {
-                            // LEARNING MODE: Report baseline once per session.
-                            static std::set<std::wstring> learned_modules;
-                            if (learned_modules.find(modulePath) == learned_modules.end())
-                            {
-                                std::string hash_str;
-                                char buf[17];  // for " 0x" + 8*2 hex chars + null
-                                for (uint8_t byte : currentHash)
-                                {
-                                    sprintf_s(buf, sizeof(buf), "%02x", byte);
-                                    hash_str += buf;
-                                }
-                                context.AddEvidence(
-                                        anti_cheat::INTEGRITY_BASELINE_LEARNED,
-                                        "学习基线: " + Utils::WideToString(modulePath) + " | Hash: " + hash_str);
-                                learned_modules.insert(modulePath);
-                            }
-                        }
-                        else
-                        {
-                            // DETECTION MODE
-                            if (currentHash != it->second)
-                            {
-                                context.AddEvidence(anti_cheat::INTEGRITY_MEMORY_PATCH,
-                                                    "检测到内存代码节被篡改: " + Utils::WideToString(modulePath));
-                            }
-                        }
-                    }
+                    sprintf_s(buf, sizeof(buf), "%02x", byte);
+                    hash_str += buf;
                 }
-                __except(EXCEPTION_EXECUTE_HANDLER)
-                {
-                    // 模块可能被并发卸载，这是安全的，可以忽略并继续。
-                    continue;
-                }
+                context.AddEvidence(anti_cheat::INTEGRITY_BASELINE_LEARNED,
+                                    "学习基线: " + Utils::WideToString(modulePath) + " | Hash: " + hash_str);
+                learned_modules.insert(modulePath);
+            }
+        }
+        else
+        {
+            // DETECTION MODE
+            if (currentHash != it->second)
+            {
+                context.AddEvidence(anti_cheat::INTEGRITY_MEMORY_PATCH,
+                                    "检测到内存代码节被篡改: " + Utils::WideToString(modulePath));
             }
         }
     }
@@ -1599,6 +1626,50 @@ class ProcessHandleSensor : public ISensor
     {
         return "ProcessHandleSensor";
     }
+
+    // 这个函数被设计为“不安全的”，因为它直接处理可能无效的句柄。
+    // 它不使用任何需要对象展开的C++类，因此可以安全地使用 __try/__except。
+    // 返回值: 如果句柄确实指向我们自己的进程，则返回true，否则返回false。
+    bool IsHandlePointingToUs_Safe(const SYSTEM_HANDLE_TABLE_ENTRY_INFO &handle, DWORD ownPid)
+    {
+        __try
+        {
+            // 1. 打开持有句柄的源进程
+            // 我们只需要复制句柄的权限，所以请求 PROCESS_DUP_HANDLE 即可。
+            HANDLE hOwnerProcess = OpenProcess(PROCESS_DUP_HANDLE, FALSE, handle.UniqueProcessId);
+            if (!hOwnerProcess)
+            {
+                return false;
+            }
+
+            // 2. 将句柄从源进程复制到我们自己的进程中
+            HANDLE hDup = nullptr;
+            BOOL success = DuplicateHandle(hOwnerProcess, (HANDLE)handle.HandleValue, GetCurrentProcess(), &hDup, 0,
+                                           FALSE, DUPLICATE_SAME_ACCESS);
+
+            // 不再需要源进程的句柄，立即关闭
+            CloseHandle(hOwnerProcess);
+
+            if (!success || hDup == nullptr)
+            {
+                return false;
+            }
+
+            // 3. 检查复制过来的句柄指向哪个进程
+            bool pointsToUs = (GetProcessId(hDup) == ownPid);
+
+            // 必须关闭复制过来的句柄
+            CloseHandle(hDup);
+
+            return pointsToUs;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            // 如果在任何步骤发生访问冲突等硬件异常，安全地捕获并返回false。
+            return false;
+        }
+    }
+
     void Execute(ScanContext &context) override
     {
         const auto &knownGoodProcesses = CheatConfigManager::GetInstance().GetKnownGoodProcesses();
@@ -1610,16 +1681,15 @@ class ProcessHandleSensor : public ISensor
         std::vector<BYTE> handleInfoBuffer(bufferSize);
         NTSTATUS status;
 
-        // 1. Get system handle information
+        // 1. 获取系统句柄信息
         do
         {
             status = g_pNtQuerySystemInformation(SystemHandleInformation, handleInfoBuffer.data(), bufferSize, nullptr);
             if (status == STATUS_INFO_LENGTH_MISMATCH)
             {
                 bufferSize *= 2;
-                // Add a sane limit to prevent extreme memory allocation
-                if (bufferSize > 0x4000000) 
-                { // 64MB
+                if (bufferSize > 0x4000000)  // 64MB 的上限
+                {
                     return;
                 }
                 handleInfoBuffer.resize(bufferSize);
@@ -1629,121 +1699,104 @@ class ProcessHandleSensor : public ISensor
         if (!NT_SUCCESS(status))
             return;
 
-        // 2. Prepare for scan
+        // 2. 准备扫描
         const DWORD ownPid = GetCurrentProcessId();
         const auto *pHandleInfo = reinterpret_cast<const SYSTEM_HANDLE_INFORMATION *>(handleInfoBuffer.data());
         const auto now = std::chrono::steady_clock::now();
-        std::unordered_set<DWORD>
-                processedPidsThisScan; // Optimization: track PIDs already fully analyzed in this scan
+        std::unordered_set<DWORD> processedPidsThisScan;
 
-        // 3. Iterate all system handles
+        // 3. 遍历所有系统句柄
         for (ULONG i = 0; i < pHandleInfo->NumberOfHandles; ++i)
         {
-            // Production Hardening: Wrap in try/except to prevent crashes from race conditions
-            __try
+            const auto &handle = pHandleInfo->Handles[i];
+
+            // 优化: 跳过...
+            // - 我们自己的进程
+            // - 本轮扫描已完整分析过的PID
+            // - 没有危险访问权限的句柄
+            if (handle.UniqueProcessId == ownPid || processedPidsThisScan.count(handle.UniqueProcessId) > 0 ||
+                !(handle.GrantedAccess &
+                  (PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_VM_OPERATION | PROCESS_ALL_ACCESS)))
             {
-                const auto &handle = pHandleInfo->Handles[i];
+                continue;
+            }
 
-                // Optimization: Skip if...
-                // - it's our own process
-                // - we have already fully analyzed and reported this PID in this scan
-                // - the handle grants no dangerous access rights
-                if (handle.UniqueProcessId == ownPid || processedPidsThisScan.count(handle.UniqueProcessId) > 0 ||
-                    !(handle.GrantedAccess &
-                      (PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_VM_OPERATION | PROCESS_ALL_ACCESS)))
+            // 优化: 检查长期缓存
+            auto &cache = context.GetProcessVerdictCache();
+            auto cacheIt = cache.find(handle.UniqueProcessId);
+            if (cacheIt != cache.end())
+            {
+                if (now <
+                    cacheIt->second.second +
+                            std::chrono::minutes(CheatConfigManager::GetInstance().GetProcessCacheDurationMinutes()))
                 {
-                    continue;
+                    if (cacheIt->second.first == CheatMonitor::Pimpl::ProcessVerdict::SIGNED_AND_TRUSTED)
+                        continue;
                 }
-
-                // Optimization: Check the long-term cache
-                auto &cache = context.GetProcessVerdictCache();
-                auto cacheIt = cache.find(handle.UniqueProcessId);
-                if (cacheIt != cache.end())
+                else
                 {
-                    if (now < cacheIt->second.second +
-                                       std::chrono::minutes(
-                                               CheatConfigManager::GetInstance().GetProcessCacheDurationMinutes()))
-                    {
-                        // If it's a known good process, we don't need to check its handles
-                        if (cacheIt->second.first == CheatMonitor::Pimpl::ProcessVerdict::SIGNED_AND_TRUSTED)
-                            continue;
-                    }
-                    else
-                    {
-                        cache.erase(cacheIt); // Evict stale entry
-                    }
-                }
-
-                // --- Expensive analysis starts here, only for un-cached/suspicious PIDs ---
-                using UniqueHandle = std::unique_ptr<void, decltype(&::CloseHandle)>;
-                UniqueHandle hOwnerProcess(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_DUP_HANDLE, FALSE,
-                                                       handle.UniqueProcessId),
-                                           &::CloseHandle);
-
-                if (!hOwnerProcess.get())
-                    continue;
-
-                HANDLE hDup = nullptr;
-                if (DuplicateHandle(hOwnerProcess.get(), (HANDLE)handle.HandleValue, GetCurrentProcess(), &hDup, 0,
-                                    FALSE, DUPLICATE_SAME_ACCESS))
-                {
-                    UniqueHandle hDupManaged(hDup, &::CloseHandle);
-
-                    // Check if the handle points to our game process
-                    if (GetProcessId(hDupManaged.get()) == ownPid)
-                    {
-                        // --- HIT: This process holds a handle to us. Analyze and report ONCE. ---
-                        processedPidsThisScan.insert(handle.UniqueProcessId); // Key Optimization
-
-                        std::wstring ownerProcessPath = Utils::GetProcessFullName(hOwnerProcess.get());
-                        if (ownerProcessPath.empty())
-                        {
-                            context.AddEvidence(anti_cheat::INTEGRITY_SUSPICIOUS_HANDLE,
-                                                "一个无法识别路径的进程持有我们进程的句柄 (PID: " +
-                                                        std::to_string(handle.UniqueProcessId) + ")");
-                            continue; // Move to next handle
-                        }
-
-                        std::wstring lowerProcessName = std::filesystem::path(ownerProcessPath).filename().wstring();
-                        std::transform(lowerProcessName.begin(), lowerProcessName.end(), lowerProcessName.begin(),
-                                       ::towlower);
-
-                        auto &suspiciousHandleHolders = context.GetSuspiciousHandleHolders();
-                        CheatMonitor::Pimpl::ProcessVerdict currentVerdict;
-                        Utils::SignatureStatus signatureStatus = Utils::VerifyFileSignature(ownerProcessPath);
-
-                        if (knownGoodProcesses.count(lowerProcessName) > 0 &&
-                            signatureStatus == Utils::SignatureStatus::TRUSTED)
-                        {
-                            // It's a trusted process, but track it for correlation attacks
-                            suspiciousHandleHolders[handle.UniqueProcessId] = now;
-                            currentVerdict = CheatMonitor::Pimpl::ProcessVerdict::SIGNED_AND_TRUSTED;
-                        }
-                        else if (signatureStatus == Utils::SignatureStatus::UNTRUSTED)
-                        {
-                            currentVerdict = CheatMonitor::Pimpl::ProcessVerdict::UNSIGNED_OR_UNTRUSTED;
-                        }
-                        else // FAILED_TO_VERIFY
-                        {
-                            continue; // Fail-safe: if signature check fails, don't make a judgment
-                        }
-
-                        cache[handle.UniqueProcessId] = {currentVerdict, now};
-
-                        if (currentVerdict == CheatMonitor::Pimpl::ProcessVerdict::UNSIGNED_OR_UNTRUSTED)
-                        {
-                            context.AddEvidence(
-                                    anti_cheat::INTEGRITY_SUSPICIOUS_HANDLE,
-                                    "可疑进程持有我们进程的句柄: " + Utils::WideToString(ownerProcessPath) +
-                                            " (PID: " + std::to_string(handle.UniqueProcessId) + ")");
-                        }
-                    }
+                    cache.erase(cacheIt);  // 移除过时条目
                 }
             }
-            __except (EXCEPTION_EXECUTE_HANDLER)
+
+            // --- 调用安全的辅助函数来执行危险操作 ---
+            if (!IsHandlePointingToUs_Safe(handle, ownPid))
             {
-                // Catch any crash from a race condition and safely continue the scan.
                 continue;
+            }
+
+            // --- 命中: 该进程持有指向我们的句柄。现在可以安全地进行分析和报告了 ---
+            // 在这里，我们已经不在 __try 块中，可以自由使用所有C++特性。
+
+            processedPidsThisScan.insert(handle.UniqueProcessId);  // 关键优化：标记此PID已处理
+
+            // 使用 RAII 来管理句柄生命周期
+            using UniqueHandle = std::unique_ptr<void, decltype(&::CloseHandle)>;
+            UniqueHandle hOwnerProcess(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, handle.UniqueProcessId),
+                                       &::CloseHandle);
+
+            if (!hOwnerProcess.get())
+            {
+                continue;
+            }
+
+            std::wstring ownerProcessPath = Utils::GetProcessFullName(hOwnerProcess.get());
+            if (ownerProcessPath.empty())
+            {
+                context.AddEvidence(anti_cheat::INTEGRITY_SUSPICIOUS_HANDLE,
+                                    "一个无法识别路径的进程持有我们进程的句柄 (PID: " +
+                                            std::to_string(handle.UniqueProcessId) + ")");
+                continue;
+            }
+
+            std::wstring lowerProcessName = std::filesystem::path(ownerProcessPath).filename().wstring();
+            std::transform(lowerProcessName.begin(), lowerProcessName.end(), lowerProcessName.begin(), ::towlower);
+
+            auto &suspiciousHandleHolders = context.GetSuspiciousHandleHolders();
+            CheatMonitor::Pimpl::ProcessVerdict currentVerdict;
+            Utils::SignatureStatus signatureStatus = Utils::VerifyFileSignature(ownerProcessPath);
+
+            if (knownGoodProcesses.count(lowerProcessName) > 0 && signatureStatus == Utils::SignatureStatus::TRUSTED)
+            {
+                suspiciousHandleHolders[handle.UniqueProcessId] = now;
+                currentVerdict = CheatMonitor::Pimpl::ProcessVerdict::SIGNED_AND_TRUSTED;
+            }
+            else if (signatureStatus == Utils::SignatureStatus::UNTRUSTED)
+            {
+                currentVerdict = CheatMonitor::Pimpl::ProcessVerdict::UNSIGNED_OR_UNTRUSTED;
+            }
+            else  // FAILED_TO_VERIFY
+            {
+                continue;  // 签名检查失败，为保险起见不做判断
+            }
+
+            cache[handle.UniqueProcessId] = {currentVerdict, now};
+
+            if (currentVerdict == CheatMonitor::Pimpl::ProcessVerdict::UNSIGNED_OR_UNTRUSTED)
+            {
+                context.AddEvidence(anti_cheat::INTEGRITY_SUSPICIOUS_HANDLE,
+                                    "可疑进程持有我们进程的句柄: " + Utils::WideToString(ownerProcessPath) +
+                                            " (PID: " + std::to_string(handle.UniqueProcessId) + ")");
             }
         }
     }
@@ -1885,11 +1938,7 @@ class EnvironmentSensor : public ISensor
     }
     void Execute(ScanContext &context) override
     {
-        // 优化：定义一个宽泛的白名单，包含常见系统进程和安全应用，以避免对它们执行昂贵的OpenProcess调用。
-        static const std::unordered_set<std::wstring> safeProcessNames = {
-                L"svchost.exe", L"lsass.exe", L"winlogon.exe", L"wininit.exe", L"csrss.exe", L"smss.exe",
-                L"services.exe", L"explorer.exe", L"spoolsv.exe", L"taskhostw.exe", L"dwm.exe", L"conhost.exe",
-                L"chrome.exe", L"firefox.exe", L"msedge.exe", L"discord.exe", L"steam.exe", L"steamwebhelper.exe"};
+        const auto &knownGoodProcesses = CheatConfigManager::GetInstance().GetKnownGoodProcesses();
 
         // 1. 首先，一次性遍历所有窗口，构建一个 PID -> WindowTitles 的映射
         std::unordered_map<DWORD, std::vector<std::wstring>> windowTitlesByPid;
@@ -1927,7 +1976,7 @@ class EnvironmentSensor : public ISensor
                 std::transform(processName.begin(), processName.end(), processName.begin(), ::towlower);
 
                 // 新增优化：首先通过进程名快速过滤已知的安全进程。
-                if (safeProcessNames.count(processName) > 0)
+                if (knownGoodProcesses.count(processName) > 0)
                 {
                     continue;
                 }
@@ -1939,7 +1988,7 @@ class EnvironmentSensor : public ISensor
                     {
                         context.AddEvidence(anti_cheat::ENVIRONMENT_HARMFUL_PROCESS,
                                             "有害进程(文件名): " + Utils::WideToString(pe.szExeFile));
-                        goto next_process_loop; // 发现有害进程，直接跳到下一个进程的检查
+                        goto next_process_loop;  // 发现有害进程，直接跳到下一个进程的检查
                     }
                 }
 
@@ -2278,7 +2327,9 @@ CheatMonitor::Pimpl::Pimpl()
 {
 }
 
-CheatMonitor::CheatMonitor() : m_pimpl(std::make_unique<Pimpl>()) {}
+CheatMonitor::CheatMonitor() : m_pimpl(std::make_unique<Pimpl>())
+{
+}
 CheatMonitor::~CheatMonitor()
 {
     Shutdown();
@@ -2523,18 +2574,18 @@ void CheatMonitor::Pimpl::InitializeSessionBaseline()
             const auto *pNtHeaders = reinterpret_cast<const IMAGE_NT_HEADERS *>(baseAddress + pDosHeader->e_lfanew);
             if (pNtHeaders->Signature == IMAGE_NT_SIGNATURE)
             {
-                IMAGE_DATA_DIRECTORY importDirectory = 
+                IMAGE_DATA_DIRECTORY importDirectory =
                         pNtHeaders->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
                 if (importDirectory.VirtualAddress != 0)
                 {
-                    const auto *pImportDesc = reinterpret_cast<const IMAGE_IMPORT_DESCRIPTOR *>( 
+                    const auto *pImportDesc = reinterpret_cast<const IMAGE_IMPORT_DESCRIPTOR *>(
                             baseAddress + importDirectory.VirtualAddress);
                     const auto *pCurrentDesc = pImportDesc;
                     while (pCurrentDesc->Name)
                     {
                         const char *dllName = (const char *)(baseAddress + pCurrentDesc->Name);
                         std::vector<uint8_t> iat_hashes;
-                        const auto *pThunk = 
+                        const auto *pThunk =
                                 reinterpret_cast<const IMAGE_THUNK_DATA *>(baseAddress + pCurrentDesc->FirstThunk);
                         while (pThunk && pThunk->u1.AddressOfData)
                         {
@@ -2591,7 +2642,7 @@ void CheatMonitor::OnPlayerLogin(uint32_t user_id, const std::string &user_name)
         std::lock_guard<std::mutex> lock(m_pimpl->m_sessionMutex);
         m_pimpl->m_currentUserId = user_id;
         m_pimpl->m_currentUserName = user_name;
-        m_pimpl->m_hasServerConfig = false; // 重置配置状态，等待服务器下发
+        m_pimpl->m_hasServerConfig = false;  // 重置配置状态，等待服务器下发
         //  确保硬件指纹只在第一个会话开始时收集一次
         if (!m_pimpl->m_fingerprint)
         {
@@ -2618,8 +2669,9 @@ void CheatMonitor::OnPlayerLogout()
                 m_pimpl->UploadReport();
             }
             m_pimpl->m_isSessionActive = false;
-            m_pimpl->m_hasServerConfig = false; // 玩家登出，配置失效
-            std::cout << "[AntiCheat] Player " << m_pimpl->m_currentUserName << " logged out. Session ended." << std::endl;
+            m_pimpl->m_hasServerConfig = false;  // 玩家登出，配置失效
+            std::cout << "[AntiCheat] Player " << m_pimpl->m_currentUserName << " logged out. Session ended."
+                      << std::endl;
         }
     }
 }
@@ -2744,8 +2796,7 @@ void CheatMonitor::Pimpl::UploadReport()
     if (report.SerializeToString(&serialized_report))
     {
         std::cout << "[AntiCheat] Uploading report... Size: " << serialized_report.length() << " bytes. "
-                  << report.evidences_size() << " evidences."
-                  << std::endl;
+                  << report.evidences_size() << " evidences." << std::endl;
         //  HttpSend(server_url, serialized_report);
     }
 }
@@ -3076,7 +3127,7 @@ void CheatMonitor::Pimpl::Sensor_CollectHardwareFingerprint()
     AddEvidence(anti_cheat::SYSTEM_FINGERPRINT, "硬件指纹收集完成。");
 }
 
-void CheatMonitor::Pimpl::DoCheckIatHooks(ScanContext &context, const BYTE *baseAddress, 
+void CheatMonitor::Pimpl::DoCheckIatHooks(ScanContext &context, const BYTE *baseAddress,
                                           const IMAGE_IMPORT_DESCRIPTOR *pImportDesc)
 {
     const auto &baselineHashes = context.GetIatBaselineHashes();
@@ -3326,8 +3377,8 @@ uintptr_t CheatMonitor::Pimpl::FindVehListAddress()
     // Vista/Win7: sub esp,20h; mov edi, [esp+24h]; lea ecx, [Ldrp...]
     BYTE patternVista[] = {0x83, 0xEC, 0x20, 0x8B, 0x7C, 0x24, 0x24, 0x8D, 0x0D};
     // Win8/Win81: 类似Win7，但偏移变
-    BYTE patternWin8[] = {0x83, 0xEC, 0x20, 0x8B, 0xF9, 0x8D, 0x0D};  // lea ecx, [...] 
-    // Win10: push ebp; mov ebp,esp; sub esp,20h; mov esi, [ebp+8]; lea ecx, [...] 
+    BYTE patternWin8[] = {0x83, 0xEC, 0x20, 0x8B, 0xF9, 0x8D, 0x0D};  // lea ecx, [...]
+    // Win10: push ebp; mov ebp,esp; sub esp,20h; mov esi, [ebp+8]; lea ecx, [...]
     BYTE patternWin10[] = {0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x20, 0x8B, 0x75, 0x08, 0x8D, 0x0D};
     // Win11 (24H2兼容): 类似Win10，无重大变
     BYTE patternWin11[] = {0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x20, 0x8B, 0xF2, 0x8D, 0x0D};
