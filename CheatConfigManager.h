@@ -1,44 +1,34 @@
-﻿#pragma once
+#pragma once
 
-// Define WIN32_LEAN_AND_MEAN to exclude rarely-used APIs from Windows.h,
-// including the old winsock.h, which prevents conflicts with winsock2.h.
-#define WIN32_LEAN_AND_MEAN
-#include <Windows.h>
-#include <string>
-#include <vector>
-#include <mutex>
-#include <memory>
-#include <unordered_set>
 #include "anti_cheat.pb.h"
-
-// 前向声明，避免在头文件中包含完整的实现
-namespace anti_cheat
-{
-class ClientConfig;
-}
+#include <cstdint>
+#include <memory>
+#include <mutex>
+#include <string>
+#include <unordered_set>
+#include <vector>
 
 class CheatConfigManager
 {
-   public:
-    // 获取单例实例
+public:
     static CheatConfigManager& GetInstance();
 
-    // 在与服务器通讯后调用，用服务器下发的数据更新配置
-    // 数据应为序列化后的 ClientConfig protobuf
+    CheatConfigManager(const CheatConfigManager&) = delete;
+    CheatConfigManager& operator=(const CheatConfigManager&) = delete;
+
     void UpdateConfigFromServer(const std::string& server_data);
 
-    // --- 配置项的 Getter ---
-    // 为了线程安全，所有getter都应在内部加锁
-
+    // --- Getters ---
     int32_t GetBaseScanInterval() const;
     int32_t GetHeavyScanIntervalMinutes() const;
     int32_t GetReportUploadIntervalMinutes() const;
-    const std::vector<std::wstring>& GetHarmfulProcessNames() const;
-    const std::vector<std::wstring>& GetHarmfulKeywords() const;
-    const std::unordered_set<std::wstring>& GetWhitelistedVEHModules() const;
-    const std::unordered_set<std::wstring>& GetWhitelistedProcessPaths() const;
-    const std::unordered_set<std::wstring>& GetWhitelistedWindowKeywords() const;
-    const std::unordered_set<std::wstring>& GetKnownGoodProcesses() const;
+
+    std::shared_ptr<const std::vector<std::wstring>> GetHarmfulProcessNames() const;
+    std::shared_ptr<const std::vector<std::wstring>> GetHarmfulKeywords() const;
+    std::shared_ptr<const std::unordered_set<std::wstring>> GetWhitelistedVEHModules() const;
+    std::shared_ptr<const std::unordered_set<std::wstring>> GetWhitelistedProcessPaths() const;
+    std::shared_ptr<const std::unordered_set<std::wstring>> GetWhitelistedWindowKeywords() const;
+    std::shared_ptr<const std::unordered_set<std::wstring>> GetKnownGoodProcesses() const;
 
     // --- 行为控制参数 ---
     int32_t GetSuspiciousHandleTTLMinutes() const;
@@ -63,31 +53,31 @@ class CheatConfigManager
     int32_t GetKeyboardMacroMinSequenceLength() const;
     int32_t GetKeyboardMacroMinPatternLength() const;
 
-   private:
+private:
+    struct ConfigData
+    {
+        std::unique_ptr<anti_cheat::ClientConfig> config;
+        std::vector<std::wstring> harmfulProcessNames_w;
+        std::vector<std::wstring> harmfulKeywords_w;
+        std::unordered_set<std::wstring> whitelistedVEHModules_w;
+        std::unordered_set<std::wstring> whitelistedProcessPaths_w;
+        std::unordered_set<std::wstring> whitelistedWindowKeywords_w;
+        std::unordered_set<std::wstring> knownGoodProcesses_w;
+
+        ConfigData() : config(std::make_unique<anti_cheat::ClientConfig>()) {}
+    };
+
     CheatConfigManager();
     ~CheatConfigManager() = default;
 
-    // 禁用拷贝和赋值构造函数
-    CheatConfigManager(const CheatConfigManager&) = delete;
-    CheatConfigManager& operator=(const CheatConfigManager&) = delete;
+    std::shared_ptr<ConfigData> GetCurrentConfig() const;
 
-    void SetDefaultValues();        // 设置硬编码的默认值
-    void UpdateWideStringCaches();  // 更新宽字符版本的缓存
-
-    // 安全相关辅助函数
+    void SetDefaultValues(ConfigData& configData);
+    void UpdateWideStringCaches(ConfigData& configData);
     bool VerifySignature(const anti_cheat::ClientConfig& config) const;
     std::string CalculateHash(const std::string& data) const;
     std::string GetServerPublicKey() const;
 
-    // 内部状态
-    std::unique_ptr<anti_cheat::ClientConfig> m_config;
     mutable std::mutex m_mutex;
-
-    // 为频繁访问的字符串列表提供宽字符缓存，避免重复转换
-    std::vector<std::wstring> m_harmfulProcessNames_w;
-    std::vector<std::wstring> m_harmfulKeywords_w;
-    std::unordered_set<std::wstring> m_whitelistedVEHModules_w;
-    std::unordered_set<std::wstring> m_whitelistedProcessPaths_w;
-    std::unordered_set<std::wstring> m_whitelistedWindowKeywords_w;
-    std::unordered_set<std::wstring> m_knownGoodProcesses_w;
+    std::shared_ptr<ConfigData> m_configData;
 };
