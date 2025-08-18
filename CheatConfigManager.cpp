@@ -5,6 +5,7 @@
 #include <Windows.h>
 #include <Wincrypt.h>  // for Crypt* functions
 #include <memory>      // for std::shared_ptr
+#include <ShlObj.h>    // For SHGetFolderPathW
 
 #pragma comment(lib, "crypt32.lib")  // For Crypt* functions
 
@@ -214,6 +215,45 @@ void CheatConfigManager::SetDefaultValues(ConfigData& configData)
     configData.config->add_whitelisted_window_keywords(Utils::WideToString(L"visual studio"));
     configData.config->add_whitelisted_window_keywords(Utils::WideToString(L"obs"));
     configData.config->add_whitelisted_window_keywords(Utils::WideToString(L"discord"));
+
+    configData.config->clear_whitelisted_veh_modules();
+    // Common NVIDIA/AMD/Intel graphics driver modules, Steam overlay, Discord overlay
+    configData.config->add_whitelisted_veh_modules("nvwgf2umx.dll");
+    configData.config->add_whitelisted_veh_modules("nvd3dumx.dll");
+    configData.config->add_whitelisted_veh_modules("amdvlk64.dll");
+    configData.config->add_whitelisted_veh_modules("igd10iumd64.dll");
+    configData.config->add_whitelisted_veh_modules("gameoverlayrenderer64.dll");
+    configData.config->add_whitelisted_veh_modules("discord_hook.dll");
+
+    configData.config->clear_whitelisted_process_paths();
+    wchar_t path_buffer[MAX_PATH];
+    auto add_whitelisted_directory = [&](int csidl) {
+        if (SUCCEEDED(SHGetFolderPathW(NULL, csidl, NULL, 0, path_buffer)))
+        {
+            std::wstring p = path_buffer;
+            std::transform(p.begin(), p.end(), p.begin(), ::towlower);
+            if (!p.empty() && p.back() != L'\\')
+            {
+                p += L'\\';
+            }
+            configData.config->add_whitelisted_process_paths(Utils::WideToString(p));
+        }
+    };
+
+    add_whitelisted_directory(CSIDL_SYSTEM);
+    add_whitelisted_directory(CSIDL_PROGRAM_FILES);
+    add_whitelisted_directory(CSIDL_PROGRAM_FILESX86);
+
+    if (GetWindowsDirectoryW(path_buffer, MAX_PATH) > 0)
+    {
+        std::wstring p = path_buffer;
+        std::transform(p.begin(), p.end(), p.begin(), ::towlower);
+        if (!p.empty() && p.back() != L'\\')
+        {
+            p += L'\\';
+        }
+        configData.config->add_whitelisted_process_paths(Utils::WideToString(p));
+    }
 
     configData.config->clear_known_good_processes();
     configData.config->add_known_good_processes("explorer.exe");
