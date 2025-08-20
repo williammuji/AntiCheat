@@ -709,8 +709,10 @@ struct CheatMonitor::Pimpl
     std::set<std::pair<anti_cheat::CheatCategory, std::string>> m_uniqueEvidence;
     std::vector<anti_cheat::Evidence> m_evidences;
 
+    std::atomic<bool> m_processBaselineEstablished = false;
+
     // 用于控制会话基线重建的标志
-    std::atomic<bool> m_newSessionNeedsBaseline = false;
+    // std::atomic<bool> m_newSessionNeedsBaseline = false;
 
     // 使用 std::set 以获得更快的查找速度 (O(logN)) 并自动处理重复项
     std::set<DWORD> m_knownThreadIds;
@@ -796,7 +798,7 @@ struct CheatMonitor::Pimpl
     void MonitorLoop();
     void UploadReport();
     void InitializeSystem();
-    void InitializeSessionBaseline();
+    void InitializeProcessBaseline();
     void ResetSessionState();
     void AddEvidence(anti_cheat::CheatCategory category, const std::string &description);
     void AddEvidenceInternal(anti_cheat::CheatCategory category,
@@ -1020,34 +1022,139 @@ bool ArePointsCollinear(POINT p1, POINT p2, POINT p3)
     return cross_product == 0;
 }
 
-// 寻找最长重复子串，用于宏检测
+// --- START: Efficient Longest Repeating Substring (Suffix Array + LCP) ---
+//
+// The original O(n^3) brute-force algorithm was causing severe performance issues.
+// It is replaced by a standard and efficient Suffix Array + LCP-Array-based approach.
+// The time complexity is now O(n*log^2(n)) due to the sort-based suffix array construction,
+// which is a massive improvement and resolves the frame rate drop.
+
+// 结构体：用于存储后缀信息，便于排序
+struct Suffix
+{
+    int index; // 后缀的起始索引
+    int rank[2]; // 两个排名，用于排序
+};
+
+// 比较函数，用于std::sort
+static int CmpSuffix(const struct Suffix &a, const struct Suffix &b)
+{
+    return (a.rank[0] == b.rank[0]) ? (a.rank[1] < b.rank[1] ? 1 : 0) : (a.rank[0] < b.rank[0] ? 1 : 0);
+}
+
+// 构建后缀数组的核心函数
+static std::vector<int> BuildSuffixArray(const std::vector<DWORD> &sequence, int n)
+{
+    std::vector<struct Suffix> suffixes(n);
+
+    // 初始化后缀数组，填充每个后缀的起始索引和初始排名
+    for (int i = 0; i < n; i++)
+    {
+        suffixes[i].index = i;
+        suffixes[i].rank[0] = sequence[i];
+        suffixes[i].rank[1] = ((i + 1) < n) ? (sequence[i + 1]) : -1;
+    }
+
+    // 按照初始排名对后缀进行排序
+    std::sort(suffixes.begin(), suffixes.end(), CmpSuffix);
+
+    std::vector<int> inv(n);
+    // k从4开始，每次加倍，对所有后缀进行2k长度的排序
+    for (int k = 4; k < 2 * n; k = k * 2)
+    {
+        int rank = 0;
+        int prev_rank = suffixes[0].rank[0];
+        suffixes[0].rank[0] = rank;
+        inv[suffixes[0].index] = 0;
+
+        // 计算新的排名
+        for (int i = 1; i < n; i++)
+        {
+            if (suffixes[i].rank[0] == prev_rank && suffixes[i].rank[1] == suffixes[i - 1].rank[1])
+            {
+                prev_rank = suffixes[i].rank[0];
+                suffixes[i].rank[0] = rank;
+            }
+            else
+            {
+                prev_rank = suffixes[i].rank[0];
+                suffixes[i].rank[0] = ++rank;
+            }
+            inv[suffixes[i].index] = i;
+        }
+
+        // 更新第二排名
+        for (int i = 0; i < n; i++)
+        {
+            int nextindex = suffixes[i].index + k / 2;
+            suffixes[i].rank[1] = (nextindex < n) ? suffixes[inv[nextindex]].rank[0] : -1;
+        }
+
+        // 根据新的排名再次排序
+        std::sort(suffixes.begin(), suffixes.end(), CmpSuffix);
+    }
+
+    std::vector<int> suffixArr(n);
+    for (int i = 0; i < n; i++)
+        suffixArr[i] = suffixes[i].index;
+
+    return suffixArr;
+}
+
+// 使用Kasai算法在O(n)时间内构建LCP数组
+static std::vector<int> Kasai(const std::vector<DWORD> &sequence, const std::vector<int> &suffixArr)
+{
+    int n = suffixArr.size();
+    std::vector<int> lcp(n, 0);
+    std::vector<int> invSuff(n, 0);
+
+    for (int i = 0; i < n; i++)
+        invSuff[suffixArr[i]] = i;
+
+    int k = 0;
+    for (int i = 0; i < n; i++)
+    {
+        if (invSuff[i] == n - 1)
+        {
+            k = 0;
+            continue;
+        }
+        int j = suffixArr[invSuff[i] + 1];
+        while (i + k < n && j + k < n && sequence[i + k] == sequence[j + k])
+            k++;
+        lcp[invSuff[i]] = k;
+        if (k > 0)
+            k--;
+    }
+    return lcp;
+}
+
+// 寻找最长重复子串，用于宏检测 (重构后的高效版本)
 size_t FindLongestRepeatingSubstring(const std::vector<DWORD> &sequence)
 {
     if (sequence.size() < 2)
         return 0;
-    size_t n = sequence.size();
+
+    int n = sequence.size();
+
+    // 1. 构建后缀数组
+    std::vector<int> suffixArr = BuildSuffixArray(sequence, n);
+
+    // 2. 基于后缀数组和原始序列，构建LCP数组
+    std::vector<int> lcp = Kasai(sequence, suffixArr);
+
+    // 3. LCP数组中的最大值，就是最长重复子串的长度
     size_t longest = 0;
-    for (size_t len = 1; len <= n / 2; ++len)
+    for (int i = 0; i < n; i++)
     {
-        for (size_t i = 0; i <= n - 2 * len; ++i)
+        if (lcp[i] > longest)
         {
-            bool match = true;
-            for (size_t k = 0; k < len; ++k)
-            {
-                if (sequence[i + k] != sequence[i + len + k])
-                {
-                    match = false;
-                    break;
-                }
-            }
-            if (match)
-            {
-                longest = (std::max)(longest, len);
-            }
+            longest = lcp[i];
         }
     }
     return longest;
 }
+// --- END: Efficient Longest Repeating Substring (Suffix Array + LCP) ---
 
 }  // namespace InputAnalysis
 // --- 将所有传感器实现移入独立的类中 ---
@@ -2496,6 +2603,7 @@ void CheatMonitor::Pimpl::InitializeSystem()
     m_heavyweight_sensors.emplace_back(std::make_unique<Sensors::ThreadIntegritySensor>());
 
     // --- 初始化 ---
+    InitializeProcessBaseline();
     // HardenProcessAndThreads();
     CheckParentProcessAtStartup();
     Sensor_DetectVirtualMachine();
@@ -2506,12 +2614,12 @@ void CheatMonitor::Pimpl::InitializeSystem()
     }
 }
 
-void CheatMonitor::Pimpl::InitializeSessionBaseline()
+void CheatMonitor::Pimpl::InitializeProcessBaseline()
 {
-    std::cout << "[AntiCheat] Initializing session baseline..." << std::endl;
-    // 重置会话状态
-    ResetSessionState();
-    m_newSessionNeedsBaseline = false;
+    if (m_processBaselineEstablished.load())
+        return;
+
+    std::cout << "[AntiCheat] Initializing process baseline..." << std::endl;
 
     // 1. 建立已知模块列表和路径白名单
     {
@@ -2622,7 +2730,8 @@ void CheatMonitor::Pimpl::InitializeSessionBaseline()
         Sensor_CollectHardwareFingerprint();
     }
 
-    AddEvidence(anti_cheat::SYSTEM_INITIALIZED, "会话基线建立完成。");
+    AddEvidence(anti_cheat::SYSTEM_INITIALIZED, "Process baseline established.");
+    m_processBaselineEstablished = true;
 }
 
 void CheatMonitor::Pimpl::ResetSessionState()
@@ -2652,18 +2761,16 @@ void CheatMonitor::OnPlayerLogin(uint32_t user_id, const std::string &user_name)
         return;
     // 先登出上一个玩家，这会处理上一个会话的报告上传和状态清理
     OnPlayerLogout();
+
+    // 为新玩家重置会话状态
+    m_pimpl->ResetSessionState();
+
     {
         std::lock_guard<std::mutex> lock(m_pimpl->m_sessionMutex);
         m_pimpl->m_currentUserId = user_id;
         m_pimpl->m_currentUserName = user_name;
         m_pimpl->m_hasServerConfig = false;  // 重置配置状态，等待服务器下发
-        //  确保硬件指纹只在第一个会话开始时收集一次
-        if (!m_pimpl->m_fingerprint)
-        {
-            m_pimpl->Sensor_CollectHardwareFingerprint();
-        }
         m_pimpl->m_isSessionActive = true;
-        m_pimpl->m_newSessionNeedsBaseline = true;  // 标记新会话需要建立基线
     }
     m_pimpl->m_cv.notify_one();
 }
@@ -2838,12 +2945,6 @@ void CheatMonitor::Pimpl::MonitorLoop()
         if (!m_isSessionActive.load() || !m_hasServerConfig.load())
         {
             continue;
-        }
-
-        // 如果新会话开始，立即建立基线
-        if (m_newSessionNeedsBaseline.load())
-        {
-            InitializeSessionBaseline();
         }
 
         const auto now = std::chrono::steady_clock::now();
