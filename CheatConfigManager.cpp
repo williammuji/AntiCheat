@@ -1,4 +1,4 @@
-﻿#include "CheatConfigManager.h"
+#include "CheatConfigManager.h"
 #include "CheatMonitor.h"  // 为了访问 Utils::StringToWide 和通知 CheatMonitor
 #include <stdexcept>
 #include <algorithm>  // for std::replace
@@ -25,8 +25,8 @@ CheatConfigManager& CheatConfigManager::GetInstance()
 
 CheatConfigManager::CheatConfigManager() : m_configData(std::make_shared<ConfigData>())
 {
-    // 启动后这组数据等服务器下发，再设置m_isSessionActive为true
-    // SetDefaultValues(*m_configData);
+    // 在构造函数中直接调用，以确保默认配置在启动时就绪
+    SetDefaultValues(*m_configData);
 }
 
 // --- 私有辅助函数 ---
@@ -198,43 +198,194 @@ void CheatConfigManager::SetDefaultValues(ConfigData& configData)
     configData.config->set_heavy_scan_interval_minutes(30);
     configData.config->set_report_upload_interval_minutes(15);
 
+    // 1. 有害进程名 (Harmful Process Names)
     configData.config->clear_harmful_process_names();
-    configData.config->add_harmful_process_names("cheatengine");
+    // 调试器 (Debuggers)
     configData.config->add_harmful_process_names("ollydbg");
+    configData.config->add_harmful_process_names("ollyice");
     configData.config->add_harmful_process_names("x64dbg");
+    configData.config->add_harmful_process_names("x32dbg");
+    configData.config->add_harmful_process_names("windbg");
+    configData.config->add_harmful_process_names("immunitydebugger");
+    // 逆向工程 (Reverse Engineering)
     configData.config->add_harmful_process_names("ida64");
+    configData.config->add_harmful_process_names("ida");
+    configData.config->add_harmful_process_names("ghidra");
+    configData.config->add_harmful_process_names("binaryninja");
+    // 内存修改 (Memory Editors)
+    configData.config->add_harmful_process_names("cheatengine");
+    configData.config->add_harmful_process_names("cheatengine-x86_64");
+    configData.config->add_harmful_process_names("artmoney");
+    configData.config->add_harmful_process_names("wemod");
+    // 网络抓包 (Packet Sniffers)
     configData.config->add_harmful_process_names("fiddler");
+    configData.config->add_harmful_process_names("wireshark");
+    configData.config->add_harmful_process_names("charles");
+    // 国内常见工具/模拟器 (China-Specific Tools/Emulators)
+    configData.config->add_harmful_process_names("anjianjingling"); // 按键精灵
+    configData.config->add_harmful_process_names("guaji"); // 挂机
+    configData.config->add_harmful_process_names("fuzhu"); // 辅助
+    configData.config->add_harmful_process_names("xiugaiqi"); // 修改器
+    configData.config->add_harmful_process_names("ydark"); // 远控
+    configData.config->add_harmful_process_names("duniu"); // 毒牛/雷电模拟器
+    configData.config->add_harmful_process_names("dnplayer"); // 雷电模拟器
+    configData.config->add_harmful_process_names("bsplayer"); // 蓝叠模拟器
+    configData.config->add_harmful_process_names("mumu"); // 网易MUMU
+    configData.config->add_harmful_process_names("nox"); // 夜神模拟器
+    configData.config->add_harmful_process_names("xiaoyao"); // 逍遥模拟器
 
+    // 2. 有害关键词 (Harmful Keywords)
     configData.config->clear_harmful_keywords();
+    // 中文关键词
     configData.config->add_harmful_keywords("外挂");
     configData.config->add_harmful_keywords("辅助");
+    configData.config->add_harmful_keywords("作弊");
+    configData.config->add_harmful_keywords("修改器");
+    configData.config->add_harmful_keywords("内存");
+    configData.config->add_harmful_keywords("注入");
+    configData.config->add_harmful_keywords("破解");
+    configData.config->add_harmful_keywords("内购");
+    configData.config->add_harmful_keywords("透视");
+    configData.config->add_harmful_keywords("自瞄");
+    configData.config->add_harmful_keywords("秒杀");
+    configData.config->add_harmful_keywords("无敌");
+    configData.config->add_harmful_keywords("飞天");
+    configData.config->add_harmful_keywords("遁地");
+    configData.config->add_harmful_keywords("吸怪");
+    configData.config->add_harmful_keywords("免CD");
+    configData.config->add_harmful_keywords("无CD");
+    configData.config->add_harmful_keywords("脚本");
+    configData.config->add_harmful_keywords("加速");
+    configData.config->add_harmful_keywords("多开");
+    configData.config->add_harmful_keywords("脱机");
+    configData.config->add_harmful_keywords("按键精灵");
+    configData.config->add_harmful_keywords("易语言");
+    configData.config->add_harmful_keywords("游戏蜂窝");
+    configData.config->add_harmful_keywords("GG修改器");
+    configData.config->add_harmful_keywords("风灵月影");
+    configData.config->add_harmful_keywords("小幸修改器");
+    configData.config->add_harmful_keywords("模拟器");
+    // 英文关键词
     configData.config->add_harmful_keywords("cheat engine");
     configData.config->add_harmful_keywords("memory editor");
+    configData.config->add_harmful_keywords("hack");
+    configData.config->add_harmful_keywords("bot");
+    configData.config->add_harmful_keywords("macro");
+    configData.config->add_harmful_keywords("trainer");
+    configData.config->add_harmful_keywords("injector");
+    configData.config->add_harmful_keywords("debugger");
+    configData.config->add_harmful_keywords("aimbot");
+    configData.config->add_harmful_keywords("wallhack");
+    configData.config->add_harmful_keywords("esp");
+    configData.config->add_harmful_keywords("speedhack");
+    configData.config->add_harmful_keywords("wemod");
 
+    // 3. 窗口白名单 (Whitelisted Window Keywords)
     configData.config->clear_whitelisted_window_keywords();
-    configData.config->add_whitelisted_window_keywords(Utils::WideToString(L"visual studio"));
-    configData.config->add_whitelisted_window_keywords(Utils::WideToString(L"obs"));
-    configData.config->add_whitelisted_window_keywords(Utils::WideToString(L"discord"));
+    // IDEs & 开发者工具
+    configData.config->add_whitelisted_window_keywords("visual studio");
+    configData.config->add_whitelisted_window_keywords("vs code");
+    configData.config->add_whitelisted_window_keywords("jetbrains");
+    configData.config->add_whitelisted_window_keywords("rider");
+    // 国内常见通讯社交
+    configData.config->add_whitelisted_window_keywords("discord");
+    configData.config->add_whitelisted_window_keywords("微信");
+    configData.config->add_whitelisted_window_keywords("qq");
+    configData.config->add_whitelisted_window_keywords("tim");
+    configData.config->add_whitelisted_window_keywords("钉钉");
+    configData.config->add_whitelisted_window_keywords("腾讯会议");
+    // 直播与录屏
+    configData.config->add_whitelisted_window_keywords("obs");
+    configData.config->add_whitelisted_window_keywords("streamlabs");
+    configData.config->add_whitelisted_window_keywords("geforce experience");
+    configData.config->add_whitelisted_window_keywords("斗鱼");
+    configData.config->add_whitelisted_window_keywords("虎牙");
+    configData.config->add_whitelisted_window_keywords("bilibili");
+    configData.config->add_whitelisted_window_keywords("哔哩哔哩");
+    // 常用工具与软件
+    configData.config->add_whitelisted_window_keywords("wps");
+    configData.config->add_whitelisted_window_keywords("有道");
+    configData.config->add_whitelisted_window_keywords("百度网盘");
+    configData.config->add_whitelisted_window_keywords("迅雷");
+    configData.config->add_whitelisted_window_keywords("网易云音乐");
+    configData.config->add_whitelisted_window_keywords("qq音乐");
+    configData.config->add_whitelisted_window_keywords("酷狗音乐");
+    configData.config->add_whitelisted_window_keywords("task manager");
+    configData.config->add_whitelisted_window_keywords("process explorer");
+    // 游戏平台
+    configData.config->add_whitelisted_window_keywords("steam");
+    configData.config->add_whitelisted_window_keywords("epic games");
+    configData.config->add_whitelisted_window_keywords("ubisoft connect");
+    configData.config->add_whitelisted_window_keywords("wegame"); // Tencent WeGame
+    configData.config->add_whitelisted_window_keywords("chromium embedded framework");
 
+    // 4. VEH模块白名单 (Whitelisted VEH Modules)
     configData.config->clear_whitelisted_veh_modules();
-    // Common NVIDIA/AMD/Intel graphics driver modules, Steam overlay, Discord overlay
+    // 显卡驱动
     configData.config->add_whitelisted_veh_modules("nvwgf2umx.dll");
     configData.config->add_whitelisted_veh_modules("nvd3dumx.dll");
     configData.config->add_whitelisted_veh_modules("amdvlk64.dll");
     configData.config->add_whitelisted_veh_modules("igd10iumd64.dll");
-    configData.config->add_whitelisted_veh_modules("gameoverlayrenderer64.dll");
+    // 游戏平台与覆盖
+    configData.config->add_whitelisted_veh_modules("gameoverlayrenderer64.dll"); // Steam
     configData.config->add_whitelisted_veh_modules("discord_hook.dll");
+    configData.config->add_whitelisted_veh_modules("rtsshooks64.dll"); // RivaTuner
+    configData.config->add_whitelisted_veh_modules("wegame_helper.dll"); // WeGame
+    // 输入法与安全软件
+    configData.config->add_whitelisted_veh_modules("sogouimebroker.dll");
+    configData.config->add_whitelisted_veh_modules("sogoucloud.dll");
+    configData.config->add_whitelisted_veh_modules("qqpinyinbroker.dll");
+    configData.config->add_whitelisted_veh_modules("360base.dll");
+    configData.config->add_whitelisted_veh_modules("qqpcexternal.dll");
+
+    // 5. 优良进程白名单 (Known Good Processes)
+    configData.config->clear_known_good_processes();
+    // Windows核心进程
+    configData.config->add_known_good_processes("svchost.exe");
+    configData.config->add_known_good_processes("csrss.exe");
+    configData.config->add_known_good_processes("wininit.exe");
+    configData.config->add_known_good_processes("winlogon.exe");
+    configData.config->add_known_good_processes("services.exe");
+    configData.config->add_known_good_processes("lsass.exe");
+    configData.config->add_known_good_processes("explorer.exe");
+    configData.config->add_known_good_processes("dwm.exe");
+    // 国内常见输入法
+    configData.config->add_known_good_processes("sogouinput.exe");
+    configData.config->add_known_good_processes("qqpinyin.exe");
+    configData.config->add_known_good_processes("msime.exe");
+    configData.config->add_known_good_processes("ctfmon.exe");
+    // 国内常见安全软件
+    configData.config->add_known_good_processes("360safe.exe");
+    configData.config->add_known_good_processes("360sd.exe");
+    configData.config->add_known_good_processes("qqpctray.exe");
+    configData.config->add_known_good_processes("huorong.exe");
+    configData.config->add_known_good_processes("ksafe.exe"); // Kingsoft
+    // 游戏平台与通讯
+    configData.config->add_known_good_processes("steam.exe");
+    configData.config->add_known_good_processes("wegame.exe");
+    configData.config->add_known_good_processes("rail.exe"); // WeGame component
+    configData.config->add_known_good_processes("discord.exe");
+    configData.config->add_known_good_processes("yy.exe");
+    configData.config->add_known_good_processes("qq.exe");
+    configData.config->add_known_good_processes("wechat.exe");
+    configData.config->add_known_good_processes("tim.exe");
+    // 浏览器与常用软件
+    configData.config->add_known_good_processes("chrome.exe");
+    configData.config->add_known_good_processes("msedge.exe");
+    configData.config->add_known_good_processes("firefox.exe");
+    configData.config->add_known_good_processes("wps.exe");
+    configData.config->add_known_good_processes("cloudmusic.exe");
+    configData.config->add_known_good_processes("bilibili.exe");
+    configData.config->add_known_good_processes("dingtalk.exe");
 
     configData.config->clear_whitelisted_process_paths();
     wchar_t path_buffer[MAX_PATH];
     auto add_whitelisted_directory = [&](int csidl) {
-        if (SUCCEEDED(SHGetFolderPathW(NULL, csidl, NULL, 0, path_buffer)))
-        {
+        if (SUCCEEDED(SHGetFolderPathW(NULL, csidl, NULL, 0, path_buffer))) {
             std::wstring p = path_buffer;
             std::transform(p.begin(), p.end(), p.begin(), ::towlower);
-            if (!p.empty() && p.back() != L'\\')
-            {
-                p += L'\\';
+            if (!p.empty() && p.back() != L'\') {
+                p += L'\';
             }
             configData.config->add_whitelisted_process_paths(Utils::WideToString(p));
         }
@@ -244,40 +395,14 @@ void CheatConfigManager::SetDefaultValues(ConfigData& configData)
     add_whitelisted_directory(CSIDL_PROGRAM_FILES);
     add_whitelisted_directory(CSIDL_PROGRAM_FILESX86);
 
-    if (GetWindowsDirectoryW(path_buffer, MAX_PATH) > 0)
-    {
+    if (GetWindowsDirectoryW(path_buffer, MAX_PATH) > 0) {
         std::wstring p = path_buffer;
         std::transform(p.begin(), p.end(), p.begin(), ::towlower);
-        if (!p.empty() && p.back() != L'\\')
-        {
-            p += L'\\';
+        if (!p.empty() && p.back() != L'\') {
+            p += L'\';
         }
         configData.config->add_whitelisted_process_paths(Utils::WideToString(p));
     }
-
-    configData.config->clear_known_good_processes();
-    configData.config->add_known_good_processes("explorer.exe");
-    configData.config->add_known_good_processes("svchost.exe");
-    configData.config->add_known_good_processes("lsass.exe");
-    configData.config->add_known_good_processes("wininit.exe");
-    configData.config->add_known_good_processes("services.exe");
-    configData.config->add_known_good_processes("sogoucloud.exe");
-    configData.config->add_known_good_processes("sogouinput.exe");
-    configData.config->add_known_good_processes("qqpinyin.exe");
-    configData.config->add_known_good_processes("msime.exe");
-    configData.config->add_known_good_processes("chsime.exe");
-    configData.config->add_known_good_processes("nvcontainer.exe");
-    configData.config->add_known_good_processes("nvidia share.exe");
-    configData.config->add_known_good_processes("amdow.exe");
-    configData.config->add_known_good_processes("radeonsoftware.exe");
-    configData.config->add_known_good_processes("yy.exe");
-    configData.config->add_known_good_processes("yylive.exe");
-    configData.config->add_known_good_processes("qt.exe");
-    configData.config->add_known_good_processes("360safe.exe");
-    configData.config->add_known_good_processes("360sd.exe");
-    configData.config->add_known_good_processes("qqpctray.exe");
-    configData.config->add_known_good_processes("huorong.exe");
-    configData.config->add_known_good_processes("wspsafesvc.exe");
 
     // --- 行为控制参数 ---
     configData.config->set_suspicious_handle_ttl_minutes(2);
@@ -346,8 +471,8 @@ std::string CheatConfigManager::GetServerPublicKey() const
     // 这是一个占位符公钥。在实际生产中，您需要替换为您真实的公钥，
     // 并使用更健壮的混淆技术来保护它。
     const unsigned char g_encryptedPublicKey[] = {
-            0x75, 0x6d, 0x66, 0x77, 0x48, 0x73, 0x45, 0x0c, 0x57, 0x65, 0x73, 0x7e, 0x0c, 0x41, 0x63, 0x61, 0x6c, 0x49,
-            0x63, 0x79, 0x0c, 0x5d, 0x69, 0x6e, 0x6e, 0x49, 0x67, 0x73, 0x0c, 0x46, 0x6f, 0x72, 0x0c, 0x4b, 0x6e, 0x7e,
+            0x75, 0x6d, 0x66, 0x77, 0x48, 0x73, 0x45, 0x0c, 0x57, 0x65, 0x73, 0x7e, 0x0c, 0x41, 0x63, 0x61, 0x6c, 0x49, 
+            0x63, 0x79, 0x0c, 0x5d, 0x69, 0x6e, 0x6e, 0x49, 0x67, 0x73, 0x0c, 0x46, 0x6f, 0x72, 0x0c, 0x4b, 0x6e, 0x7e, 
             0x66, 0x43, 0x68, 0x65, 0x61, 0x7e, 0x0c, 0x53, 0x7d, 0x73, 0x7e, 0x65, 0x6d, 0x0c, 0x3d, 0x0c, 0x1f, 0x1c};
     const char g_xorKey[] = "a_very_secret_random_key";
 
