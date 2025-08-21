@@ -758,7 +758,10 @@ struct CheatMonitor::Pimpl
     RingBuffer<MouseMoveEvent> m_mouseMoveEvents;
     RingBuffer<MouseClickEvent> m_mouseClickEvents;
     RingBuffer<KeyboardEvent> m_keyboardEvents;
-    static Pimpl *s_pimpl_for_hooks;  // Static pointer for hook procedures
+    size_t m_maxMouseMoveEvents = 5000;  // 新增：缓存配置值
+    size_t m_maxMouseClickEvents = 500;  // 新增：缓存配置值
+    size_t m_maxKeyboardEvents = 2048;   // 新增：缓存配置值
+    static Pimpl *s_pimpl_for_hooks;     // Static pointer for hook procedures
 
     std::mt19937 m_rng;       // 随机数生成器
     std::random_device m_rd;  // 随机数种子
@@ -793,6 +796,8 @@ struct CheatMonitor::Pimpl
     // 传感器集合
     std::vector<std::unique_ptr<ISensor>> m_lightweight_sensors;
     std::vector<std::unique_ptr<ISensor>> m_heavyweight_sensors;
+
+    void OnConfigUpdated();
 
     // Main loop and state management
     void MonitorLoop();
@@ -1032,8 +1037,8 @@ bool ArePointsCollinear(POINT p1, POINT p2, POINT p3)
 // 结构体：用于存储后缀信息，便于排序
 struct Suffix
 {
-    int index; // 后缀的起始索引
-    int rank[2]; // 两个排名，用于排序
+    int index;    // 后缀的起始索引
+    int rank[2];  // 两个排名，用于排序
 };
 
 // 比较函数，用于std::sort
@@ -2442,10 +2447,14 @@ CheatMonitor &CheatMonitor::GetInstance()
 }
 
 CheatMonitor::Pimpl::Pimpl()
-    : m_mouseMoveEvents(CheatConfigManager::GetInstance().GetMaxMouseMoveEvents()),
-      m_mouseClickEvents(CheatConfigManager::GetInstance().GetMaxMouseClickEvents()),
-      m_keyboardEvents(CheatConfigManager::GetInstance().GetMaxKeyboardEvents())
+    : m_mouseMoveEvents(m_maxMouseMoveEvents),
+      m_mouseClickEvents(m_maxMouseClickEvents),
+      m_keyboardEvents(m_maxKeyboardEvents)
 {
+    // 在构造函数中从管理器获取一次配置并缓存
+    m_maxMouseMoveEvents = CheatConfigManager::GetInstance().GetMaxMouseMoveEvents();
+    m_maxMouseClickEvents = CheatConfigManager::GetInstance().GetMaxMouseClickEvents();
+    m_maxKeyboardEvents = CheatConfigManager::GetInstance().GetMaxKeyboardEvents();
 }
 
 CheatMonitor::CheatMonitor() : m_pimpl(std::make_unique<Pimpl>())
@@ -2809,10 +2818,32 @@ void CheatMonitor::OnServerConfigUpdated()
 {
     if (m_pimpl)
     {
+        // 调用Pimpl的函数来处理配置更新的细节
+        m_pimpl->OnConfigUpdated();
+
         m_pimpl->m_hasServerConfig = true;
         // 立即唤醒监控线程，以便它可以根据新配置开始扫描
         m_pimpl->m_cv.notify_one();
     }
+}
+
+void CheatMonitor::Pimpl::OnConfigUpdated()
+{
+    // [线程安全] 加锁以防止钩子函数在重建缓冲区时写入数据
+    std::lock_guard<std::mutex> lock(m_inputMutex);
+
+    // 从管理器获取最新的容量配置
+    m_maxMouseMoveEvents = CheatConfigManager::GetInstance().GetMaxMouseMoveEvents();
+    m_maxMouseClickEvents = CheatConfigManager::GetInstance().GetMaxMouseClickEvents();
+    m_maxKeyboardEvents = CheatConfigManager::GetInstance().GetMaxKeyboardEvents();
+
+    // 使用新的容量重新创建环形缓冲区。
+    // 这也会隐式地清空旧数据，符合配置更新时的预期行为。
+    m_mouseMoveEvents = RingBuffer<MouseMoveEvent>(m_maxMouseMoveEvents);
+    m_mouseClickEvents = RingBuffer<MouseClickEvent>(m_maxMouseClickEvents);
+    m_keyboardEvents = RingBuffer<KeyboardEvent>(m_maxKeyboardEvents);
+
+    std::cout << "[AntiCheat] Input buffer capacities updated from server config." << std::endl;
 }
 
 void CheatMonitor::Pimpl::AddEvidence(anti_cheat::CheatCategory category, const std::string &description)
@@ -3027,22 +3058,27 @@ void CheatMonitor::Pimpl::HardenProcessAndThreads()
 
 void CheatMonitor::Pimpl::CheckParentProcessAtStartup()
 {
+    // 最终版逻辑：考虑到启动器loader.exe启动后立即退出的竞态条件。
+    // 1. 如果父进程存在，则必须是 loader.exe，否则立即上报。
+    // 2. 如果父进程不存在（孤儿进程），则标记为可疑，交由 SuspiciousLaunchSensor 做后续关联分析。
     DWORD parentPid = 0;
     std::string parentName;
     if (Utils::GetParentProcessInfo(parentPid, parentName))
     {
+        // Case 1: Parent process was found.
         std::transform(parentName.begin(), parentName.end(), parentName.begin(), ::tolower);
-        // TODO: Replace m_legitimateParentProcesses with a configurable list
-        // if (m_legitimateParentProcesses.find(parentName) == m_legitimateParentProcesses.end())
-        // {
-        //     AddEvidence(anti_cheat::ENVIRONMENT_INVALID_PARENT_PROCESS,
-        //                 "由一个非法的父进程启动: " + parentName + " (PID: " + std::to_string(parentPid) + ")");
-        // }
+        if (parentName != "loader.exe")
+        {
+            AddEvidence(anti_cheat::ENVIRONMENT_INVALID_PARENT_PROCESS,
+                        "Invalid parent process: " + parentName + " (PID: " + std::to_string(parentPid) + ")");
+        }
+        // If parent is loader.exe, this is a valid launch. m_parentWasMissingAtStartup remains false.
     }
     else
     {
-        // 如果在启动时无法获取父进程信息，这本身就是一个可疑信号。
-        // 我们先记录这个状态，后续可以与其他证据进行关联分析。
+        // Case 2: Parent process not found (orphaned).
+        // This is suspicious and could be a sign of a loader that has already exited.
+        // We flag it and let SuspiciousLaunchSensor make the final call based on other evidence.
         m_parentWasMissingAtStartup = true;
     }
 }
@@ -3585,7 +3621,7 @@ LRESULT CALLBACK CheatMonitor::Pimpl::LowLevelMouseProc(int nCode, WPARAM wParam
         MSLLHOOKSTRUCT *pMouseStruct = (MSLLHOOKSTRUCT *)lParam;
         if (!pMouseStruct)
         {
-            s_pimpl_for_hooks->AddEvidence(anti_cheat::RUNTIME_ERROR, "鼠标钩子回调中lParam为空。");
+            // 不要在钩子函数中调用重量级的AddEvidence
             return CallNextHookEx(s_pimpl_for_hooks->m_hMouseHook, nCode, wParam, lParam);
         }
 
@@ -3596,19 +3632,19 @@ LRESULT CALLBACK CheatMonitor::Pimpl::LowLevelMouseProc(int nCode, WPARAM wParam
         }
 
         {
-            std::lock_guard<std::mutex> lock(s_pimpl_for_hooks->m_inputMutex);  // [修复] 加锁保护并发写入
+            std::lock_guard<std::mutex> lock(s_pimpl_for_hooks->m_inputMutex);
             if (wParam == WM_LBUTTONDOWN || wParam == WM_RBUTTONDOWN)
             {
-                if (s_pimpl_for_hooks->m_mouseClickEvents.size() <
-                    (size_t)CheatConfigManager::GetInstance().GetMaxMouseClickEvents())
+                if (s_pimpl_for_hooks->m_mouseClickEvents.size() < s_pimpl_for_hooks->m_maxMouseClickEvents)
                 {
                     s_pimpl_for_hooks->m_mouseClickEvents.push({pMouseStruct->time});
                 }
             }
             else if (wParam == WM_MOUSEMOVE)
             {
-                if (s_pimpl_for_hooks->m_mouseMoveEvents.size() <
-                    (size_t)CheatConfigManager::GetInstance().GetMaxMouseClickEvents())
+                // [性能修复] 使用缓存的成员变量，避免调用管理器和锁
+                // [逻辑修复] 使用正确的最大值变量 m_maxMouseMoveEvents
+                if (s_pimpl_for_hooks->m_mouseMoveEvents.size() < s_pimpl_for_hooks->m_maxMouseMoveEvents)
                 {
                     s_pimpl_for_hooks->m_mouseMoveEvents.push({pMouseStruct->pt, pMouseStruct->time});
                 }
