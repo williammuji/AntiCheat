@@ -755,12 +755,15 @@ struct CheatMonitor::Pimpl
     HHOOK m_hKeyboardHook = NULL;   // 键盘钩子
     DWORD m_hookOwnerThreadId = 0;  // 记录钩子所有者线程ID
     std::mutex m_inputMutex;
+
+    // [修复] 将容量缓存变量的声明，置于环形缓冲区之前，以保证正确的初始化顺序
+    size_t m_maxMouseMoveEvents;
+    size_t m_maxMouseClickEvents;
+    size_t m_maxKeyboardEvents;
+
     RingBuffer<MouseMoveEvent> m_mouseMoveEvents;
     RingBuffer<MouseClickEvent> m_mouseClickEvents;
     RingBuffer<KeyboardEvent> m_keyboardEvents;
-    size_t m_maxMouseMoveEvents = 5000;  // 新增：缓存配置值
-    size_t m_maxMouseClickEvents = 500;  // 新增：缓存配置值
-    size_t m_maxKeyboardEvents = 2048;   // 新增：缓存配置值
     static Pimpl *s_pimpl_for_hooks;     // Static pointer for hook procedures
 
     std::mt19937 m_rng;       // 随机数生成器
@@ -2447,14 +2450,16 @@ CheatMonitor &CheatMonitor::GetInstance()
 }
 
 CheatMonitor::Pimpl::Pimpl()
-    : m_mouseMoveEvents(m_maxMouseMoveEvents),
+    // [修复] 在初始化列表中，先从管理器获取配置来初始化容量变量，
+    // 然后再用容量变量来初始化环形缓冲区。
+    : m_maxMouseMoveEvents(CheatConfigManager::GetInstance().GetMaxMouseMoveEvents()),
+      m_maxMouseClickEvents(CheatConfigManager::GetInstance().GetMaxMouseClickEvents()),
+      m_maxKeyboardEvents(CheatConfigManager::GetInstance().GetMaxKeyboardEvents()),
+      m_mouseMoveEvents(m_maxMouseMoveEvents),
       m_mouseClickEvents(m_maxMouseClickEvents),
       m_keyboardEvents(m_maxKeyboardEvents)
 {
-    // 在构造函数中从管理器获取一次配置并缓存
-    m_maxMouseMoveEvents = CheatConfigManager::GetInstance().GetMaxMouseMoveEvents();
-    m_maxMouseClickEvents = CheatConfigManager::GetInstance().GetMaxMouseClickEvents();
-    m_maxKeyboardEvents = CheatConfigManager::GetInstance().GetMaxKeyboardEvents();
+    // 构造函数体现在可以为空
 }
 
 CheatMonitor::CheatMonitor() : m_pimpl(std::make_unique<Pimpl>())
