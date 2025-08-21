@@ -609,6 +609,12 @@ class RingBuffer
         m_head = 0;
         m_size = 0;
     }
+    void swap(RingBuffer<T> &other)
+    {
+        m_data.swap(other.m_data);
+        std::swap(m_head, other.m_head);
+        std::swap(m_size, other.m_size);
+    }
     size_t capacity() const
     {
         return m_data.size();
@@ -1578,27 +1584,36 @@ class InputAutomationSensor : public ISensor
     }
     void Execute(ScanContext &context) override
     {
-        std::vector<CheatMonitor::Pimpl::MouseMoveEvent> local_moves;
-        std::vector<CheatMonitor::Pimpl::MouseClickEvent> local_clicks;
-        std::vector<CheatMonitor::Pimpl::KeyboardEvent> local_keys;
+        // 使用“交换”代替“快照+清空”，最大程度缩短锁的持有时间
+        RingBuffer<CheatMonitor::Pimpl::MouseMoveEvent> local_moves(1);    // 临时空缓冲区
+        RingBuffer<CheatMonitor::Pimpl::MouseClickEvent> local_clicks(1);
+        RingBuffer<CheatMonitor::Pimpl::KeyboardEvent> local_keys(1);
+
         {
             std::lock_guard<std::mutex> lock(context.GetInputMutex());
-            context.GetMouseMoveEvents().snapshot(local_moves);
-            context.GetMouseClickEvents().snapshot(local_clicks);
-            context.GetKeyboardEvents().snapshot(local_keys);
-            // 清空环形缓冲，避免数据滞留
-            context.GetMouseMoveEvents().clear();
-            context.GetMouseClickEvents().clear();
-            context.GetKeyboardEvents().clear();
-        }
+            // 原子地交换缓冲区，这个操作非常快
+            context.GetMouseMoveEvents().swap(local_moves);
+            context.GetMouseClickEvents().swap(local_clicks);
+            context.GetKeyboardEvents().swap(local_keys);
+        }  // 锁在这里被立即释放
 
-        // 1. 鼠标点击规律性检测 (原有逻辑)
-        if (local_clicks.size() > 10)
+        // --- 在锁外安全地处理本地数据 ---
+        std::vector<CheatMonitor::Pimpl::MouseMoveEvent> moves_snapshot;
+        local_moves.snapshot(moves_snapshot);
+
+        std::vector<CheatMonitor::Pimpl::MouseClickEvent> clicks_snapshot;
+        local_clicks.snapshot(clicks_snapshot);
+
+        std::vector<CheatMonitor::Pimpl::KeyboardEvent> keys_snapshot;
+        local_keys.snapshot(keys_snapshot);
+
+        // 1. 鼠标点击规律性检测
+        if (clicks_snapshot.size() > 10)
         {
             std::vector<double> deltas;
-            for (size_t i = 1; i < local_clicks.size(); ++i)
+            for (size_t i = 1; i < clicks_snapshot.size(); ++i)
             {
-                deltas.push_back(static_cast<double>(local_clicks[i].time - local_clicks[i - 1].time));
+                deltas.push_back(static_cast<double>(clicks_snapshot[i].time - clicks_snapshot[i - 1].time));
             }
             double stddev = InputAnalysis::CalculateStdDev(deltas);
             if (stddev < 5.0 && stddev > 0)
@@ -1608,13 +1623,14 @@ class InputAutomationSensor : public ISensor
             }
         }
 
-        // 2. 鼠标移动直线检测 (原有逻辑)
-        if (local_moves.size() > 10)
+        // 2. 鼠标移动直线检测
+        if (moves_snapshot.size() > 10)
         {
             int collinear_count = 0;
-            for (size_t i = 2; i < local_moves.size(); ++i)
+            for (size_t i = 2; i < moves_snapshot.size(); ++i)
             {
-                if (InputAnalysis::ArePointsCollinear(local_moves[i - 2].pt, local_moves[i - 1].pt, local_moves[i].pt))
+                if (InputAnalysis::ArePointsCollinear(moves_snapshot[i - 2].pt, moves_snapshot[i - 1].pt,
+                                                      moves_snapshot[i].pt))
                 {
                     collinear_count++;
                 }
@@ -1631,11 +1647,11 @@ class InputAutomationSensor : public ISensor
         }
 
         // 3. 键盘宏序列检测
-        if (local_keys.size() > (size_t)CheatConfigManager::GetInstance().GetKeyboardMacroMinSequenceLength())
+        if (keys_snapshot.size() > (size_t)CheatConfigManager::GetInstance().GetKeyboardMacroMinSequenceLength())
         {
             std::vector<DWORD> vkCodes;
-            vkCodes.reserve(local_keys.size());
-            for (const auto &key_event : local_keys)
+            vkCodes.reserve(keys_snapshot.size());
+            for (const auto &key_event : keys_snapshot)
             {
                 vkCodes.push_back(key_event.vkCode);
             }
