@@ -110,6 +110,8 @@
     "bitset": "cpp",
     "cstdarg": "cpp",
     "map": "cpp",
-    "variant": "cpp"
+    "variant": "cpp",
+    "deque": "cpp",
+    "queue": "cpp"
   }
 }
