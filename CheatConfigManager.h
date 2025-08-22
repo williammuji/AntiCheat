@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include "anti_cheat.pb.h"
 #include <cstdint>
