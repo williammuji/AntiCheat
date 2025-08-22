@@ -189,6 +189,28 @@ int32_t CheatConfigManager::GetKeyboardMacroMinPatternLength() const
     return GetCurrentConfig()->config->keyboard_macro_min_pattern_length();
 }
 
+// --- 新增的Getters ---
+
+double CheatConfigManager::GetMouseClickStddevThreshold() const
+{
+    return GetCurrentConfig()->config->mouse_click_stddev_threshold();
+}
+
+int32_t CheatConfigManager::GetMouseMoveCollinearThreshold() const
+{
+    return GetCurrentConfig()->config->mouse_move_collinear_threshold();
+}
+
+int32_t CheatConfigManager::GetMaxVehHandlersToScan() const
+{
+    return GetCurrentConfig()->config->max_veh_handlers_to_scan();
+}
+
+int32_t CheatConfigManager::GetMaxHandlesToScan() const
+{
+    return GetCurrentConfig()->config->max_handles_to_scan();
+}
+
 // --- 私有辅助函数 ---
 
 void CheatConfigManager::SetDefaultValues(ConfigData& configData)
@@ -430,6 +452,12 @@ void CheatConfigManager::SetDefaultValues(ConfigData& configData)
     // --- 输入自动化检测参数 ---
     configData.config->set_keyboard_macro_min_sequence_length(40);
     configData.config->set_keyboard_macro_min_pattern_length(10);
+    configData.config->set_mouse_click_stddev_threshold(10.0);
+    configData.config->set_mouse_move_collinear_threshold(15);
+
+    // --- 安全与性能阈值 ---
+    configData.config->set_max_veh_handlers_to_scan(32);
+    configData.config->set_max_handles_to_scan(100000);
 
     configData.config->set_config_version("default_fallback_v1");
 

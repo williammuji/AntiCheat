@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "anti_cheat.pb.h"
 #include <cstdint>
@@ -52,6 +52,12 @@ class CheatConfigManager
     // --- 输入自动化检测参数 ---
     int32_t GetKeyboardMacroMinSequenceLength() const;
     int32_t GetKeyboardMacroMinPatternLength() const;
+    double GetMouseClickStddevThreshold() const;
+    int32_t GetMouseMoveCollinearThreshold() const;
+
+    // [新增] 安全和性能阈值
+    int32_t GetMaxVehHandlersToScan() const;
+    int32_t GetMaxHandlesToScan() const;
 
    private:
     struct ConfigData
