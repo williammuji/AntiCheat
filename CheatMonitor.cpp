@@ -510,7 +510,7 @@ bool IsKernelDebuggerPresent_KUserSharedData()
         return false;
     }
 }
-// 辅助函数：获取模块的代码节信息 (.text)
+#pragma warning(push)
 bool GetCodeSectionInfo(HMODULE hModule, PVOID &outBase, DWORD &outSize)
 {
     if (!hModule)
@@ -549,7 +549,6 @@ bool GetCodeSectionInfo(HMODULE hModule, PVOID &outBase, DWORD &outSize)
     }
     return false;
 }
-#pragma warning(pop)
 
 // 辅助函数：计算内存块的哈希值 (使用FNV-1a算法)
 // 注意：FNV-1a
@@ -619,6 +618,67 @@ static std::wstring NormalizePathLowercase(const std::wstring &path)
     std::transform(normalized.begin(), normalized.end(), normalized.begin(), ::towlower);
     return normalized;
 }
+
+// ---- 新增: 固定容量环形缓冲（线程外部需自持锁） ----
+template <typename T>
+class RingBuffer
+{
+   public:
+    explicit RingBuffer(size_t capacity) : m_data(std::max<size_t>(1, capacity)), m_head(0), m_size(0)
+    {
+    }
+    void clear()
+    {
+        m_head = 0;
+        m_size = 0;
+    }
+    void swap(RingBuffer<T> &other)
+    {
+        m_data.swap(other.m_data);
+        std::swap(m_head, other.m_head);
+        std::swap(m_size, other.m_size);
+    }
+    size_t capacity() const
+    {
+        return m_data.size();
+    }
+    size_t size() const
+    {
+        return m_size;
+    }
+    void push(const T &value)
+    {
+        if (m_data.empty())
+            return;
+        size_t index = (m_head + m_size) % m_data.size();
+        if (m_size < m_data.size())
+        {
+            m_data[index] = value;
+            m_size++;
+        }
+        else
+        {
+            // overwrite oldest
+            m_data[m_head] = value;
+            m_head = (m_head + 1) % m_data.size();
+        }
+    }
+    void snapshot(std::vector<T> &out) const
+    {
+        out.clear();
+        out.reserve(m_size);
+        for (size_t i = 0; i < m_size; ++i)
+        {
+            size_t idx = (m_head + i) % m_data.size();
+            out.push_back(m_data[idx]);
+        }
+    }
+
+   private:
+    std::vector<T> m_data;
+    size_t m_head;
+    size_t m_size;
+};
 
 // ---- 新增: 可疑调用者地址解析（优先使用受控回溯） ----
 static PVOID ResolveSuspiciousCallerAddress(HMODULE hSelf)
@@ -865,16 +925,6 @@ struct CheatMonitor::Pimpl
     void DoCheckIatHooks(ScanContext &context, const BYTE *baseAddress, const IMAGE_IMPORT_DESCRIPTOR *pImportDesc);
     void VerifyModuleSignature(HMODULE hModule);
 
-    // 为自我完整性检查提供基线访问
-    HMODULE GetSelfModuleHandle() const
-    {
-        return m_pimpl->m_hSelfModule;
-    }
-    const std::vector<uint8_t> &GetSelfModuleBaselineHash() const
-    {
-        return m_pimpl->m_selfModuleBaselineHash;
-    }
-
     // Helper to check if an address belongs to a whitelisted module
     // Helper to check if an address belongs to a whitelisted module
     bool IsAddressInLegitimateModule(PVOID address, std::wstring &outModulePath);
@@ -990,6 +1040,10 @@ class ScanContext
     {
         return m_pimpl->HasEvidenceOfType(category);
     }
+    HWND GetGameWindow() const
+    {
+        return m_pimpl->m_hGameWindow;
+    }
     const std::unordered_map<std::string, std::vector<uint8_t>> &GetIatBaselineHashes() const
     {
         return m_pimpl->m_iatBaselineHashes;
@@ -1037,6 +1091,16 @@ class ScanContext
     void VerifyModuleSignature(HMODULE hModule)
     {
         m_pimpl->VerifyModuleSignature(hModule);
+    }
+
+    // 为自我完整性检查提供基线访问
+    HMODULE GetSelfModuleHandle() const
+    {
+        return m_pimpl->m_hSelfModule;
+    }
+    const std::vector<uint8_t> &GetSelfModuleBaselineHash() const
+    {
+        return m_pimpl->m_selfModuleBaselineHash;
     }
 };
 
@@ -1651,7 +1715,7 @@ class OverlaySensor : public ISensor
 
     void Execute(ScanContext &context) override
     {
-        HWND hGameWnd = context.GetGameWindow();
+        HWND hGameWnd = context.GetGameWindow();  // Error C2039 fix: Added GetGameWindow to ScanContext
         if (!hGameWnd || !IsWindow(hGameWnd))
         {
             return;  // 游戏窗口句柄无效
@@ -1816,7 +1880,6 @@ class ProcessHandleSensor : public ISensor
             context.AddEvidence(anti_cheat::RUNTIME_ERROR, "系统句柄数量异常巨大，跳过本次扫描。");
             return;
         }
-        const DWORD ownPid = GetCurrentProcessId();
         const auto now = std::chrono::steady_clock::now();
         std::unordered_set<DWORD> processedPidsThisScan;
 
@@ -2159,7 +2222,8 @@ class EnvironmentSensor : public ISensor
                             context.AddEvidence(anti_cheat::ENVIRONMENT_HARMFUL_PROCESS,
                                                 "有害进程(文件名): " + Utils::WideToString(pe.szExeFile));
                             knownHarmfulProcesses[pe.th32ProcessID] = ftCreation;
-                            goto next_process_loop;
+                            CloseHandle(hProcess);
+                            continue;
                         }
                     }
                 }
@@ -2209,14 +2273,14 @@ class EnvironmentSensor : public ISensor
                                     context.AddEvidence(anti_cheat::ENVIRONMENT_HARMFUL_PROCESS,
                                                         "有害进程(窗口标题): " + Utils::WideToString(title));
                                     knownHarmfulProcesses[pe.th32ProcessID] = ftCreation;
-                                    goto next_process_loop;
+                                    CloseHandle(hProcess);
+                                    continue;
                                 }
                             }
                         }
                     }
                 }
 
-            next_process_loop:
                 CloseHandle(hProcess);
             } while (Process32NextW(hSnapshot.get(), &pe));
         }
@@ -2574,28 +2638,22 @@ bool CheatMonitor::Initialize()
 
     if (!m_pimpl->m_mouseHook->IsValid() || !m_pimpl->m_keyboardHook->IsValid())
     {
-        std::cout << "[AntiCheat] Initialize Error: Failed to set hooks. Mouse: " << (m_pimpl->m_hMouseHook != NULL)
-                  << ", Keyboard: " << (m_pimpl->m_hKeyboardHook != NULL) << " Error code: " << GetLastError()
+        std::cout << "[AntiCheat] Initialize Error: Failed to set hooks. Mouse: " << (m_pimpl->m_mouseHook != NULL)
+                  << ", Keyboard: " << (m_pimpl->m_keyboardHook != NULL) << " Error code: " << GetLastError()
                   << std::endl;
         return false;
     }
 
     try
     {
+        m_pimpl->m_monitorThread = std::thread(&Pimpl::MonitorLoop, m_pimpl.get());
         m_pimpl->m_inputThread = std::thread(&Pimpl::InputProcessingLoop, m_pimpl.get());
     }
     catch (const std::system_error &e)
     {
-        std::cout << "[AntiCheat] Initialize Error: Failed to create monitor "
+        std::cout << "[AntiCheat] Initialize Error: Failed to create monitor input"
                      "thread. Error: "
                   << e.what() << std::endl;
-        if (m_pimpl->m_hMouseHook)
-            UnhookWindowsHookEx(m_pimpl->m_hMouseHook);
-        if (m_pimpl->m_hKeyboardHook)
-            UnhookWindowsHookEx(m_pimpl->m_hKeyboardHook);
-
-        m_pimpl->m_hMouseHook = NULL;
-        m_pimpl->m_hKeyboardHook = NULL;
         return false;
     }
 
@@ -2724,8 +2782,9 @@ void CheatMonitor::Pimpl::InitializeProcessBaseline()
 
     std::cout << "[AntiCheat] Initializing process baseline..." << std::endl;
 
+    // 使用 (LPCWSTR)this 获取一个在当前模块内的有效地址，以修复C2440和C2660错误
     if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                            (LPCWSTR)&CheatMonitor::Pimpl::InitializeProcessBaseline, &m_hSelfModule))
+                            (LPCWSTR)this, &m_hSelfModule))
     {
         AddEvidence(anti_cheat::RUNTIME_ERROR, "无法获取自身模块句柄以建立完整性基线。");
     }
@@ -3584,22 +3643,40 @@ bool CheatMonitor::Pimpl::IsAddressInLegitimateModule(PVOID address, std::wstrin
 // 获取版本
 WindowsVersion GetWindowsVersion()
 {
-    RTL_OSVERSIONINFOW osInfo = {sizeof(osInfo)};
-    if (GetVersionExW((LPOSVERSIONINFOW)&osInfo))
+    // 使用 RtlGetVersion 获取准确的OS版本信息, 它不受应用程序兼容性助手(shim)的影响。
+    typedef NTSTATUS(WINAPI * RtlGetVersion_t)(LPOSVERSIONINFOEXW lpVersionInformation);
+    static RtlGetVersion_t pRtlGetVersion =
+            (RtlGetVersion_t)GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "RtlGetVersion");
+
+    OSVERSIONINFOEXW osInfo = {0};
+    osInfo.dwOSVersionInfoSize = sizeof(osInfo);
+
+    if (pRtlGetVersion)
     {
-        if (osInfo.dwMajorVersion == 5 && (osInfo.dwMinorVersion == 1 || osInfo.dwMinorVersion == 2))
-            return Win_XP;
-        if (osInfo.dwMajorVersion == 6 && osInfo.dwMinorVersion == 0)
-            return Win_Vista_Win7;  // Vista
-        if (osInfo.dwMajorVersion == 6 && osInfo.dwMinorVersion == 1)
-            return Win_Vista_Win7;  // Win7
-        if (osInfo.dwMajorVersion == 6 && (osInfo.dwMinorVersion == 2 || osInfo.dwMinorVersion == 3))
-            return Win_8_Win81;
-        if (osInfo.dwMajorVersion == 10 && osInfo.dwBuildNumber < 22000)
-            return Win_10;
-        if (osInfo.dwMajorVersion == 10 && osInfo.dwBuildNumber >= 22000)
-            return Win_11;
+        pRtlGetVersion(&osInfo);
     }
+    else
+    {
+        // 为无法使用 RtlGetVersion 的旧系统提供降级方案
+        if (!GetVersionExW((LPOSVERSIONINFOW)&osInfo))
+        {
+            return Win_Unknown;
+        }
+    }
+
+    if (osInfo.dwMajorVersion == 5 && (osInfo.dwMinorVersion == 1 || osInfo.dwMinorVersion == 2))
+        return Win_XP;
+    if (osInfo.dwMajorVersion == 6 && osInfo.dwMinorVersion == 0)
+        return Win_Vista_Win7;  // Vista
+    if (osInfo.dwMajorVersion == 6 && osInfo.dwMinorVersion == 1)
+        return Win_Vista_Win7;  // Win7
+    if (osInfo.dwMajorVersion == 6 && (osInfo.dwMinorVersion == 2 || osInfo.dwMinorVersion == 3))
+        return Win_8_Win81;
+    if (osInfo.dwMajorVersion == 10 && osInfo.dwBuildNumber < 22000)
+        return Win_10;
+    if (osInfo.dwMajorVersion == 10 && osInfo.dwBuildNumber >= 22000)
+        return Win_11;
+
     return Win_Unknown;
 }
 
