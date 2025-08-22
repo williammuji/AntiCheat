@@ -377,6 +377,7 @@ SignatureStatus VerifyFileSignature(const std::wstring &filePath)
     winTrustData.fdwRevocationChecks = WTD_REVOKE_WHOLECHAIN | WTD_CACHE_ONLY_URL_RETRIEVAL;
     winTrustData.dwUnionChoice = WTD_CHOICE_FILE;
     winTrustData.pFile = &fileInfo;
+
     winTrustData.dwStateAction = WTD_STATEACTION_VERIFY;
 
     LONG result = WinVerifyTrust(NULL, &guid, &winTrustData);
@@ -540,11 +541,10 @@ bool GetCodeSectionInfo(HMODULE hModule, PVOID &outBase, DWORD &outSize)
     }
     __except (EXCEPTION_EXECUTE_HANDLER)
     {
-        // 访问模块内存失败，可能模块已被卸载或内存损坏
+        // 记录异常代码，以帮助诊断根本原因，而不是静默失败
         DWORD exceptionCode = GetExceptionCode();
-        std::cout << "[AntiCheat] GetCodeSectionInfo Exception: hModule=0x" << std::hex << hModule
-                  << ", code=" << exceptionCode << std::endl;
-
+        std::cout << "[AntiCheat] GetCodeSectionInfo SEH Exception: hModule=0x" << std::hex << hModule << ", code=0x"
+                  << exceptionCode << std::endl;
         return false;
     }
     return false;
@@ -1837,6 +1837,9 @@ class ProcessHandleSensor : public ISensor
         __except (EXCEPTION_EXECUTE_HANDLER)
         {
             // 如果在任何步骤发生访问冲突等硬件异常，安全地捕获并返回false。
+            //  记录异常代码，而不是静默失败，以遵循“快速失败”原则
+            std::cout << "[AntiCheat] IsHandlePointingToUs_Safe SEH Exception. Code: 0x" << std::hex
+                      << GetExceptionCode() << std::endl;
             return false;
         }
     }
@@ -1877,7 +1880,10 @@ class ProcessHandleSensor : public ISensor
 
         if (pHandleInfo->NumberOfHandles > kMaxHandlesToScan)
         {
+            //  增加日志记录，为运维提供遥测数据，而不是简单上报一个通用错误
             context.AddEvidence(anti_cheat::RUNTIME_ERROR, "系统句柄数量异常巨大，跳过本次扫描。");
+            std::cout << "[AntiCheat] ProcessHandleSensor: System handle count (" << pHandleInfo->NumberOfHandles
+                      << ") exceeds scan limit (" << kMaxHandlesToScan << "). Skipping scan." << std::endl;
             return;
         }
         const auto now = std::chrono::steady_clock::now();
@@ -3202,6 +3208,12 @@ void CheatMonitor::Pimpl::InputProcessingLoop()
                     keyboardEvents.push(event);
                     break;
             }
+
+            //  增加遥测日志，用于监控输入缓冲区的使用情况，以应对专家提出的性能风险
+            if (mouseMoveEvents.size() == mouseMoveEvents.capacity())
+            {
+                std::cout << "[AntiCheat] Warning: Mouse move event buffer is full." << std::endl;
+            }
         }
 
         if (!m_isSessionActive.load() || !m_hasServerConfig.load())
@@ -3597,25 +3609,27 @@ void CheatMonitor::Pimpl::VerifyModuleSignature(HMODULE hModule)
         }
     }
 
-    SignatureVerdict verdict = SignatureVerdict::VERIFICATION_FAILED;
+    //  改进签名验证逻辑，更严格地处理验证失败的情况，解决专家提出的“宽松处理”问题。
+    // 只有在明确验证为“可信”或“不可信”时才更新缓存。
+    // 如果验证过程本身失败（例如，网络问题导致无法检查吊销列表），则不更新缓存，
+    // 以便在下一次扫描时重试。
     switch (Utils::VerifyFileSignature(modulePath))
     {
-        case Utils::SignatureStatus::TRUSTED:
-            verdict = SignatureVerdict::SIGNED_AND_TRUSTED;
-            break;
-        case Utils::SignatureStatus::UNTRUSTED:
-            verdict = SignatureVerdict::UNSIGNED_OR_UNTRUSTED;
+        case Utils::SignatureStatus::TRUSTED: {
+            std::lock_guard<std::mutex> lock(m_signatureCacheMutex);
+            m_moduleSignatureCache[modulePath] = {SignatureVerdict::SIGNED_AND_TRUSTED, now};
+        }
+        break;
+        case Utils::SignatureStatus::UNTRUSTED: {
+            std::lock_guard<std::mutex> lock(m_signatureCacheMutex);
+            m_moduleSignatureCache[modulePath] = {SignatureVerdict::UNSIGNED_OR_UNTRUSTED, now};
+        }
             AddEvidence(anti_cheat::RUNTIME_MODULE_NEW_UNKNOWN,
                         "加载了未签名的模块: " + Utils::WideToString(modulePath));
             break;
         case Utils::SignatureStatus::FAILED_TO_VERIFY:
-            verdict = SignatureVerdict::VERIFICATION_FAILED;
+            // 不缓存验证失败的结果，以便下次扫描时可以重试
             break;
-    }
-
-    {
-        std::lock_guard<std::mutex> lock(m_signatureCacheMutex);
-        m_moduleSignatureCache[modulePath] = {verdict, now};
     }
 }
 
@@ -3700,189 +3714,86 @@ PBYTE FindPattern(PBYTE base, SIZE_T size, const BYTE *pattern, SIZE_T patternSi
     return nullptr;
 }
 
-// Fallback: 增强遍历，版本适应
-uintptr_t FallbackFindVehListAddress(WindowsVersion ver)
+uintptr_t CheatMonitor::Pimpl::FindVehListAddress()
 {
-    PVOID pVehHandler = AddVectoredExceptionHandler(
-            1, DecoyVehHandler);  // DecoyVehHandler需定义为LONG CALLBACK (EXCEPTION_POINTERS*)
-    if (!pVehHandler)
+    //  采用单一、更可靠的“诱饵处理函数”方法来定位VEH链表。
+    // 此方法比依赖脆弱的字节码模式匹配要稳定得多，能更好地适应Windows版本更新。
+    PVOID pDecoyHandler = AddVectoredExceptionHandler(1, DecoyVehHandler);
+    if (!pDecoyHandler)
     {
-        std::cout << "Failed to add VEH in fallback" << std::endl;
+        std::cout << "[AntiCheat] FindVehListAddress Error: AddVectoredExceptionHandler failed." << std::endl;
         return 0;
     }
 
-    uintptr_t address = 0;
+    uintptr_t listHeadAddress = 0;
     __try
     {
-        const auto *pEntry = reinterpret_cast<const PVECTORED_HANDLER_ENTRY>(pVehHandler);
+        const auto *pEntry = reinterpret_cast<const VECTORED_HANDLER_ENTRY *>(pDecoyHandler);
         const LIST_ENTRY *pCurrent = &pEntry->List;
 
-        // 增加深度到100，XP考虑循环链表
+        // 向后遍历链表以查找头节点，设置迭代上限以防意外的循环
         for (int i = 0; i < 100; ++i)
         {
-            MEMORY_BASIC_INFORMATION mbi;
-            if (VirtualQuery(pCurrent->Blink, &mbi, sizeof(mbi)) == 0 || mbi.State != MEM_COMMIT ||
-                (mbi.Protect & (PAGE_READWRITE | PAGE_READONLY)) == 0)
+            const LIST_ENTRY *pBlink = pCurrent->Blink;
+            if (!IsValidPointer(pBlink, sizeof(LIST_ENTRY)) || !IsValidPointer(pBlink->Flink, sizeof(LIST_ENTRY *)))
             {
-                break;
+                break;  // 链表指针无效，终止遍历
             }
 
-            if (pCurrent->Blink->Flink == pCurrent)  // 头检测
+            // 链表头的特征：Blink->Flink == 当前节点
+            if (pBlink->Flink == pCurrent)
             {
-                // 版本偏移
-                if (ver == Win_XP)
-                {
-                    address = reinterpret_cast<uintptr_t>(pCurrent) - offsetof(VECTORED_HANDLER_LIST_XP, List);
-                }
-                else if (ver == Win_Vista_Win7)
-                {
-                    address = reinterpret_cast<uintptr_t>(pCurrent) -
-                              offsetof(VECTORED_HANDLER_LIST_VISTA, ExceptionList);
-                }
-                else
-                {
-                    address =
-                            reinterpret_cast<uintptr_t>(pCurrent) - offsetof(VECTORED_HANDLER_LIST_WIN8, ExceptionList);
-                }
+                listHeadAddress = reinterpret_cast<uintptr_t>(pBlink);
                 break;
             }
-            pCurrent = pCurrent->Blink;
-
-            // XP防循环：如果回自身，break
-            if (ver == Win_XP && pCurrent == &pEntry->List)
-                break;
+            pCurrent = pBlink;
         }
     }
     __except (EXCEPTION_EXECUTE_HANDLER)
     {
-        std::cout << "Exception in fallback" << GetExceptionCode() << std::endl;
-        address = 0;
+        //  记录异常代码
+        std::cout << "[AntiCheat] FindVehListAddress SEH Exception. Code: 0x" << std::hex << GetExceptionCode()
+                  << std::endl;
+        listHeadAddress = 0;
     }
 
-    RemoveVectoredExceptionHandler(pVehHandler);
-    return address;
-}
+    RemoveVectoredExceptionHandler(pDecoyHandler);
 
-uintptr_t CheatMonitor::Pimpl::FindVehListAddress()
-{
-    HMODULE hNtdll = GetModuleHandleA("ntdll.dll");
-    if (!hNtdll)
+    if (listHeadAddress == 0)
     {
-        std::cout << "Failed to get ntdll handle" << std::endl;
-        ;
+        std::cout << "[AntiCheat] FindVehListAddress Error: Could not find VEH list head." << std::endl;
         return 0;
     }
 
-    // 获取.text段
-    PIMAGE_DOS_HEADER dosHeader = reinterpret_cast<PIMAGE_DOS_HEADER>(hNtdll);
-    PIMAGE_NT_HEADERS ntHeader =
-            reinterpret_cast<PIMAGE_NT_HEADERS>(reinterpret_cast<BYTE *>(hNtdll) + dosHeader->e_lfanew);
-    PIMAGE_SECTION_HEADER section = IMAGE_FIRST_SECTION(ntHeader);
-    PBYTE textBase = nullptr;
-    SIZE_T textSize = 0;
-    for (WORD i = 0; i < ntHeader->FileHeader.NumberOfSections; ++i)
-    {
-        if (strncmp(reinterpret_cast<char *>(section->Name), ".text", 6) == 0)
-        {
-            textBase = reinterpret_cast<PBYTE>(hNtdll) + section->VirtualAddress;
-            textSize = section->Misc.VirtualSize;
-            break;
-        }
-        ++section;
-    }
-    if (!textBase || textSize == 0)
-    {
-        std::cout << "Failed to find .text section" << std::endl;
-        return 0;
-    }
-
+    // 根据Windows版本，从链表头地址计算整个VEH列表结构的基地址
+    // 这是必要的，因为VEH列表结构在不同Windows版本中不同
+    uintptr_t structBaseAddress = 0;
     WindowsVersion ver = GetWindowsVersion();
     if (ver == Win_Unknown)
     {
-        std::cout << "Unknown Windows version" << std::endl;
-        return FallbackFindVehListAddress(ver);
+        std::cout << "[AntiCheat] Warning: Unknown Windows version. Assuming Win8+ VEH list structure." << std::endl;
+        // 对于未知或未来的版本，默认使用最新的已知结构是一个合理的降级策略。
     }
-
-    // 版本特定x86 pattern：基于逆向，针对RtlAddVectoredExceptionHandler开头 + lea eax, [LdrpVectorHandlerList]
-    // XP: 简单push ebp; mov ebp,esp; sub esp,10h; ... lea eax, [addr]
-    BYTE patternXP[] = {0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x10, 0x8B, 0x45, 0x08, 0x8D, 0x0D};  // 通配偏移
-    // Vista/Win7: sub esp,20h; mov edi, [esp+24h]; lea ecx, [Ldrp...]
-    BYTE patternVista[] = {0x83, 0xEC, 0x20, 0x8B, 0x7C, 0x24, 0x24, 0x8D, 0x0D};
-    // Win8/Win81: 类似Win7，但偏移变
-    BYTE patternWin8[] = {0x83, 0xEC, 0x20, 0x8B, 0xF9, 0x8D, 0x0D};  // lea ecx, [...]
-    // Win10: push ebp; mov ebp,esp; sub esp,20h; mov esi, [ebp+8]; lea ecx, [...]
-    BYTE patternWin10[] = {0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x20, 0x8B, 0x75, 0x08, 0x8D, 0x0D};
-    // Win11 (24H2兼容): 类似Win10，无重大变
-    BYTE patternWin11[] = {0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x20, 0x8B, 0xF2, 0x8D, 0x0D};
-
-    const BYTE *pattern = nullptr;
-    SIZE_T patternSize = 0;
-    SIZE_T offsetAdj = 0;  // 模式后到偏移的字节
 
     switch (ver)
     {
         case Win_XP:
-            pattern = patternXP;
-            patternSize = sizeof(patternXP);
-            offsetAdj = 7;  // 调整基于逆向
+            // 在XP中，List成员在CRITICAL_SECTION之后
+            structBaseAddress = listHeadAddress - offsetof(VECTORED_HANDLER_LIST_XP, List);
             break;
         case Win_Vista_Win7:
-            pattern = patternVista;
-            patternSize = sizeof(patternVista);
-            offsetAdj = 8;
+            // 在Vista/7中，是ExceptionList成员在SRWLOCK之后
+            structBaseAddress = listHeadAddress - offsetof(VECTORED_HANDLER_LIST_VISTA, ExceptionList);
             break;
-        case Win_8_Win81:
-            pattern = patternWin8;
-            patternSize = sizeof(patternWin8);
-            offsetAdj = 6;
-            break;
-        case Win_10:
-            pattern = patternWin10;
-            patternSize = sizeof(patternWin10);
-            offsetAdj = 9;
-            break;
-        case Win_11:
-            pattern = patternWin11;
-            patternSize = sizeof(patternWin11);
-            offsetAdj = 9;
+        case Win_Unknown:  // 让未知情况的处理更明确
+        default:           // Win8及更新版本
+            structBaseAddress = listHeadAddress - offsetof(VECTORED_HANDLER_LIST_WIN8, ExceptionList);
             break;
     }
 
-    PBYTE match = FindPattern(textBase, textSize, pattern, patternSize);
-    if (!match)
-    {
-        std::cout << "Pattern not found" << std::endl;
-        return FallbackFindVehListAddress(ver);
-    }
-
-    // 提取相对偏移 (x86: EIP-relative, 4字节)
-    INT32 offset = *reinterpret_cast<INT32 *>(match + patternSize);
-    uintptr_t address = reinterpret_cast<uintptr_t>(match + patternSize + 4 + offset);  // EIP + offset
-
-    // 验证内存（.data或.mrdata，可读）
-    MEMORY_BASIC_INFORMATION mbi;
-    if (VirtualQuery(reinterpret_cast<LPCVOID>(address), &mbi, sizeof(mbi)) == 0 || mbi.State != MEM_COMMIT ||
-        (mbi.Protect & PAGE_READWRITE) == 0)
-    {
-        std::cout << "Invalid VEH list memory" << std::endl;
-        return 0;
-    }
-
-    // 调整地址到ExceptionList（基于版本偏移）
-    switch (ver)
-    {
-        case Win_XP:
-            address += offsetof(VECTORED_HANDLER_LIST_XP, List);
-            break;
-        case Win_Vista_Win7:
-            address += offsetof(VECTORED_HANDLER_LIST_VISTA, ExceptionList);
-            break;
-        default:  // Win8+
-            address += offsetof(VECTORED_HANDLER_LIST_WIN8, ExceptionList);
-            break;
-    }
-
-    return address;
+    std::cout << "[AntiCheat] Dynamically located VEH list structure at: 0x" << std::hex << structBaseAddress
+              << std::endl;
+    return structBaseAddress;
 }
 
 void CheatMonitor::Pimpl::InstallExtendedApiHooks()
