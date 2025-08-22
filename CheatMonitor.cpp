@@ -28,6 +28,7 @@
 #include <memory>
 #include <mutex>
 #include <numeric>
+#include <queue>
 #include <random>
 #include <set>
 #include <string>
@@ -372,7 +373,8 @@ SignatureStatus VerifyFileSignature(const std::wstring &filePath)
     WINTRUST_DATA winTrustData = {};
     winTrustData.cbStruct = sizeof(winTrustData);
     winTrustData.dwUIChoice = WTD_UI_NONE;
-    winTrustData.fdwRevocationChecks = WTD_REVOKE_NONE;
+    // [安全] 启用基于缓存的吊销检查，避免网络阻塞，同时增强安全性
+    winTrustData.fdwRevocationChecks = WTD_REVOKE_WHOLECHAIN | WTD_CACHE_ONLY_URL_RETRIEVAL;
     winTrustData.dwUnionChoice = WTD_CHOICE_FILE;
     winTrustData.pFile = &fileInfo;
     winTrustData.dwStateAction = WTD_STATEACTION_VERIFY;
@@ -404,6 +406,28 @@ SignatureStatus VerifyFileSignature(const std::wstring &filePath)
 
 namespace
 {
+// 检查VBS/HVCI是否启用
+bool IsVbsEnabled()
+{
+    HKEY hKey;
+    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\DeviceGuard", 0, KEY_READ, &hKey) !=
+        ERROR_SUCCESS)
+    {
+        return false;
+    }
+
+    DWORD value = 0;
+    DWORD size = sizeof(value);
+    bool enabled = false;
+    if (RegQueryValueExW(hKey, L"EnableVirtualizationBasedSecurity", NULL, NULL, (LPBYTE)&value, &size) ==
+        ERROR_SUCCESS)
+    {
+        enabled = (value == 1);
+    }
+
+    RegCloseKey(hKey);
+    return enabled;
+}
 
 // 指针验证函数（需根据环境实现）
 bool IsValidPointer(const void *ptr, size_t size)
@@ -596,67 +620,6 @@ static std::wstring NormalizePathLowercase(const std::wstring &path)
     return normalized;
 }
 
-// ---- 新增: 固定容量环形缓冲（线程外部需自持锁） ----
-template <typename T>
-class RingBuffer
-{
-   public:
-    explicit RingBuffer(size_t capacity) : m_data(std::max<size_t>(1, capacity)), m_head(0), m_size(0)
-    {
-    }
-    void clear()
-    {
-        m_head = 0;
-        m_size = 0;
-    }
-    void swap(RingBuffer<T> &other)
-    {
-        m_data.swap(other.m_data);
-        std::swap(m_head, other.m_head);
-        std::swap(m_size, other.m_size);
-    }
-    size_t capacity() const
-    {
-        return m_data.size();
-    }
-    size_t size() const
-    {
-        return m_size;
-    }
-    void push(const T &value)
-    {
-        if (m_data.empty())
-            return;
-        size_t index = (m_head + m_size) % m_data.size();
-        if (m_size < m_data.size())
-        {
-            m_data[index] = value;
-            m_size++;
-        }
-        else
-        {
-            // overwrite oldest
-            m_data[m_head] = value;
-            m_head = (m_head + 1) % m_data.size();
-        }
-    }
-    void snapshot(std::vector<T> &out) const
-    {
-        out.clear();
-        out.reserve(m_size);
-        for (size_t i = 0; i < m_size; ++i)
-        {
-            size_t idx = (m_head + i) % m_data.size();
-            out.push_back(m_data[idx]);
-        }
-    }
-
-   private:
-    std::vector<T> m_data;
-    size_t m_head;
-    size_t m_size;
-};
-
 // ---- 新增: 可疑调用者地址解析（优先使用受控回溯） ----
 static PVOID ResolveSuspiciousCallerAddress(HMODULE hSelf)
 {
@@ -680,6 +643,94 @@ static PVOID ResolveSuspiciousCallerAddress(HMODULE hSelf)
     return _ReturnAddress();
 }
 
+// ---- 新增: 用于异步处理的输入事件结构体和线程安全队列 ----
+enum class InputEventType
+{
+    MOUSE_MOVE,
+    MOUSE_CLICK,
+    KEYBOARD
+};
+
+struct InputEvent
+{
+    InputEventType type;
+    DWORD time;
+    union
+    {
+        POINT mouse_pt;
+        DWORD vk_code;
+    };
+};
+
+template <typename T>
+class ConcurrentQueue
+{
+   public:
+    void push(T value)
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_queue.push(std::move(value));
+        m_cv.notify_one();
+    }
+
+    bool try_pop(T &out, std::chrono::milliseconds timeout)
+    {
+        std::unique_lock<std::mutex> lock(m_mutex);
+        if (!m_cv.wait_for(lock, timeout, [this] { return !m_queue.empty() && !m_stopped; }))
+        {
+            return false;  // 超时或已停止
+        }
+        if (m_stopped)
+            return false;  // 已停止
+        out = std::move(m_queue.front());
+        m_queue.pop();
+        return true;
+    }
+
+    void stop()
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_stopped = true;
+        m_cv.notify_all();
+    }
+
+   private:
+    std::queue<T> m_queue;
+    std::mutex m_mutex;
+    std::condition_variable m_cv;
+    bool m_stopped = false;
+};
+
+// [新增] RAII封装Windows钩子
+class ScopedHook
+{
+   public:
+    ScopedHook(int idHook, HOOKPROC lpfn)
+    {
+        m_hook = SetWindowsHookEx(idHook, lpfn, GetModuleHandle(NULL), 0);
+    }
+    ~ScopedHook()
+    {
+        if (m_hook)
+        {
+            UnhookWindowsHookEx(m_hook);
+        }
+    }
+    operator HHOOK() const
+    {
+        return m_hook;
+    }
+    bool IsValid() const
+    {
+        return m_hook != NULL;
+    }
+
+   private:
+    HHOOK m_hook;
+    ScopedHook(const ScopedHook &) = delete;
+    ScopedHook &operator=(const ScopedHook &) = delete;
+};
+
 // --- 核心架构组件 ---
 
 class ScanContext;
@@ -701,6 +752,9 @@ struct CheatMonitor::Pimpl
     std::atomic<bool> m_isSessionActive = false;
     std::atomic<bool> m_hasServerConfig = false;  // 新增：用于标记是否已收到服务器配置
     std::thread m_monitorThread;
+    std::thread m_inputThread;                   // 新增：输入处理线程
+    std::atomic<bool> m_isShuttingDown = false;  // 新增：安全关闭标志
+    std::atomic<int> m_hookRefCount = 0;         // 新增：钩子引用计数
     // 用于智能关联父进程缺失事件的状态
     std::atomic<bool> m_parentWasMissingAtStartup = false;
     std::condition_variable m_cv;
@@ -717,9 +771,6 @@ struct CheatMonitor::Pimpl
 
     std::atomic<bool> m_processBaselineEstablished = false;
 
-    // 用于控制会话基线重建的标志
-    // std::atomic<bool> m_newSessionNeedsBaseline = false;
-
     // 使用 std::set 以获得更快的查找速度 (O(logN)) 并自动处理重复项
     std::set<DWORD> m_knownThreadIds;
     std::set<HMODULE> m_knownModules;
@@ -732,6 +783,8 @@ struct CheatMonitor::Pimpl
     std::map<std::pair<uint32_t, anti_cheat::CheatCategory>, std::chrono::steady_clock::time_point> m_lastReported;
     // 用于句柄代理攻击关联分析的状态容器
     std::unordered_map<DWORD, std::chrono::steady_clock::time_point> m_suspiciousHandleHolders;
+    // [新增] 环境扫描缓存，用于记录已发现的有害进程 {PID -> 创建时间}
+    std::map<DWORD, FILETIME> m_knownHarmfulProcesses;
 
     // --- 限流与容量控制 ---
     bool m_evidenceOverflowed = false;
@@ -741,36 +794,15 @@ struct CheatMonitor::Pimpl
     size_t m_heavySensorIndex = 0;
 
     // --- Input Automation Detection ---
-    struct MouseMoveEvent
-    {
-        POINT pt;
-        DWORD time;
-    };
-    struct MouseClickEvent
-    {
-        DWORD time;
-    };
-    struct KeyboardEvent
-    {
-        DWORD vkCode;
-        DWORD time;
-    };
+    // 使用新的异步事件队列代替旧的环形缓冲区
+    ConcurrentQueue<InputEvent> m_inputEventQueue;
 
     HWND m_hGameWindow = NULL;  // 游戏主窗口句柄
-    HHOOK m_hMouseHook = NULL;
-    HHOOK m_hKeyboardHook = NULL;   // 键盘钩子
-    DWORD m_hookOwnerThreadId = 0;  // 记录钩子所有者线程ID
-    std::mutex m_inputMutex;
+                                // [RAII] 使用智能指针和RAII类管理钩子生命周期
+    std::unique_ptr<ScopedHook> m_mouseHook;
+    std::unique_ptr<ScopedHook> m_keyboardHook;
 
-    // [修复] 将容量缓存变量的声明，置于环形缓冲区之前，以保证正确的初始化顺序
-    size_t m_maxMouseMoveEvents;
-    size_t m_maxMouseClickEvents;
-    size_t m_maxKeyboardEvents;
-
-    RingBuffer<MouseMoveEvent> m_mouseMoveEvents;
-    RingBuffer<MouseClickEvent> m_mouseClickEvents;
-    RingBuffer<KeyboardEvent> m_keyboardEvents;
-    static Pimpl *s_pimpl_for_hooks;     // Static pointer for hook procedures
+    static Pimpl *s_pimpl_for_hooks;  // Static pointer for hook procedures
 
     std::mt19937 m_rng;       // 随机数生成器
     std::random_device m_rd;  // 随机数种子
@@ -798,6 +830,10 @@ struct CheatMonitor::Pimpl
     // 存储关键模块代码节的基线哈希值
     std::unordered_map<std::wstring, std::vector<uint8_t>> m_moduleBaselineHashes;
 
+    // 自身模块完整性基线
+    HMODULE m_hSelfModule = NULL;
+    std::vector<uint8_t> m_selfModuleBaselineHash;
+
     // IAT Hook检测基线：为每个导入的DLL存储一个独立的哈希值
     std::unordered_map<std::string, std::vector<uint8_t>> m_iatBaselineHashes;
     uintptr_t m_vehListAddress = 0;  // 存储VEH链表(LdrpVectorHandlerList)的绝对地址
@@ -810,6 +846,7 @@ struct CheatMonitor::Pimpl
 
     // Main loop and state management
     void MonitorLoop();
+    void InputProcessingLoop();  // 新增：输入处理线程的循环
     void UploadReport();
     void InitializeSystem();
     void InitializeProcessBaseline();
@@ -828,13 +865,21 @@ struct CheatMonitor::Pimpl
     void DoCheckIatHooks(ScanContext &context, const BYTE *baseAddress, const IMAGE_IMPORT_DESCRIPTOR *pImportDesc);
     void VerifyModuleSignature(HMODULE hModule);
 
+    // 为自我完整性检查提供基线访问
+    HMODULE GetSelfModuleHandle() const
+    {
+        return m_pimpl->m_hSelfModule;
+    }
+    const std::vector<uint8_t> &GetSelfModuleBaselineHash() const
+    {
+        return m_pimpl->m_selfModuleBaselineHash;
+    }
+
     // Helper to check if an address belongs to a whitelisted module
     // Helper to check if an address belongs to a whitelisted module
     bool IsAddressInLegitimateModule(PVOID address, std::wstring &outModulePath);
 
     // 扩展监控辅助函数
-    void TrackLargeAllocation(LPVOID address, SIZE_T size);
-    void CleanupOldAllocations();
     bool IsPathInWhitelist(const std::wstring &modulePath);
     // 使用“诱饵处理函数”技术动态查找VEH链表的地址
     uintptr_t FindVehListAddress();
@@ -969,32 +1014,15 @@ class ScanContext
         return m_pimpl->m_processVerdictCache;
     }
 
+    std::map<DWORD, FILETIME> &GetKnownHarmfulProcesses()  // 新增：为环境传感器提供缓存访问
+    {
+        return m_pimpl->m_knownHarmfulProcesses;
+    }
+
     // 为句柄关联传感器提供共享数据访问
     std::unordered_map<DWORD, std::chrono::steady_clock::time_point> &GetSuspiciousHandleHolders()
     {
         return m_pimpl->m_suspiciousHandleHolders;
-    }
-
-    // --- 提供对输入数据的访问 ---
-    RingBuffer<CheatMonitor::Pimpl::MouseMoveEvent> &GetMouseMoveEvents()
-    {
-        return m_pimpl->m_mouseMoveEvents;
-    }
-    RingBuffer<CheatMonitor::Pimpl::MouseClickEvent> &GetMouseClickEvents()
-    {
-        return m_pimpl->m_mouseClickEvents;
-    }
-    RingBuffer<CheatMonitor::Pimpl::KeyboardEvent> &GetKeyboardEvents()
-    {
-        return m_pimpl->m_keyboardEvents;
-    }
-    std::mutex &GetInputMutex()
-    {
-        return m_pimpl->m_inputMutex;
-    }
-    HWND GetGameWindow() const
-    {
-        return m_pimpl->m_hGameWindow;
     }
 
     // --- 提供对已知状态的访问 ---
@@ -1222,6 +1250,8 @@ class AdvancedAntiDebugSensor : public ISensor
                     }
                 },
                 [&]() {
+                    if (IsVbsEnabled())
+                        return;
                     SYSTEM_KERNEL_DEBUGGER_INFORMATION info;
                     if (g_pNtQuerySystemInformation &&
                         NT_SUCCESS(g_pNtQuerySystemInformation(SystemKernelDebuggerInformation, &info, sizeof(info),
@@ -1235,6 +1265,8 @@ class AdvancedAntiDebugSensor : public ISensor
                     }
                 },
                 [&]() {
+                    if (IsVbsEnabled())
+                        return;
                     if (IsKernelDebuggerPresent_KUserSharedData())
                     {
                         context.AddEvidence(anti_cheat::ENVIRONMENT_DEBUGGER_DETECTED,
@@ -1290,6 +1322,10 @@ class MemoryScanSensor : public ISensor
     void ProcessModule(HMODULE hModule, ScanContext &context,
                        const std::unordered_map<std::wstring, std::vector<uint8_t>> &baselineHashes)
     {
+        if (hModule == context.GetSelfModuleHandle())
+        {
+            return;
+        }
         __try
         {
             if (!hModule)
@@ -1382,6 +1418,36 @@ class SystemIntegritySensor : public ISensor
             {
                 context.AddEvidence(anti_cheat::ENVIRONMENT_DEBUGGER_DETECTED,
                                     "系统开启了内核调试模式 (Kernel Debugging Enabled)");
+            }
+        }
+    }
+};
+
+class SelfIntegritySensor : public ISensor
+{
+   public:
+    const char *GetName() const override
+    {
+        return "SelfIntegritySensor";
+    }
+    void Execute(ScanContext &context) override
+    {
+        HMODULE hSelfModule = context.GetSelfModuleHandle();
+        const auto &baselineHash = context.GetSelfModuleBaselineHash();
+
+        if (!hSelfModule || baselineHash.empty())
+        {
+            return;
+        }
+
+        PVOID codeBase = nullptr;
+        DWORD codeSize = 0;
+        if (GetCodeSectionInfo(hSelfModule, codeBase, codeSize))
+        {
+            std::vector<uint8_t> currentHash = CalculateHash(static_cast<BYTE *>(codeBase), codeSize);
+            if (currentHash != baselineHash)
+            {
+                context.AddEvidence(anti_cheat::INTEGRITY_SELF_TAMPERING, "检测到反作弊模块自身被篡改。 ");
             }
         }
     }
@@ -1482,7 +1548,7 @@ class VehHookSensor : public ISensor
         const LIST_ENTRY *pListHead = &pVehList->List;
         const LIST_ENTRY *pCurrentEntry = pListHead->Flink;
         int handlerIndex = 0;
-        constexpr int maxHandlersToScan = 32;
+        const int kMaxVehHandlersToScan = CheatConfigManager::GetInstance().GetMaxVehHandlersToScan();
 
         // 辅助函数处理每个处理程序，避免在关键部分使用 C++ 对象展开
         auto ProcessHandler = [&](const VECTORED_HANDLER_ENTRY *pHandlerEntry, int index) -> bool {
@@ -1551,7 +1617,7 @@ class VehHookSensor : public ISensor
         };
 
         // 遍历 VEH 链表，使用指针检查避免异常
-        while (pCurrentEntry && pCurrentEntry != pListHead && handlerIndex < maxHandlersToScan)
+        while (pCurrentEntry && pCurrentEntry != pListHead && handlerIndex < kMaxVehHandlersToScan)
         {
             // 在解引用前验证指针有效性
             if (!IsValidPointer(pCurrentEntry,
@@ -1571,97 +1637,6 @@ class VehHookSensor : public ISensor
 
             pCurrentEntry = pCurrentEntry->Flink;
             handlerIndex++;
-        }
-    }
-};
-
-class InputAutomationSensor : public ISensor
-{
-   public:
-    const char *GetName() const override
-    {
-        return "InputAutomationSensor";
-    }
-    void Execute(ScanContext &context) override
-    {
-        // 使用“交换”代替“快照+清空”，最大程度缩短锁的持有时间
-        RingBuffer<CheatMonitor::Pimpl::MouseMoveEvent> local_moves(1);    // 临时空缓冲区
-        RingBuffer<CheatMonitor::Pimpl::MouseClickEvent> local_clicks(1);
-        RingBuffer<CheatMonitor::Pimpl::KeyboardEvent> local_keys(1);
-
-        {
-            std::lock_guard<std::mutex> lock(context.GetInputMutex());
-            // 原子地交换缓冲区，这个操作非常快
-            context.GetMouseMoveEvents().swap(local_moves);
-            context.GetMouseClickEvents().swap(local_clicks);
-            context.GetKeyboardEvents().swap(local_keys);
-        }  // 锁在这里被立即释放
-
-        // --- 在锁外安全地处理本地数据 ---
-        std::vector<CheatMonitor::Pimpl::MouseMoveEvent> moves_snapshot;
-        local_moves.snapshot(moves_snapshot);
-
-        std::vector<CheatMonitor::Pimpl::MouseClickEvent> clicks_snapshot;
-        local_clicks.snapshot(clicks_snapshot);
-
-        std::vector<CheatMonitor::Pimpl::KeyboardEvent> keys_snapshot;
-        local_keys.snapshot(keys_snapshot);
-
-        // 1. 鼠标点击规律性检测
-        if (clicks_snapshot.size() > 10)
-        {
-            std::vector<double> deltas;
-            for (size_t i = 1; i < clicks_snapshot.size(); ++i)
-            {
-                deltas.push_back(static_cast<double>(clicks_snapshot[i].time - clicks_snapshot[i - 1].time));
-            }
-            double stddev = InputAnalysis::CalculateStdDev(deltas);
-            if (stddev < 5.0 && stddev > 0)
-            {
-                context.AddEvidence(anti_cheat::INPUT_AUTOMATION_DETECTED,
-                                    "检测到规律性鼠标点击 (StdDev: " + std::to_string(stddev) + "ms)");
-            }
-        }
-
-        // 2. 鼠标移动直线检测
-        if (moves_snapshot.size() > 10)
-        {
-            int collinear_count = 0;
-            for (size_t i = 2; i < moves_snapshot.size(); ++i)
-            {
-                if (InputAnalysis::ArePointsCollinear(moves_snapshot[i - 2].pt, moves_snapshot[i - 1].pt,
-                                                      moves_snapshot[i].pt))
-                {
-                    collinear_count++;
-                }
-                else
-                {
-                    collinear_count = 0;
-                }
-                if (collinear_count >= 8)
-                {
-                    context.AddEvidence(anti_cheat::INPUT_AUTOMATION_DETECTED, "检测到非自然直线鼠标移动");
-                    break;
-                }
-            }
-        }
-
-        // 3. 键盘宏序列检测
-        if (keys_snapshot.size() > (size_t)CheatConfigManager::GetInstance().GetKeyboardMacroMinSequenceLength())
-        {
-            std::vector<DWORD> vkCodes;
-            vkCodes.reserve(keys_snapshot.size());
-            for (const auto &key_event : keys_snapshot)
-            {
-                vkCodes.push_back(key_event.vkCode);
-            }
-
-            size_t longest_pattern = InputAnalysis::FindLongestRepeatingSubstring(vkCodes);
-            if (longest_pattern >= (size_t)CheatConfigManager::GetInstance().GetKeyboardMacroMinPatternLength())
-            {
-                context.AddEvidence(anti_cheat::INPUT_AUTOMATION_DETECTED,
-                                    "检测到可疑的键盘宏行为 (重复序列长度: " + std::to_string(longest_pattern) + ")");
-            }
         }
     }
 };
@@ -1804,6 +1779,7 @@ class ProcessHandleSensor : public ISensor
 
     void Execute(ScanContext &context) override
     {
+        const ULONG kMaxHandlesToScan = CheatConfigManager::GetInstance().GetMaxHandlesToScan();
         const auto &knownGoodProcesses = CheatConfigManager::GetInstance().GetKnownGoodProcesses();
 
         if (!g_pNtQuerySystemInformation)
@@ -1834,6 +1810,13 @@ class ProcessHandleSensor : public ISensor
         // 2. 准备扫描
         const DWORD ownPid = GetCurrentProcessId();
         const auto *pHandleInfo = reinterpret_cast<const SYSTEM_HANDLE_INFORMATION *>(handleInfoBuffer.data());
+
+        if (pHandleInfo->NumberOfHandles > kMaxHandlesToScan)
+        {
+            context.AddEvidence(anti_cheat::RUNTIME_ERROR, "系统句柄数量异常巨大，跳过本次扫描。");
+            return;
+        }
+        const DWORD ownPid = GetCurrentProcessId();
         const auto now = std::chrono::steady_clock::now();
         std::unordered_set<DWORD> processedPidsThisScan;
 
@@ -2071,8 +2054,37 @@ class EnvironmentSensor : public ISensor
     void Execute(ScanContext &context) override
     {
         auto knownGoodProcesses = CheatConfigManager::GetInstance().GetKnownGoodProcesses();
+        auto &knownHarmfulProcesses = context.GetKnownHarmfulProcesses();
 
-        // 1. 首先，一次性遍历所有窗口，构建一个 PID -> WindowTitles 的映射
+        std::set<DWORD> currentPids;
+        {
+            using UniqueSnapshotHandle = std::unique_ptr<void, decltype(&::CloseHandle)>;
+            UniqueSnapshotHandle hSnapshot(CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0), &::CloseHandle);
+            if (hSnapshot.get() != INVALID_HANDLE_VALUE)
+            {
+                PROCESSENTRY32W pe;
+                pe.dwSize = sizeof(pe);
+                if (Process32FirstW(hSnapshot.get(), &pe))
+                {
+                    do
+                    {
+                        currentPids.insert(pe.th32ProcessID);
+                    } while (Process32NextW(hSnapshot.get(), &pe));
+                }
+            }
+        }
+        for (auto it = knownHarmfulProcesses.begin(); it != knownHarmfulProcesses.end();)
+        {
+            if (currentPids.find(it->first) == currentPids.end())
+            {
+                it = knownHarmfulProcesses.erase(it);
+            }
+            else
+            {
+                ++it;
+            }
+        }
+
         std::unordered_map<DWORD, std::vector<std::wstring>> windowTitlesByPid;
         auto enumProc = [](HWND hWnd, LPARAM lParam) -> BOOL {
             if (!IsWindowVisible(hWnd))
@@ -2092,7 +2104,6 @@ class EnvironmentSensor : public ISensor
         };
         EnumWindows(enumProc, reinterpret_cast<LPARAM>(&windowTitlesByPid));
 
-        // 2. 然后，遍历进程列表，进行检查
         using UniqueSnapshotHandle = std::unique_ptr<void, decltype(&::CloseHandle)>;
         UniqueSnapshotHandle hSnapshot(CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0), &::CloseHandle);
         if (hSnapshot.get() == INVALID_HANDLE_VALUE)
@@ -2104,16 +2115,40 @@ class EnvironmentSensor : public ISensor
         {
             do
             {
-                std::wstring processName = pe.szExeFile;
-                std::transform(processName.begin(), processName.end(), processName.begin(), ::towlower);
+                HANDLE hProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pe.th32ProcessID);
+                if (!hProcess)
+                    continue;
 
-                // 新增优化：首先通过进程名快速过滤已知的安全进程。
-                if (knownGoodProcesses && knownGoodProcesses->count(processName) > 0)
+                FILETIME ftCreation, ftExit, ftKernel, ftUser;
+                if (!GetProcessTimes(hProcess, &ftCreation, &ftExit, &ftKernel, &ftUser))
                 {
+                    CloseHandle(hProcess);
                     continue;
                 }
 
-                // 检查点 1: 廉价的进程名黑名单检查
+                auto cachedIt = knownHarmfulProcesses.find(pe.th32ProcessID);
+                if (cachedIt != knownHarmfulProcesses.end())
+                {
+                    if (CompareFileTime(&cachedIt->second, &ftCreation) == 0)
+                    {
+                        CloseHandle(hProcess);
+                        continue;
+                    }
+                    else
+                    {
+                        knownHarmfulProcesses.erase(cachedIt);
+                    }
+                }
+
+                std::wstring processName = pe.szExeFile;
+                std::transform(processName.begin(), processName.end(), processName.begin(), ::towlower);
+
+                if (knownGoodProcesses && knownGoodProcesses->count(processName) > 0)
+                {
+                    CloseHandle(hProcess);
+                    continue;
+                }
+
                 auto harmfulProcessNames = context.GetHarmfulProcessNames();
                 if (harmfulProcessNames)
                 {
@@ -2123,30 +2158,24 @@ class EnvironmentSensor : public ISensor
                         {
                             context.AddEvidence(anti_cheat::ENVIRONMENT_HARMFUL_PROCESS,
                                                 "有害进程(文件名): " + Utils::WideToString(pe.szExeFile));
-                            goto next_process_loop;  // 发现有害进程，直接跳到下一个进程的检查
+                            knownHarmfulProcesses[pe.th32ProcessID] = ftCreation;
+                            goto next_process_loop;
                         }
                     }
                 }
 
-                // 检查点 2: 昂贵的进程路径白名单检查 (仅在需要时执行)
-                HANDLE hProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pe.th32ProcessID);
-                if (hProcess)
+                std::wstring fullProcessPath = Utils::GetProcessFullName(hProcess);
+                if (!fullProcessPath.empty())
                 {
-                    std::wstring fullProcessPath = Utils::GetProcessFullName(hProcess);
-                    CloseHandle(hProcess);
-                    if (!fullProcessPath.empty())
+                    std::transform(fullProcessPath.begin(), fullProcessPath.end(), fullProcessPath.begin(), ::towlower);
+                    auto whitelistedProcessPaths = context.GetWhitelistedProcessPaths();
+                    if (whitelistedProcessPaths && whitelistedProcessPaths->count(fullProcessPath) > 0)
                     {
-                        std::transform(fullProcessPath.begin(), fullProcessPath.end(), fullProcessPath.begin(),
-                                       ::towlower);
-                        auto whitelistedProcessPaths = context.GetWhitelistedProcessPaths();
-                        if (whitelistedProcessPaths && whitelistedProcessPaths->count(fullProcessPath) > 0)
-                        {
-                            continue;  // 进程在路径白名单中，安全，继续检查下一个进程
-                        }
+                        CloseHandle(hProcess);
+                        continue;
                     }
                 }
 
-                // 检查点 3: 窗口标题黑名单检查
                 if (auto it = windowTitlesByPid.find(pe.th32ProcessID); it != windowTitlesByPid.end())
                 {
                     for (const auto &title : it->second)
@@ -2154,7 +2183,6 @@ class EnvironmentSensor : public ISensor
                         std::wstring lowerTitle = title;
                         std::transform(lowerTitle.begin(), lowerTitle.end(), lowerTitle.begin(), ::towlower);
 
-                        // 检查窗口标题是否在白名单中
                         bool isWhitelistedWindow = false;
                         auto whitelistedWindowKeywords = context.GetWhitelistedWindowKeywords();
                         if (whitelistedWindowKeywords)
@@ -2169,11 +2197,8 @@ class EnvironmentSensor : public ISensor
                             }
                         }
                         if (isWhitelistedWindow)
-                        {
-                            continue;  // 窗口标题在白名单中，检查下一个窗口标题
-                        }
+                            continue;
 
-                        // 检查窗口标题是否包含有害关键词
                         auto harmfulKeywords = context.GetHarmfulKeywords();
                         if (harmfulKeywords)
                         {
@@ -2183,14 +2208,16 @@ class EnvironmentSensor : public ISensor
                                 {
                                     context.AddEvidence(anti_cheat::ENVIRONMENT_HARMFUL_PROCESS,
                                                         "有害进程(窗口标题): " + Utils::WideToString(title));
-                                    goto next_process_loop;  // 跳出内外两层循环，检查下一个进程
+                                    knownHarmfulProcesses[pe.th32ProcessID] = ftCreation;
+                                    goto next_process_loop;
                                 }
                             }
                         }
                     }
                 }
 
-            next_process_loop:;
+            next_process_loop:
+                CloseHandle(hProcess);
             } while (Process32NextW(hSnapshot.get(), &pe));
         }
     }
@@ -2442,21 +2469,75 @@ static VirtualProtect_t pTrampolineVirtualProtect = nullptr;
 static NtAllocateVirtualMemory_t pTrampolineNtAllocateVirtualMemory = nullptr;
 
 CheatMonitor::Pimpl *CheatMonitor::Pimpl::s_pimpl_for_hooks = nullptr;
-LRESULT CALLBACK CheatMonitor::Pimpl::LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam)
+
+LRESULT CALLBACK CheatMonitor::Pimpl::LowLevelMouseProc(int nCode, WPARAM wParam, LPARAM lParam)
 {
-    if (nCode == HC_ACTION && s_pimpl_for_hooks)
+    if (nCode != HC_ACTION || !s_pimpl_for_hooks || s_pimpl_for_hooks->m_isShuttingDown.load())
     {
-        if (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN)
+        return CallNextHookEx(NULL, nCode, wParam, lParam);
+    }
+
+    s_pimpl_for_hooks->m_hookRefCount.fetch_add(1);
+
+    if (s_pimpl_for_hooks->m_isShuttingDown.load())
+    {
+        s_pimpl_for_hooks->m_hookRefCount.fetch_sub(1);
+        return CallNextHookEx((*s_pimpl_for_hooks->m_mouseHook), nCode, wParam, lParam);
+    }
+
+    MSLLHOOKSTRUCT *pMouseStruct = (MSLLHOOKSTRUCT *)lParam;
+    if (pMouseStruct)
+    {
+        InputEvent event;
+        event.time = pMouseStruct->time;
+
+        if (wParam == WM_MOUSEMOVE)
         {
-            KBDLLHOOKSTRUCT *pkbhs = (KBDLLHOOKSTRUCT *)lParam;
-            if (pkbhs)
-            {
-                std::lock_guard<std::mutex> lock(s_pimpl_for_hooks->m_inputMutex);
-                s_pimpl_for_hooks->m_keyboardEvents.push({pkbhs->vkCode, pkbhs->time});
-            }
+            event.type = InputEventType::MOUSE_MOVE;
+            event.mouse_pt = pMouseStruct->pt;
+            s_pimpl_for_hooks->m_inputEventQueue.push(event);
+        }
+        else if (wParam == WM_LBUTTONDOWN || wParam == WM_RBUTTONDOWN)
+        {
+            event.type = InputEventType::MOUSE_CLICK;
+            s_pimpl_for_hooks->m_inputEventQueue.push(event);
         }
     }
-    return CallNextHookEx(s_pimpl_for_hooks->m_hKeyboardHook, nCode, wParam, lParam);
+
+    s_pimpl_for_hooks->m_hookRefCount.fetch_sub(1);
+    return CallNextHookEx((*s_pimpl_for_hooks->m_mouseHook), nCode, wParam, lParam);
+}
+
+LRESULT CALLBACK CheatMonitor::Pimpl::LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam)
+{
+    if (nCode != HC_ACTION || !s_pimpl_for_hooks || s_pimpl_for_hooks->m_isShuttingDown.load())
+    {
+        return CallNextHookEx(NULL, nCode, wParam, lParam);
+    }
+
+    s_pimpl_for_hooks->m_hookRefCount.fetch_add(1);
+
+    if (s_pimpl_for_hooks->m_isShuttingDown.load())
+    {
+        s_pimpl_for_hooks->m_hookRefCount.fetch_sub(1);
+        return CallNextHookEx((*s_pimpl_for_hooks->m_keyboardHook), nCode, wParam, lParam);
+    }
+
+    if (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN)
+    {
+        KBDLLHOOKSTRUCT *pkbhs = (KBDLLHOOKSTRUCT *)lParam;
+        if (pkbhs)
+        {
+            InputEvent event;
+            event.type = InputEventType::KEYBOARD;
+            event.time = pkbhs->time;
+            event.vk_code = pkbhs->vkCode;
+            s_pimpl_for_hooks->m_inputEventQueue.push(event);
+        }
+    }
+
+    s_pimpl_for_hooks->m_hookRefCount.fetch_sub(1);
+    return CallNextHookEx((*s_pimpl_for_hooks->m_keyboardHook), nCode, wParam, lParam);
 }
 
 CheatMonitor &CheatMonitor::GetInstance()
@@ -2466,16 +2547,7 @@ CheatMonitor &CheatMonitor::GetInstance()
 }
 
 CheatMonitor::Pimpl::Pimpl()
-    // [修复] 在初始化列表中，先从管理器获取配置来初始化容量变量，
-    // 然后再用容量变量来初始化环形缓冲区。
-    : m_maxMouseMoveEvents(CheatConfigManager::GetInstance().GetMaxMouseMoveEvents()),
-      m_maxMouseClickEvents(CheatConfigManager::GetInstance().GetMaxMouseClickEvents()),
-      m_maxKeyboardEvents(CheatConfigManager::GetInstance().GetMaxKeyboardEvents()),
-      m_mouseMoveEvents(m_maxMouseMoveEvents),
-      m_mouseClickEvents(m_maxMouseClickEvents),
-      m_keyboardEvents(m_maxKeyboardEvents)
 {
-    // 构造函数体现在可以为空
 }
 
 CheatMonitor::CheatMonitor() : m_pimpl(std::make_unique<Pimpl>())
@@ -2495,13 +2567,12 @@ bool CheatMonitor::Initialize()
         return true;  // 已经初始化成功，直接返回true
 
     Pimpl::s_pimpl_for_hooks = m_pimpl.get();
+    m_pimpl->m_isShuttingDown = false;
 
-    m_pimpl->m_hookOwnerThreadId = GetCurrentThreadId();
-    m_pimpl->m_hMouseHook = SetWindowsHookEx(WH_MOUSE_LL, Pimpl::LowLevelMouseProc, GetModuleHandle(NULL), 0);
+    m_pimpl->m_mouseHook = std::make_unique<ScopedHook>(WH_MOUSE_LL, Pimpl::LowLevelMouseProc);
+    m_pimpl->m_keyboardHook = std::make_unique<ScopedHook>(WH_KEYBOARD_LL, Pimpl::LowLevelKeyboardProc);
 
-    m_pimpl->m_hKeyboardHook = SetWindowsHookEx(WH_KEYBOARD_LL, Pimpl::LowLevelKeyboardProc, GetModuleHandle(NULL), 0);
-
-    if (!m_pimpl->m_hMouseHook || !m_pimpl->m_hKeyboardHook)
+    if (!m_pimpl->m_mouseHook->IsValid() || !m_pimpl->m_keyboardHook->IsValid())
     {
         std::cout << "[AntiCheat] Initialize Error: Failed to set hooks. Mouse: " << (m_pimpl->m_hMouseHook != NULL)
                   << ", Keyboard: " << (m_pimpl->m_hKeyboardHook != NULL) << " Error code: " << GetLastError()
@@ -2511,7 +2582,7 @@ bool CheatMonitor::Initialize()
 
     try
     {
-        m_pimpl->m_monitorThread = std::thread(&Pimpl::MonitorLoop, m_pimpl.get());
+        m_pimpl->m_inputThread = std::thread(&Pimpl::InputProcessingLoop, m_pimpl.get());
     }
     catch (const std::system_error &e)
     {
@@ -2543,26 +2614,28 @@ void CheatMonitor::Shutdown()
 
     m_pimpl->m_isSystemActive = false;
     m_pimpl->m_cv.notify_one();
+    m_pimpl->m_isShuttingDown = true;
 
-    // 关键改动：调整卸载和清理顺序
-    // 1. 立即卸载钩子，停止接收新的回调
-    if (m_pimpl->m_hMouseHook)
-        UnhookWindowsHookEx(m_pimpl->m_hMouseHook);
-    if (m_pimpl->m_hKeyboardHook)
-        UnhookWindowsHookEx(m_pimpl->m_hKeyboardHook);
-    m_pimpl->m_hMouseHook = NULL;
-    m_pimpl->m_hKeyboardHook = NULL;
+    m_pimpl->m_cv.notify_all();
+    m_pimpl->m_inputEventQueue.stop();
 
-    // 2. 等待工作线程完全结束。这是最重要的同步点。
-    if (m_pimpl->m_monitorThread.joinable())
+    m_pimpl->m_mouseHook.reset();
+    m_pimpl->m_keyboardHook.reset();
+
+    while (m_pimpl->m_hookRefCount.load() > 0)
     {
-        m_pimpl->m_monitorThread.join();
+        std::this_thread::yield();
     }
 
-    // 3. 在所有线程活动结束后，才安全地将静态指针置空
+    if (m_pimpl->m_monitorThread.joinable())
+        m_pimpl->m_monitorThread.join();
+    if (m_pimpl->m_inputThread.joinable())
+        m_pimpl->m_inputThread.join();
+
+    // 在所有线程活动结束后，才安全地将静态指针置空
     Pimpl::s_pimpl_for_hooks = nullptr;
 
-    // 4. 最后清理Pimpl实例
+    // 最后清理Pimpl实例
     m_pimpl.reset();
 }
 
@@ -2619,8 +2692,8 @@ void CheatMonitor::Pimpl::InitializeSystem()
     m_lightweight_sensors.emplace_back(std::make_unique<Sensors::SystemIntegritySensor>());
     m_lightweight_sensors.emplace_back(std::make_unique<Sensors::IatHookSensor>());
     m_lightweight_sensors.emplace_back(std::make_unique<Sensors::VehHookSensor>());
-    m_lightweight_sensors.emplace_back(std::make_unique<Sensors::InputAutomationSensor>());
     m_lightweight_sensors.emplace_back(std::make_unique<Sensors::SuspiciousLaunchSensor>());
+    m_lightweight_sensors.emplace_back(std::make_unique<Sensors::SelfIntegritySensor>());
 
     // 重量级传感器 (低频执行)
     m_heavyweight_sensors.emplace_back(std::make_unique<Sensors::MemoryScanSensor>());
@@ -2650,6 +2723,25 @@ void CheatMonitor::Pimpl::InitializeProcessBaseline()
         return;
 
     std::cout << "[AntiCheat] Initializing process baseline..." << std::endl;
+
+    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            (LPCWSTR)&CheatMonitor::Pimpl::InitializeProcessBaseline, &m_hSelfModule))
+    {
+        AddEvidence(anti_cheat::RUNTIME_ERROR, "无法获取自身模块句柄以建立完整性基线。");
+    }
+    else
+    {
+        PVOID codeBase = nullptr;
+        DWORD codeSize = 0;
+        if (GetCodeSectionInfo(m_hSelfModule, codeBase, codeSize))
+        {
+            m_selfModuleBaselineHash = CalculateHash(static_cast<BYTE *>(codeBase), codeSize);
+        }
+        else
+        {
+            AddEvidence(anti_cheat::RUNTIME_ERROR, "无法获取自身代码节以建立完整性基线。");
+        }
+    }
 
     // 1. 建立已知模块列表和路径白名单
     {
@@ -2701,6 +2793,8 @@ void CheatMonitor::Pimpl::InitializeProcessBaseline()
     m_moduleBaselineHashes.clear();
     for (const auto &hModule : m_knownModules)
     {
+        if (hModule == m_hSelfModule)
+            continue;
         wchar_t modulePath_w[MAX_PATH];
         if (GetModuleFileNameW(hModule, modulePath_w, MAX_PATH) == 0)
             continue;
@@ -2774,15 +2868,8 @@ void CheatMonitor::Pimpl::ResetSessionState()
     m_lastReported.clear();
     m_reportedIllegalCallSources.clear();
     m_suspiciousHandleHolders.clear();
+    m_knownHarmfulProcesses.clear();
     m_evidenceOverflowed = false;
-
-    // 清空输入事件的缓冲区
-    {
-        std::lock_guard<std::mutex> input_lock(m_inputMutex);
-        m_mouseMoveEvents.clear();
-        m_mouseClickEvents.clear();
-        m_keyboardEvents.clear();
-    }
 }
 
 void CheatMonitor::OnPlayerLogin(uint32_t user_id, const std::string &user_name)
@@ -2850,21 +2937,6 @@ void CheatMonitor::OnServerConfigUpdated()
 
 void CheatMonitor::Pimpl::OnConfigUpdated()
 {
-    // [线程安全] 加锁以防止钩子函数在重建缓冲区时写入数据
-    std::lock_guard<std::mutex> lock(m_inputMutex);
-
-    // 从管理器获取最新的容量配置
-    m_maxMouseMoveEvents = CheatConfigManager::GetInstance().GetMaxMouseMoveEvents();
-    m_maxMouseClickEvents = CheatConfigManager::GetInstance().GetMaxMouseClickEvents();
-    m_maxKeyboardEvents = CheatConfigManager::GetInstance().GetMaxKeyboardEvents();
-
-    // 使用新的容量重新创建环形缓冲区。
-    // 这也会隐式地清空旧数据，符合配置更新时的预期行为。
-    m_mouseMoveEvents = RingBuffer<MouseMoveEvent>(m_maxMouseMoveEvents);
-    m_mouseClickEvents = RingBuffer<MouseClickEvent>(m_maxMouseClickEvents);
-    m_keyboardEvents = RingBuffer<KeyboardEvent>(m_maxKeyboardEvents);
-
-    std::cout << "[AntiCheat] Input buffer capacities updated from server config." << std::endl;
 }
 
 void CheatMonitor::Pimpl::AddEvidence(anti_cheat::CheatCategory category, const std::string &description)
@@ -3040,6 +3112,117 @@ void CheatMonitor::Pimpl::MonitorLoop()
         std::this_thread::sleep_for(std::chrono::milliseconds(jitter_dist(m_rng)));
     }
     std::cout << "[AntiCheat] Monitor thread finished." << std::endl;
+}
+
+void CheatMonitor::Pimpl::InputProcessingLoop()
+{
+    const int mouseClickBufferSize = CheatConfigManager::GetInstance().GetMaxMouseClickEvents();
+    const int mouseMoveBufferSize = CheatConfigManager::GetInstance().GetMaxMouseMoveEvents();
+    const int keyboardBufferSize = CheatConfigManager::GetInstance().GetMaxKeyboardEvents();
+    const double mouseClickStddevThreshold = CheatConfigManager::GetInstance().GetMouseClickStddevThreshold();
+    const int mouseMoveCollinearThreshold = CheatConfigManager::GetInstance().GetMouseMoveCollinearThreshold();
+
+    RingBuffer<InputEvent> mouseMoveEvents(mouseMoveBufferSize);
+    RingBuffer<InputEvent> mouseClickEvents(mouseClickBufferSize);
+    RingBuffer<InputEvent> keyboardEvents(keyboardBufferSize);
+
+    while (!m_isShuttingDown.load())
+    {
+        InputEvent event;
+        if (m_inputEventQueue.try_pop(event, std::chrono::milliseconds(100)))
+        {
+            switch (event.type)
+            {
+                case InputEventType::MOUSE_MOVE:
+                    mouseMoveEvents.push(event);
+                    break;
+                case InputEventType::MOUSE_CLICK:
+                    mouseClickEvents.push(event);
+                    break;
+                case InputEventType::KEYBOARD:
+                    keyboardEvents.push(event);
+                    break;
+            }
+        }
+
+        if (!m_isSessionActive.load() || !m_hasServerConfig.load())
+        {
+            continue;
+        }
+
+        if (mouseClickEvents.size() > 10)  // 使用一个固定的值作为触发检测的最小事件数
+        {
+            std::vector<InputEvent> clicks_snapshot;
+            mouseClickEvents.snapshot(clicks_snapshot);
+            mouseClickEvents.clear();
+
+            std::vector<double> deltas;
+            for (size_t i = 1; i < clicks_snapshot.size(); ++i)
+            {
+                deltas.push_back(static_cast<double>(clicks_snapshot[i].time - clicks_snapshot[i - 1].time));
+            }
+            double stddev = InputAnalysis::CalculateStdDev(deltas);
+            if (stddev < mouseClickStddevThreshold && stddev > 0)
+            {
+                AddEvidence(anti_cheat::INPUT_AUTOMATION_DETECTED,
+                            "检测到规律性鼠标点击 (StdDev: " + std::to_string(stddev) + "ms)");
+            }
+        }
+
+        if (mouseMoveEvents.size() > (size_t)mouseMoveCollinearThreshold + 5)
+        {
+            std::vector<InputEvent> moves_snapshot;
+            mouseMoveEvents.snapshot(moves_snapshot);
+            mouseMoveEvents.clear();
+
+            int collinear_count = 0;
+            for (size_t i = 2; i < moves_snapshot.size(); ++i)
+            {
+                if (InputAnalysis::ArePointsCollinear(moves_snapshot[i - 2].mouse_pt, moves_snapshot[i - 1].mouse_pt,
+                                                      moves_snapshot[i].mouse_pt))
+                {
+                    collinear_count++;
+                }
+                else
+                {
+                    collinear_count = 0;
+                }
+                if (collinear_count >= mouseMoveCollinearThreshold)
+                {
+                    AddEvidence(anti_cheat::INPUT_AUTOMATION_DETECTED, "检测到非自然直线鼠标移动");
+                    break;
+                }
+            }
+        }
+
+        const size_t min_pattern_len = (size_t)CheatConfigManager::GetInstance().GetKeyboardMacroMinPatternLength();
+        if (keyboardEvents.size() > (size_t)CheatConfigManager::GetInstance().GetKeyboardMacroMinSequenceLength())
+        {
+            std::vector<InputEvent> keys_snapshot;
+            keyboardEvents.snapshot(keys_snapshot);
+            keyboardEvents.clear();
+
+            if ((keys_snapshot.size() / 2) < min_pattern_len)
+            {
+            }
+            else
+            {  // 避免除以零
+                std::vector<DWORD> vkCodes;
+                vkCodes.reserve(keys_snapshot.size());
+                for (const auto &key_event : keys_snapshot)
+                {
+                    vkCodes.push_back(key_event.vk_code);
+                }
+
+                size_t longest_pattern = InputAnalysis::FindLongestRepeatingSubstring(vkCodes);
+                if (longest_pattern >= min_pattern_len)
+                {
+                    AddEvidence(anti_cheat::INPUT_AUTOMATION_DETECTED,
+                                "检测到可疑的键盘宏行为 (重复序列长度: " + std::to_string(longest_pattern) + ")");
+                }
+            }
+        }
+    }
 }
 
 void CheatMonitor::Pimpl::HardenProcessAndThreads()
@@ -3633,45 +3816,4 @@ void CheatMonitor::Pimpl::InstallExtendedApiHooks()
 void CheatMonitor::Pimpl::UninstallExtendedApiHooks()
 {
     // TODO: Implement safe IAT unhooking for extended APIs
-}
-
-LRESULT CALLBACK CheatMonitor::Pimpl::LowLevelMouseProc(int nCode, WPARAM wParam, LPARAM lParam)
-{
-    if (nCode == HC_ACTION && s_pimpl_for_hooks)
-    {
-        MSLLHOOKSTRUCT *pMouseStruct = (MSLLHOOKSTRUCT *)lParam;
-        if (!pMouseStruct)
-        {
-            // 不要在钩子函数中调用重量级的AddEvidence
-            return CallNextHookEx(s_pimpl_for_hooks->m_hMouseHook, nCode, wParam, lParam);
-        }
-
-        if (pMouseStruct->flags & LLMHF_INJECTED)
-        {
-            s_pimpl_for_hooks->AddEvidence(anti_cheat::INPUT_AUTOMATION_DETECTED,
-                                           "检测到注入的鼠标事件 (LLMHF_INJECTED flag)");
-        }
-
-        {
-            std::lock_guard<std::mutex> lock(s_pimpl_for_hooks->m_inputMutex);
-            if (wParam == WM_LBUTTONDOWN || wParam == WM_RBUTTONDOWN)
-            {
-                if (s_pimpl_for_hooks->m_mouseClickEvents.size() < s_pimpl_for_hooks->m_maxMouseClickEvents)
-                {
-                    s_pimpl_for_hooks->m_mouseClickEvents.push({pMouseStruct->time});
-                }
-            }
-            else if (wParam == WM_MOUSEMOVE)
-            {
-                // [性能修复] 使用缓存的成员变量，避免调用管理器和锁
-                // [逻辑修复] 使用正确的最大值变量 m_maxMouseMoveEvents
-                if (s_pimpl_for_hooks->m_mouseMoveEvents.size() < s_pimpl_for_hooks->m_maxMouseMoveEvents)
-                {
-                    s_pimpl_for_hooks->m_mouseMoveEvents.push({pMouseStruct->pt, pMouseStruct->time});
-                }
-            }
-        }
-    }
-    // 务必调用 CallNextHookEx 将消息传递给钩子链中的下一个钩子
-    return CallNextHookEx(s_pimpl_for_hooks->m_hMouseHook, nCode, wParam, lParam);
 }
