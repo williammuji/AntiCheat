@@ -1,0 +1,26 @@
+name: Windows Smoke Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ "**" ]
+  pull_request:
+    branches: [ "**" ]
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup vcpkg cache
+        uses: actions/cache@v4
+        with:
+          path: vcpkg
+          key: vcpkg-${{ runner.os }}-1
+
+      - name: Run smoke build (with vcpkg)
+        shell: pwsh
+        run: |
+          ./scripts/build.ps1 -UseVcpkg
