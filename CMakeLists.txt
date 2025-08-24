@@ -31,6 +31,18 @@ target_include_directories(CheatMonitorLib PUBLIC
     ${Protobuf_INCLUDE_DIRS}
 )
 
+# 统一编译宏与最低操作系统目标：仅支持 Windows 7 SP1 及以上
+if (WIN32)
+    target_compile_definitions(CheatMonitorLib PUBLIC
+        WINVER=0x0601
+        _WIN32_WINNT=0x0601
+        UNICODE
+        _UNICODE
+        NOMINMAX
+        WIN32_LEAN_AND_MEAN
+    )
+endif()
+
 # 将我们的库链接到Protobuf库。
 target_link_libraries(CheatMonitorLib PUBLIC ${Protobuf_LIBRARIES})
 
@@ -40,3 +52,4 @@ if(WIN32)
     # crypt32.lib 用于 CryptProtectData, advapi32.lib 包含旧版 CryptoAPI (用于哈希)
     target_link_libraries(CheatMonitorLib PUBLIC ole32 psapi user32 advapi32 iphlpapi wintrust crypt32)
 endif()
+

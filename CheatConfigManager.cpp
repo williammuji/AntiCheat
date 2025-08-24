@@ -1,13 +1,12 @@
-﻿#include "CheatConfigManager.h"
+#include "CheatConfigManager.h"
 #include "CheatMonitor.h"  // 为了访问 Utils::StringToWide 和通知 CheatMonitor
 #include <stdexcept>
 #include <algorithm>  // for std::replace
 #include <Windows.h>
-#include <Wincrypt.h>  // for Crypt* functions
 #include <memory>      // for std::shared_ptr
 #include <ShlObj.h>    // For SHGetFolderPathW
 
-#pragma comment(lib, "crypt32.lib")  // For Crypt* functions
+ 
 
 // --- Utils命名空间函数声明，因为它们在CheatMonitor.cpp中 ---
 namespace Utils
@@ -44,12 +43,6 @@ void CheatConfigManager::UpdateConfigFromServer(const std::string& server_data)
     if (!new_config_proto->ParseFromString(server_data))
     {
         // Log error: "Failed to parse server config"
-        return;
-    }
-
-    if (!VerifySignature(*new_config_proto))
-    {
-        // Log error: "Server config signature verification failed"
         return;
     }
 
@@ -211,13 +204,33 @@ int32_t CheatConfigManager::GetMaxHandlesToScan() const
     return GetCurrentConfig()->config->max_handles_to_scan();
 }
 
+bool CheatConfigManager::IsVehScanEnabled() const
+{
+    return GetCurrentConfig()->config->enable_veh_scan();
+}
+
+bool CheatConfigManager::IsHandleScanEnabled() const
+{
+    return GetCurrentConfig()->config->enable_handle_scan();
+}
+
+anti_cheat::OsMinimum CheatConfigManager::GetMinOs() const
+{
+    return GetCurrentConfig()->config->min_os();
+}
+
+std::string CheatConfigManager::GetRolloutGroup() const
+{
+    return GetCurrentConfig()->config->rollout_group();
+}
+
 // --- 私有辅助函数 ---
 
 void CheatConfigManager::SetDefaultValues(ConfigData& configData)
 {
     // 这些值应该与你之前在 Pimpl 中的硬编码值一致
     configData.config->set_base_scan_interval_seconds(15);
-    configData.config->set_heavy_scan_interval_minutes(30);
+    configData.config->set_heavy_scan_interval_minutes(15);
     configData.config->set_report_upload_interval_minutes(15);
 
     // 1. 有害进程名 (Harmful Process Names)
@@ -457,14 +470,18 @@ void CheatConfigManager::SetDefaultValues(ConfigData& configData)
 
     // --- 安全与性能阈值 ---
     configData.config->set_max_veh_handlers_to_scan(32);
-    configData.config->set_max_handles_to_scan(100000);
+    configData.config->set_max_handles_to_scan(50000);
 
     configData.config->set_config_version("default_fallback_v1");
 
-    // 为默认配置生成一个“签名”
-    std::string serialized_config;
-    configData.config->SerializeToString(&serialized_config);
-    configData.config->set_config_signature(CalculateHash(serialized_config + GetServerPublicKey()));
+    // 新增：最低OS与传感器默认开关
+    configData.config->set_min_os(anti_cheat::OS_WIN7_SP1); // 初期面向 Win7 SP1+
+    configData.config->set_enable_veh_scan(true);
+    configData.config->set_enable_handle_scan(true);
+    // 灰度分组默认值，便于服务端按需分流
+    configData.config->set_rollout_group("stable");
+
+    // 不再在客户端生成/校验配置签名：配置下发已在传输层加密与鉴权
 
     UpdateWideStringCaches(configData);
 }
@@ -497,97 +514,4 @@ void CheatConfigManager::UpdateWideStringCaches(ConfigData& configData)
 }
 
 // --- 安全相关函数 ---
-
-std::string CheatConfigManager::GetServerPublicKey() const
-{
-    // 这是一个占位符公钥。在实际生产中，您需要替换为您真实的公钥，
-    // 并使用更健壮的混淆技术来保护它。
-    const unsigned char g_encryptedPublicKey[] = {
-            0x75, 0x6d, 0x66, 0x77, 0x48, 0x73, 0x45, 0x0c, 0x57, 0x65, 0x73, 0x7e, 0x0c, 0x41, 0x63, 0x61, 0x6c, 0x49,
-            0x63, 0x79, 0x0c, 0x5d, 0x69, 0x6e, 0x6e, 0x49, 0x67, 0x73, 0x0c, 0x46, 0x6f, 0x72, 0x0c, 0x4b, 0x6e, 0x7e,
-            0x66, 0x43, 0x68, 0x65, 0x61, 0x7e, 0x0c, 0x53, 0x7d, 0x73, 0x7e, 0x65, 0x6d, 0x0c, 0x3d, 0x0c, 0x1f, 0x1c};
-    const char g_xorKey[] = "a_very_secret_random_key";
-
-    std::string key;
-    key.reserve(sizeof(g_encryptedPublicKey));
-    for (size_t i = 0; i < sizeof(g_encryptedPublicKey); ++i)
-    {
-        key += g_encryptedPublicKey[i] ^ g_xorKey[i % (sizeof(g_xorKey) - 1)];
-    }
-    return key;
-}
-
-bool CheatConfigManager::VerifySignature(const anti_cheat::ClientConfig& config) const
-{
-    if (!config.has_config_signature())
-        return false;
-
-    std::string signature = config.config_signature();
-
-    // 创建一个不包含签名的副本用于哈希计算
-    anti_cheat::ClientConfig config_copy = config;
-    config_copy.clear_config_signature();
-
-    std::string serialized_data;
-    if (!config_copy.SerializeToString(&serialized_data))
-    {
-        return false;
-    }
-
-    // 在实际应用中，这里会用公钥解密签名，或者用公钥验证哈希
-    // 此处我们模拟：服务器计算 hash(config_data + private_key), 客户端计算 hash(config_data + public_key)
-    // 这是一个简化的对称模拟，真实场景应为非对称
-    std::string expected_hash = CalculateHash(serialized_data + GetServerPublicKey());
-
-    return signature == expected_hash;
-}
-
-std::string CheatConfigManager::CalculateHash(const std::string& data) const
-{
-    HCRYPTPROV hProv = 0;
-    HCRYPTHASH hHash = 0;
-    std::string hashResult;
-    std::vector<BYTE> hashBuffer;
-
-    // 1. 获取加密服务提供程序(CSP)的句柄。
-    // PROV_RSA_AES 在 Windows XP SP2 及以上版本可用，并支持 SHA-1。
-    if (!CryptAcquireContextW(&hProv, NULL, NULL, PROV_RSA_AES, CRYPT_VERIFYCONTEXT))
-    {
-        goto cleanup;
-    }
-
-    // 2. 创建一个哈希对象。
-    if (!CryptCreateHash(hProv, CALG_SHA1, 0, 0, &hHash))
-    {
-        goto cleanup;
-    }
-
-    // 3. 对数据进行哈希计算。
-    if (!CryptHashData(hHash, (const BYTE*)data.c_str(), data.length(), 0))
-    {
-        goto cleanup;
-    }
-
-    // 4. 获取哈希值。
-    DWORD cbHash = 0;
-    DWORD cbData = sizeof(DWORD);
-    if (!CryptGetHashParam(hHash, HP_HASHSIZE, (BYTE*)&cbHash, &cbData, 0))
-    {
-        goto cleanup;
-    }
-
-    hashBuffer.resize(cbHash);
-    if (!CryptGetHashParam(hHash, HP_HASHVAL, hashBuffer.data(), &cbHash, 0))
-    {
-        goto cleanup;
-    }
-
-    hashResult.assign(reinterpret_cast<char*>(hashBuffer.data()), hashBuffer.size());
-
-cleanup:
-    if (hHash)
-        CryptDestroyHash(hHash);
-    if (hProv)
-        CryptReleaseContext(hProv, 0);
-    return hashResult;
-}
+// 客户端不再本地验证配置签名，依赖传输层加密与服务端鉴权
