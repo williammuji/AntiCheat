@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "anti_cheat.pb.h"
 #include <cstdint>
@@ -59,6 +59,13 @@ class CheatConfigManager
     int32_t GetMaxVehHandlersToScan() const;
     int32_t GetMaxHandlesToScan() const;
 
+    // [新增] 传感器开关与最低OS
+    bool IsVehScanEnabled() const;
+    bool IsHandleScanEnabled() const;
+    anti_cheat::OsMinimum GetMinOs() const;
+    // [新增] 灰度分组标签
+    std::string GetRolloutGroup() const;
+
    private:
     struct ConfigData
     {
@@ -82,9 +89,7 @@ class CheatConfigManager
 
     void SetDefaultValues(ConfigData& configData);
     void UpdateWideStringCaches(ConfigData& configData);
-    bool VerifySignature(const anti_cheat::ClientConfig& config) const;
-    std::string CalculateHash(const std::string& data) const;
-    std::string GetServerPublicKey() const;
+    // 客户端不再进行配置签名校验
 
     mutable std::mutex m_mutex;
     std::shared_ptr<ConfigData> m_configData;

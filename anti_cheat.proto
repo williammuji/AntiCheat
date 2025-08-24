@@ -106,6 +106,42 @@ message CheatReport {
   // 使用 optional 关键字表示它不是每次都必须存在。
   // 使用 optional 关键字表示它不是每次都必须存在。
   optional HardwareFingerprint fingerprint = 4;
+  optional TelemetryMetrics metrics = 5; // [新增] 遥测指标
+}
+
+// [新增] 最低操作系统要求
+enum OsMinimum {
+  OS_ANY = 0;
+  OS_WIN7_SP1 = 1;
+  OS_WIN8 = 2;
+  OS_WIN10 = 3;
+  OS_WIN11 = 4;
+}
+
+// [新增] 客户端遥测指标
+// 用于收集客户端的健康状况和性能数据
+message TelemetryMetrics {
+  uint64 init_success = 1;      // 初始化成功次数
+  uint64 init_fail = 2;         // 初始化失败次数
+  uint64 veh_exceptions = 3;    // VEH相关异常次数
+  uint64 sensor_exceptions = 4; // 传感器执行异常次数
+  uint64 sensor_timeouts = 5;   // 传感器执行超时次数
+  uint64 cheats_detected = 6;   // 总计检出作弊/可疑行为次数
+  // 新增：传感器性能窗口统计（2h/72h）
+  map<string, PerfWindows> sensor_perf = 10;
+}
+
+// 新增：单窗口统计
+message PerfStats {
+  uint32 avg_ms = 1;
+  uint32 p95_ms = 2;
+  uint32 p99_ms = 3;
+}
+
+// 新增：两个时间窗口
+message PerfWindows {
+  PerfStats win_2h = 1;
+  PerfStats win_72h = 2;
 }
 
 // 客户端动态配置
@@ -157,5 +193,10 @@ message ClientConfig {
 
   // 配置版本号或签名，用于校验
   optional string config_version = 100;
-  optional bytes config_signature = 101; // 服务器用私钥对配置内容做的签名
+
+  // [新增] 传感器开关与最低OS版本
+  optional OsMinimum min_os = 110;           // 最低支持的客户端操作系统版本
+  optional bool enable_veh_scan = 111;       // 开启VEH Hook扫描
+  optional bool enable_handle_scan = 112;    // 开启系统句柄扫描
+  optional string rollout_group = 120;       // 灰度标签，由服务器分流管理
 }
