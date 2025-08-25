@@ -40,6 +40,7 @@ enum CheatCategory {
   RUNTIME_MEMORY_EXEC_PRIVATE = 303; // 发现不属于任何模块的私有可执行内存区域，这是DLL注入或Shellcode的典型特征。
   RUNTIME_ILLEGAL_FUNCTION_CALL = 304; // 检测到对关键游戏函数的非法调用（例如，来自未知模块或Shellcode）。
   RUNTIME_ERROR = 399; // 反作弊系统内部发生非致命错误。
+  RUNTIME_THREAD_SHELLCODE = 305; // 新增：检测到线程起始地址位于模块之外，疑似Shellcode
 
   // --- 输入与自动化类别 (4xx) ---
   INPUT_AUTOMATION_DETECTED = 401; // 检测到疑似鼠标或键盘宏、机器人等自动化行为。
@@ -57,6 +58,13 @@ message HardwareFingerprint {
   string computer_name = 3;       // 计算机名。
   string os_version = 4;          // 操作系统版本。
   string cpu_info = 5;            // CPU信息（如架构、核心数）。
+}
+
+// [新增] 独立的硬件注册消息，用于初始化或变更时上报（方案B）
+message HardwareRegistration {
+  HardwareFingerprint fingerprint = 1;  // 必填：硬件指纹
+  string rollout_group = 2;             // 可选：灰度分组标签（从配置读取）
+  uint64 client_timestamp_ms = 3;       // 客户端时间戳（毫秒, UTC）
 }
 
 // 描述一个被加载到游戏进程中的模块（例如 DLL）的详细信息。
@@ -105,7 +113,7 @@ message CheatReport {
   // 通常只在玩家第一次登录或硬件发生显著变化时上报一次。
   // 使用 optional 关键字表示它不是每次都必须存在。
   // 使用 optional 关键字表示它不是每次都必须存在。
-  optional HardwareFingerprint fingerprint = 4;
+  optional HardwareFingerprint fingerprint = 4; // 为保持兼容暂时保留，但客户端将优先使用独立的HardwareRegistration
   optional TelemetryMetrics metrics = 5; // [新增] 遥测指标
 }
 

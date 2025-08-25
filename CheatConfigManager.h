@@ -66,6 +66,16 @@ class CheatConfigManager
     // [新增] 灰度分组标签
     std::string GetRolloutGroup() const;
 
+    // [新增] 生产环境配置参数（减少硬编码）
+    int32_t GetVehScanTimeoutMs() const;           // VEH扫描超时时间
+    int32_t GetIatScanTimeoutMs() const;           // IAT扫描超时时间
+    int32_t GetMemoryScanChunkSize() const;        // 内存扫描块大小
+    int32_t GetCpuYieldInterval() const;           // CPU让出间隔
+    int32_t GetMaxRetryAttempts() const;           // 最大重试次数
+    int32_t GetBackoffBaseMs() const;              // 退避基础时间(毫秒)
+    int32_t GetMaxBackoffMs() const;               // 最大退避时间(毫秒)
+    int32_t GetPerformanceReportInterval() const;  // 性能报告间隔(次)
+
    private:
     struct ConfigData
     {
