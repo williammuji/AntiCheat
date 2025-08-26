@@ -27,7 +27,8 @@ on:
         - x86-only
 
 env:
-  VCPKG_COMMIT: '2023.12.12'
+  # 使用较新的稳定版本，完整的40位SHA1哈希值
+  VCPKG_COMMIT: 'f7423ee180c4b7f40d43402c2feb3859161ef625'  # 2024.01.12版本
   BUILD_PARALLEL: 4
 
 jobs:
@@ -78,6 +79,7 @@ jobs:
         vcpkgGitCommitId: ${{ env.VCPKG_COMMIT }}
         vcpkgJsonGlob: 'vcpkg.json'
         appendedCacheKey: ${{ matrix.platform }}
+        runVcpkgInstall: true
 
     - name: 📚 安装依赖
       shell: powershell

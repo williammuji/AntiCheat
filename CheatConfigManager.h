@@ -56,7 +56,6 @@ class CheatConfigManager
     // [已弃用] 传统传感器开关（现在由灰度分组控制）
     bool IsVehScanEnabledLegacy() const;  // 旧版本的VEH开关
     bool IsHandleScanEnabledLegacy() const;  // 旧版本的Handle开关
-    anti_cheat::OsMinimum GetMinOs() const;
     
     // [已弃用] 字符串格式的灰度分组
     std::string GetRolloutGroup() const;
@@ -66,6 +65,9 @@ class CheatConfigManager
     bool IsVehScanEnabled() const;                          // 基于灰度分组判断是否开启VEH扫描
     bool IsHandleScanEnabled() const;                       // 基于灰度分组判断是否开启Handle扫描
     std::string GetRolloutGroupName() const;                // 获取灰度分组的可读名称
+    
+    // [新增] 基于rollout_group_enum推导最低OS版本
+    anti_cheat::OsMinimum GetRequiredMinOs() const;         // 根据灰度分组推导最低OS版本要求
 
     // [新增] 生产环境配置参数（减少硬编码）
     int32_t GetVehScanTimeoutMs() const;           // VEH扫描超时时间

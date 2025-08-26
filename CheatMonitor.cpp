@@ -1004,6 +1004,9 @@ struct CheatMonitor::Pimpl
     void ExecuteLightweightSensorSafe(ISensor* sensor, const char* name);
     bool ExecuteHeavyweightSensorSafe(ISensor* sensor, const char* name);
     
+    // OS版本检查helper方法
+    bool IsCurrentOsSupported() const;
+    
     // 新的分类上报方法
     void UploadHardwareReport();
     void UploadEvidenceReport();
@@ -1226,6 +1229,11 @@ class ScanContext
         return m_pimpl->m_windowsVersion;
     }
     
+    bool IsCurrentOsSupported() const  // [新增] 检查当前OS是否满足配置要求
+    {
+        return m_pimpl->IsCurrentOsSupported();
+    }
+    
     // 提供对Pimpl方法的访问
     void DoCheckIatHooksWithTimeout(const BYTE *baseAddress, const IMAGE_IMPORT_DESCRIPTOR *pImportDesc, 
                                    std::chrono::steady_clock::time_point startTime, int budget_ms)
@@ -1307,6 +1315,13 @@ class AdvancedAntiDebugSensor : public ISensor
 
         try
         {
+            // 策略1：配置版本门控 - 检查当前OS是否满足配置的最低要求
+            if (!context.IsCurrentOsSupported())
+            {
+                LOG_DEBUG(AntiCheatLogger::LogCategory::SENSOR, "高级反调试检测已禁用：当前OS版本低于配置最低要求");
+                return;
+            }
+            
             // 反调试检测数组 - 按检测速度排序，优先执行快速检测
             std::array<std::pair<std::string, std::function<void()>>, 6> checks = {
                     {{"RemoteDebugger",
@@ -1595,6 +1610,13 @@ class MemoryScanSensor : public ISensor
 
         try
         {
+            // 策略1：配置版本门控 - 检查当前OS是否满足配置的最低要求
+            if (!context.IsCurrentOsSupported())
+            {
+                LOG_DEBUG(AntiCheatLogger::LogCategory::SENSOR, "内存扫描检测已禁用：当前OS版本低于配置最低要求");
+                return;
+            }
+            
             const auto &baselineHashes = context.GetModuleBaselineHashes();
             std::vector<HMODULE> hMods(1024);
             DWORD cbNeeded = 0;
@@ -1730,6 +1752,13 @@ class SystemIntegritySensor : public ISensor
     }
     void Execute(ScanContext &context) override
     {
+        // 策略1：配置版本门控 - 检查当前OS是否满足配置的最低要求
+        if (!context.IsCurrentOsSupported())
+        {
+            LOG_DEBUG(AntiCheatLogger::LogCategory::SENSOR, "系统完整性检测已禁用：当前OS版本低于配置最低要求");
+            return;
+        }
+        
         SYSTEM_CODE_INTEGRITY_INFORMATION sci = {sizeof(sci), 0};
         if (g_pNtQuerySystemInformation &&
             NT_SUCCESS(g_pNtQuerySystemInformation(SystemCodeIntegrityInformation, &sci, sizeof(sci), nullptr)))
@@ -1767,6 +1796,13 @@ class SelfIntegritySensor : public ISensor
 
         try
         {
+            // 策略1：配置版本门控 - 检查当前OS是否满足配置的最低要求
+            if (!context.IsCurrentOsSupported())
+            {
+                LOG_DEBUG(AntiCheatLogger::LogCategory::SENSOR, "自身完整性检测已禁用：当前OS版本低于配置最低要求");
+                return;
+            }
+            
             HMODULE hSelfModule = context.GetSelfModuleHandle();
             const auto &baselineHash = context.GetSelfModuleBaselineHash();
 
@@ -2050,6 +2086,13 @@ class IatHookSensor : public ISensor
 
         try
         {
+            // 策略1：配置版本门控 - 检查当前OS是否满足配置的最低要求
+            if (!context.IsCurrentOsSupported())
+            {
+                LOG_DEBUG(AntiCheatLogger::LogCategory::SENSOR, "IAT Hook检测已禁用：当前OS版本低于配置最低要求");
+                return;
+            }
+            
             const HMODULE hSelf = GetModuleHandle(NULL);
             if (!hSelf)
             {
@@ -2257,6 +2300,13 @@ class VehHookSensor : public ISensor
             if (winVer == Win_Unknown)
             {
                 LOG_WARNING(AntiCheatLogger::LogCategory::SENSOR, "VEH检测在未知Windows版本上禁用以确保稳定性");
+                return;
+            }
+            
+            // 策略1.5：配置版本门控 - 检查当前OS是否满足配置的最低要求
+            if (!context.IsCurrentOsSupported())
+            {
+                LOG_DEBUG(AntiCheatLogger::LogCategory::SENSOR, "VEH检测已禁用：当前OS版本低于配置最低要求");
                 return;
             }
 
@@ -2605,6 +2655,13 @@ class ProcessHandleSensor : public ISensor
 
         try
         {
+            // 策略1：配置版本门控 - 检查当前OS是否满足配置的最低要求
+            if (!context.IsCurrentOsSupported())
+            {
+                LOG_DEBUG(AntiCheatLogger::LogCategory::SENSOR, "进程句柄检测已禁用：当前OS版本低于配置最低要求");
+                return;
+            }
+            
             // 生产环境优化：降低最大句柄扫描数量，提高响应性
             const ULONG kMaxHandlesToScan = std::min(30000UL, static_cast<ULONG>(CheatConfigManager::GetInstance().GetMaxHandlesToScan()));
             const auto &knownGoodProcesses = CheatConfigManager::GetInstance().GetKnownGoodProcesses();
@@ -3452,6 +3509,13 @@ class HiddenModuleSensor : public ISensor
 
         try
         {
+            // 策略1：配置版本门控 - 检查当前OS是否满足配置的最低要求
+            if (!context.IsCurrentOsSupported())
+            {
+                LOG_DEBUG(AntiCheatLogger::LogCategory::SENSOR, "隐藏模块检测已禁用：当前OS版本低于配置最低要求");
+                return;
+            }
+            
             MEMORY_BASIC_INFORMATION mbi;
             LPBYTE address = nullptr;
 
@@ -4082,93 +4146,74 @@ void CheatMonitor::OnServerConfigUpdated()
 
 void CheatMonitor::Pimpl::OnConfigUpdated()
 {
-    // 使用新的灰度分组策略进行传感器开关控制
+    // 获取配置信息
     anti_cheat::RolloutGroup rolloutGroup = CheatConfigManager::GetInstance().GetRolloutGroupEnum();
     std::string rolloutGroupName = CheatConfigManager::GetInstance().GetRolloutGroupName();
-    anti_cheat::OsMinimum serverMinOs = CheatConfigManager::GetInstance().GetMinOs();
+    anti_cheat::OsMinimum requiredMinOs = CheatConfigManager::GetInstance().GetRequiredMinOs();  // 基于rollout_group_enum推导
 
-    // 从灰度分组获取有效的传感器开关状态
-    bool effectiveVehScanEnabled = CheatConfigManager::GetInstance().IsVehScanEnabled();
-    bool effectiveHandleScanEnabled = CheatConfigManager::GetInstance().IsHandleScanEnabled();
-    anti_cheat::OsMinimum effectiveMinOs = serverMinOs;
+    // === 第一步：版本门控检查 ===
+    // 使用统一的IsCurrentOsSupported()方法检查版本兼容性
+    const bool osVersionSupported = IsCurrentOsSupported();
+    
+    // === 第二步：基于版本兼容性设置基础功能 ===
+    bool enableBasicFeatures = osVersionSupported;
+    bool enableVehScan = false;
+    bool enableHandleScan = false;
 
-    // 1. 硬门控：根据灰度分组强制OS要求
-    switch (rolloutGroup) {
-        case anti_cheat::WIN10_PLUS_BASIC:
-        case anti_cheat::WIN10_PLUS_ADVANCED:
-            // Win10+ 组必须运行在Win10+系统上
-            if (!IsOsAtLeast(m_windowsVersion, Win_10)) {
-                effectiveMinOs = anti_cheat::OS_WIN10;  // 强制要求Win10+
-                effectiveVehScanEnabled = false;
-                effectiveHandleScanEnabled = false;
-            }
-            break;
-        case anti_cheat::WIN7_PLUS_BASIC:
-        case anti_cheat::WIN7_PLUS_ADVANCED:
-            // Win7+ 组必须运行在Win7+系统上
-            if (!IsOsAtLeast(m_windowsVersion, Win_Vista_Win7)) {
-                effectiveMinOs = anti_cheat::OS_WIN7_SP1;  // 强制要求Win7+
-                effectiveVehScanEnabled = false;
-                effectiveHandleScanEnabled = false;
-            }
-            break;
-        case anti_cheat::LEGACY_FULL:
-            // 传统系统全功能组，兼容更低版本
-            effectiveVehScanEnabled = true;
-            effectiveHandleScanEnabled = true;
-            break;
-        default:
-            // 未知分组默认使用保守策略
-            break;
+    if (!enableBasicFeatures) {
+        // 版本不兼容，所有功能禁用
+        LOG_WARNING_F(AntiCheatLogger::LogCategory::SYSTEM,
+                     "OS版本不兼容: 当前OS=%d, rollout_group要求=%d, 所有功能已禁用",
+                     (int)m_windowsVersion, (int)requiredMinOs);
+    } else {
+        // === 第二步：版本兼容后，直接从CheatConfigManager获取灰度分组配置 ===
+        // 注意：版本检查已在IsCurrentOsSupported()中完成，这里无需重复检查
+        enableVehScan = CheatConfigManager::GetInstance().IsVehScanEnabled();
+        enableHandleScan = CheatConfigManager::GetInstance().IsHandleScanEnabled();
     }
 
-    // 2. 双保险：确保Win7 SP1以下系统一律关闭（避免服务端误配）
-    if (serverMinOs != anti_cheat::OS_ANY && !IsOsAtLeast(m_windowsVersion, Win_Vista_Win7))
-    {
-        effectiveMinOs = anti_cheat::OS_WIN7_SP1;
-        effectiveVehScanEnabled = false;
-        effectiveHandleScanEnabled = false;
-    }
+    // === 第四步：应用最终的传感器开关状态 ===
+    m_enableVehScan = enableBasicFeatures && enableVehScan;
+    m_enableHandleScan = enableBasicFeatures && enableHandleScan;
 
-    auto osIsSupported = [&](anti_cheat::OsMinimum req) -> bool {
-        switch (req)
-        {
-            case anti_cheat::OS_ANY:
-                return true;
-            case anti_cheat::OS_WIN7_SP1:
-                return m_windowsVersion == Win_Vista_Win7 || m_windowsVersion == Win_8_Win81 ||
-                       m_windowsVersion == Win_10 || m_windowsVersion == Win_11;
-            case anti_cheat::OS_WIN8:
-                return m_windowsVersion == Win_8_Win81 || m_windowsVersion == Win_10 || m_windowsVersion == Win_11;
-            case anti_cheat::OS_WIN10:
-                return m_windowsVersion == Win_10 || m_windowsVersion == Win_11;
-            case anti_cheat::OS_WIN11:
-                return m_windowsVersion == Win_11;
-            default:
-                return false;
-        }
-    };
-
-    // 最终平台兼容性检查，使用 effectiveMinOs
-    const bool platform_ok = osIsSupported(effectiveMinOs);
-
-    // 应用最终的传感器开关状态
-    m_enableVehScan = platform_ok && effectiveVehScanEnabled;
-    m_enableHandleScan = platform_ok && effectiveHandleScanEnabled;
-
-    // 记录灰度分组和传感器状态
+    // === 详细日志记录 ===
     LOG_INFO_F(AntiCheatLogger::LogCategory::SYSTEM, 
-               "Rollout group: %s, VEH scan: %s, Handle scan: %s, Platform OK: %s",
+               "OS版本门控结果: 当前OS=%d, rollout_group推导min_os=%d, 版本兼容=%s",
+               (int)m_windowsVersion, (int)requiredMinOs, osVersionSupported ? "是" : "否");
+               
+    LOG_INFO_F(AntiCheatLogger::LogCategory::SYSTEM, 
+               "灰度分组配置: %s, 基础功能=%s, VEH扫描=%s, Handle扫描=%s",
                rolloutGroupName.c_str(),
-               m_enableVehScan ? "enabled" : "disabled",
-               m_enableHandleScan ? "enabled" : "disabled", 
-               platform_ok ? "yes" : "no");
+               enableBasicFeatures ? "启用" : "禁用",
+               m_enableVehScan ? "启用" : "禁用",
+               m_enableHandleScan ? "启用" : "禁用");
 
-    if (!platform_ok)
+    // 如果版本不兼容，记录为运行时错误
+    if (!osVersionSupported)
     {
-        // 仅在平台不兼容时添加证据，这属于运行时错误，而非配置日志。
         AddEvidence(anti_cheat::RUNTIME_ERROR,
-                    "当前客户端OS未达到有效最低要求，已自动关闭部分传感器以避免兼容性问题。");
+                    "客户端OS版本低于配置最低要求，反作弊功能已自动禁用以确保稳定性。");
+    }
+}
+
+bool CheatMonitor::Pimpl::IsCurrentOsSupported() const
+{
+    anti_cheat::OsMinimum requiredMinOs = CheatConfigManager::GetInstance().GetRequiredMinOs();
+    
+    switch (requiredMinOs) {
+        case anti_cheat::OS_ANY:
+            return true;
+        case anti_cheat::OS_WIN7_SP1:
+            return m_windowsVersion == Win_Vista_Win7 || m_windowsVersion == Win_8_Win81 ||
+                   m_windowsVersion == Win_10 || m_windowsVersion == Win_11;
+        case anti_cheat::OS_WIN8:
+            return m_windowsVersion == Win_8_Win81 || m_windowsVersion == Win_10 || m_windowsVersion == Win_11;
+        case anti_cheat::OS_WIN10:
+            return m_windowsVersion == Win_10 || m_windowsVersion == Win_11;
+        case anti_cheat::OS_WIN11:
+            return m_windowsVersion == Win_11;
+        default:
+            return false;
     }
 }
 
@@ -4425,7 +4470,7 @@ void CheatMonitor::Pimpl::MonitorLoop()
             // 服务器开关：跳过特定传感器
             const char *name = sensor->GetName();
             if ((strcmp(name, "VehHookSensor") == 0) &&
-                !(m_enableVehScan && IsOsAtLeast(m_windowsVersion, Win_Vista_Win7)))
+                !(m_enableVehScan && IsCurrentOsSupported()))
             {
                 m_lightSensorIndex++;
                 goto AFTER_LIGHT;  // 跳过执行
@@ -4455,7 +4500,7 @@ void CheatMonitor::Pimpl::MonitorLoop()
 
                 // 服务器开关：跳过特定传感器
                 if ((strcmp(name, "ProcessHandleSensor") == 0) &&
-                    !(m_enableHandleScan && IsOsAtLeast(m_windowsVersion, Win_Vista_Win7)))
+                    !(m_enableHandleScan && IsCurrentOsSupported()))
                 {
                     m_heavySensorIndex++;
                     goto AFTER_HEAVY;  // 跳过执行

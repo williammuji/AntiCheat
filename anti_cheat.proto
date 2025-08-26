@@ -220,13 +220,7 @@ message ClientConfig {
   optional int32 max_veh_handlers_to_scan = 60; // 单次扫描VEH处理器的最大数量
   optional int32 max_handles_to_scan = 61; // 单次扫描系统句柄的最大数量
 
-  // 配置版本号或签名，用于校验
-  optional string config_version = 100;
-
-  // 传感器开关与最低OS版本
-  optional OsMinimum min_os = 110;           // 最低支持的客户端操作系统版本
-  optional bool enable_veh_scan = 111;       // 开启VEH Hook扫描 [已弃用，使用rollout_group_enum控制]
-  optional bool enable_handle_scan = 112;    // 开启系统句柄扫描 [已弃用，使用rollout_group_enum控制]
+  // 注意：config_version 和 min_os 字段已删除，改为基于 rollout_group_enum 推导最低OS版本
   
   // 新的灰度分组策略
   optional RolloutGroup rollout_group_enum = 121;  // 基于OS版本+功能开关的灰度分组
