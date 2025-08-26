@@ -43,28 +43,29 @@ class CheatConfigManager
     int32_t GetHeavyScanBudgetMs() const;
 
     // --- 容量与缓存控制 ---
-    int32_t GetMaxMouseMoveEvents() const;
-    int32_t GetMaxMouseClickEvents() const;
-    int32_t GetMaxKeyboardEvents() const;
+
     int32_t GetProcessCacheDurationMinutes() const;
     int32_t GetSignatureCacheDurationMinutes() const;
 
-    // --- 输入自动化检测参数 ---
-    int32_t GetKeyboardMacroMinSequenceLength() const;
-    int32_t GetKeyboardMacroMinPatternLength() const;
-    double GetMouseClickStddevThreshold() const;
-    int32_t GetMouseMoveCollinearThreshold() const;
+
 
     // [新增] 安全和性能阈值
     int32_t GetMaxVehHandlersToScan() const;
     int32_t GetMaxHandlesToScan() const;
 
-    // [新增] 传感器开关与最低OS
-    bool IsVehScanEnabled() const;
-    bool IsHandleScanEnabled() const;
+    // [已弃用] 传统传感器开关（现在由灰度分组控制）
+    bool IsVehScanEnabledLegacy() const;  // 旧版本的VEH开关
+    bool IsHandleScanEnabledLegacy() const;  // 旧版本的Handle开关
     anti_cheat::OsMinimum GetMinOs() const;
-    // [新增] 灰度分组标签
+    
+    // [已弃用] 字符串格式的灰度分组
     std::string GetRolloutGroup() const;
+    
+    // 新的灰度分组策略
+    anti_cheat::RolloutGroup GetRolloutGroupEnum() const;   // 获取枚举格式的分组
+    bool IsVehScanEnabled() const;                          // 基于灰度分组判断是否开启VEH扫描
+    bool IsHandleScanEnabled() const;                       // 基于灰度分组判断是否开启Handle扫描
+    std::string GetRolloutGroupName() const;                // 获取灰度分组的可读名称
 
     // [新增] 生产环境配置参数（减少硬编码）
     int32_t GetVehScanTimeoutMs() const;           // VEH扫描超时时间

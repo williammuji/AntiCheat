@@ -42,9 +42,6 @@ enum CheatCategory {
   RUNTIME_ERROR = 399; // 反作弊系统内部发生非致命错误。
   RUNTIME_THREAD_SHELLCODE = 305; // 新增：检测到线程起始地址位于模块之外，疑似Shellcode
 
-  // --- 输入与自动化类别 (4xx) ---
-  INPUT_AUTOMATION_DETECTED = 401; // 检测到疑似鼠标或键盘宏、机器人等自动化行为。
-
   // --- 系统信息与状态类别 (5xx) ---
   SYSTEM_INITIALIZED = 500; // 反作弊系统初始化成功并建立基线。
   SYSTEM_FINGERPRINT = 501; // 用于收集硬件指纹，本身不是作弊，但可用于关联封禁。
@@ -58,13 +55,6 @@ message HardwareFingerprint {
   string computer_name = 3;       // 计算机名。
   string os_version = 4;          // 操作系统版本。
   string cpu_info = 5;            // CPU信息（如架构、核心数）。
-}
-
-// [新增] 独立的硬件注册消息，用于初始化或变更时上报（方案B）
-message HardwareRegistration {
-  HardwareFingerprint fingerprint = 1;  // 必填：硬件指纹
-  string rollout_group = 2;             // 可选：灰度分组标签（从配置读取）
-  uint64 client_timestamp_ms = 3;       // 客户端时间戳（毫秒, UTC）
 }
 
 // 描述一个被加载到游戏进程中的模块（例如 DLL）的详细信息。
@@ -97,27 +87,50 @@ message Evidence {
   }
 }
 
-// 客户端发送给服务器的精简版反作弊报告。
-// 每次上报只包含增量的证据，以减少网络开销。
-// 玩家身份等信息由服务器在会话建立时进行关联。
-message CheatReport {
-  // --- 报告元数据 ---
-  string report_id = 1; // 本次报告的唯一ID (建议使用 UUID)，用于追踪和去重。
-  uint64 report_timestamp_ms = 2; // 本次报告生成时的时间戳 (毫秒, UTC)。
-
-  // --- 证据列表 ---
-  // 只包含本次上报周期内新发现的证据。
-  repeated Evidence evidences = 3;
-
-  // 硬件指纹信息。
-  // 通常只在玩家第一次登录或硬件发生显著变化时上报一次。
-  // 使用 optional 关键字表示它不是每次都必须存在。
-  // 使用 optional 关键字表示它不是每次都必须存在。
-  optional HardwareFingerprint fingerprint = 4; // 为保持兼容暂时保留，但客户端将优先使用独立的HardwareRegistration
-  optional TelemetryMetrics metrics = 5; // [新增] 遥测指标
+// 上报类型枚举
+enum ReportType {
+  REPORT_UNKNOWN = 0;
+  REPORT_HARDWARE = 1;    // 硬件信息上报
+  REPORT_EVIDENCE = 2;    // 作弊证据上报
+  REPORT_TELEMETRY = 3;   // 遥测数据上报
 }
 
-// [新增] 最低操作系统要求
+// 硬件信息专用上报消息
+message HardwareReport {
+  string report_id = 1;
+  uint64 report_timestamp_ms = 2;
+  HardwareFingerprint fingerprint = 3;
+  string rollout_group = 4;
+}
+
+// 作弊证据专用上报消息  
+message EvidenceReport {
+  string report_id = 1;
+  uint64 report_timestamp_ms = 2;
+  repeated Evidence evidences = 3;
+}
+
+// 遥测数据专用上报消息
+message TelemetryReport {
+  string report_id = 1;
+  uint64 report_timestamp_ms = 2;
+  TelemetryMetrics metrics = 3;
+}
+
+// 统一的上报包装器
+message Report {
+  ReportType type = 1;
+  
+  oneof report_data {
+    HardwareReport hardware = 2;
+    EvidenceReport evidence = 3;
+    TelemetryReport telemetry = 4;
+  }
+}
+
+
+
+// 最低操作系统要求
 enum OsMinimum {
   OS_ANY = 0;
   OS_WIN7_SP1 = 1;
@@ -126,7 +139,24 @@ enum OsMinimum {
   OS_WIN11 = 4;
 }
 
-// [新增] 客户端遥测指标
+// 灰度测试分组策略
+enum RolloutGroup {
+  // 默认组
+  ROLLOUT_UNKNOWN = 0;
+  
+  // Windows 10+ 系列
+  WIN10_PLUS_BASIC = 1;     // Win10+ 基础组：不开放VEH, ProcessHandle扫描
+  WIN10_PLUS_ADVANCED = 2;  // Win10+ 高级组：开放VEH, ProcessHandle扫描
+  
+  // Windows 7+ 系列
+  WIN7_PLUS_BASIC = 3;      // Win7+ 基础组：不开放VEH, ProcessHandle扫描  
+  WIN7_PLUS_ADVANCED = 4;   // Win7+ 高级组：开放VEH, ProcessHandle扫描
+  
+  // 未来扩展：如果支持XP/Vista，所有功能全开
+  LEGACY_FULL = 5;          // XP/Vista 全功能组：所有功能全开
+}
+
+// 客户端遥测指标
 // 用于收集客户端的健康状况和性能数据
 message TelemetryMetrics {
   uint64 init_success = 1;      // 初始化成功次数
@@ -135,18 +165,18 @@ message TelemetryMetrics {
   uint64 sensor_exceptions = 4; // 传感器执行异常次数
   uint64 sensor_timeouts = 5;   // 传感器执行超时次数
   uint64 cheats_detected = 6;   // 总计检出作弊/可疑行为次数
-  // 新增：传感器性能窗口统计（2h/72h）
+  // 传感器性能窗口统计（2h/72h）
   map<string, PerfWindows> sensor_perf = 10;
 }
 
-// 新增：单窗口统计
+// 单窗口统计
 message PerfStats {
   uint32 avg_ms = 1;
   uint32 p95_ms = 2;
   uint32 p99_ms = 3;
 }
 
-// 新增：两个时间窗口
+// 两个时间窗口
 message PerfWindows {
   PerfStats win_2h = 1;
   PerfStats win_72h = 2;
@@ -183,17 +213,8 @@ message ClientConfig {
   optional int32 heavy_scan_budget_ms = 33;
 
   // --- 容量与缓存控制 ---
-  optional int32 max_mouse_move_events = 40;
-  optional int32 max_mouse_click_events = 41;
-  optional int32 max_keyboard_events = 42;
-  optional int32 process_cache_duration_minutes = 43;
-  optional int32 signature_cache_duration_minutes = 44;
-
-  // --- 输入自动化检测参数 ---
-  optional int32 keyboard_macro_min_sequence_length = 50;
-  optional int32 keyboard_macro_min_pattern_length = 51;
-  optional double mouse_click_stddev_threshold = 52; // 鼠标点击间隔标准差阈值
-  optional int32 mouse_move_collinear_threshold = 53; // 鼠标移动共线点阈值
+  optional int32 process_cache_duration_minutes = 40;
+  optional int32 signature_cache_duration_minutes = 41;
 
   // --- 安全与性能阈值 ---
   optional int32 max_veh_handlers_to_scan = 60; // 单次扫描VEH处理器的最大数量
@@ -202,13 +223,16 @@ message ClientConfig {
   // 配置版本号或签名，用于校验
   optional string config_version = 100;
 
-  // [新增] 传感器开关与最低OS版本
+  // 传感器开关与最低OS版本
   optional OsMinimum min_os = 110;           // 最低支持的客户端操作系统版本
-  optional bool enable_veh_scan = 111;       // 开启VEH Hook扫描
-  optional bool enable_handle_scan = 112;    // 开启系统句柄扫描
-  optional string rollout_group = 120;       // 灰度标签，由服务器分流管理
+  optional bool enable_veh_scan = 111;       // 开启VEH Hook扫描 [已弃用，使用rollout_group_enum控制]
+  optional bool enable_handle_scan = 112;    // 开启系统句柄扫描 [已弃用，使用rollout_group_enum控制]
+  optional string rollout_group = 120;       // 灰度标签字符串，由服务器分流管理 [已弃用，使用rollout_group_enum]
+  
+  // 新的灰度分组策略
+  optional RolloutGroup rollout_group_enum = 121;  // 基于OS版本+功能开关的灰度分组
 
-  // [新增] 生产环境配置参数（减少硬编码）
+  // 生产环境配置参数（减少硬编码）
   optional int32 veh_scan_timeout_ms = 130;           // VEH扫描超时时间
   optional int32 iat_scan_timeout_ms = 131;           // IAT扫描超时时间
   optional int32 memory_scan_chunk_size = 132;        // 内存扫描块大小
