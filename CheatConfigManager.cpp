@@ -149,18 +149,7 @@ int32_t CheatConfigManager::GetHeavyScanBudgetMs() const
 }
 
 // --- 容量与缓存控制 ---
-int32_t CheatConfigManager::GetMaxMouseMoveEvents() const
-{
-    return GetCurrentConfig()->config->max_mouse_move_events();
-}
-int32_t CheatConfigManager::GetMaxMouseClickEvents() const
-{
-    return GetCurrentConfig()->config->max_mouse_click_events();
-}
-int32_t CheatConfigManager::GetMaxKeyboardEvents() const
-{
-    return GetCurrentConfig()->config->max_keyboard_events();
-}
+
 int32_t CheatConfigManager::GetProcessCacheDurationMinutes() const
 {
     return GetCurrentConfig()->config->process_cache_duration_minutes();
@@ -171,26 +160,7 @@ int32_t CheatConfigManager::GetSignatureCacheDurationMinutes() const
 }
 
 // --- 输入自动化检测参数 ---
-int32_t CheatConfigManager::GetKeyboardMacroMinSequenceLength() const
-{
-    return GetCurrentConfig()->config->keyboard_macro_min_sequence_length();
-}
-int32_t CheatConfigManager::GetKeyboardMacroMinPatternLength() const
-{
-    return GetCurrentConfig()->config->keyboard_macro_min_pattern_length();
-}
 
-// --- 新增的Getters ---
-
-double CheatConfigManager::GetMouseClickStddevThreshold() const
-{
-    return GetCurrentConfig()->config->mouse_click_stddev_threshold();
-}
-
-int32_t CheatConfigManager::GetMouseMoveCollinearThreshold() const
-{
-    return GetCurrentConfig()->config->mouse_move_collinear_threshold();
-}
 
 int32_t CheatConfigManager::GetMaxVehHandlersToScan() const
 {
@@ -202,12 +172,12 @@ int32_t CheatConfigManager::GetMaxHandlesToScan() const
     return GetCurrentConfig()->config->max_handles_to_scan();
 }
 
-bool CheatConfigManager::IsVehScanEnabled() const
+bool CheatConfigManager::IsVehScanEnabledLegacy() const
 {
     return GetCurrentConfig()->config->enable_veh_scan();
 }
 
-bool CheatConfigManager::IsHandleScanEnabled() const
+bool CheatConfigManager::IsHandleScanEnabledLegacy() const
 {
     return GetCurrentConfig()->config->enable_handle_scan();
 }
@@ -220,6 +190,73 @@ anti_cheat::OsMinimum CheatConfigManager::GetMinOs() const
 std::string CheatConfigManager::GetRolloutGroup() const
 {
     return GetCurrentConfig()->config->rollout_group();
+}
+
+// 新的灰度分组策略实现
+anti_cheat::RolloutGroup CheatConfigManager::GetRolloutGroupEnum() const
+{
+    if (GetCurrentConfig()->config->has_rollout_group_enum()) {
+        return GetCurrentConfig()->config->rollout_group_enum();
+    }
+    
+    // 如果没有设置新的分组，使用默认策略：根据OS版本自动分配基础组
+    anti_cheat::OsMinimum min_os = GetMinOs();
+    if (min_os >= anti_cheat::OS_WIN10) {
+        return anti_cheat::WIN10_PLUS_BASIC;  // Win10+ 默认基础组
+    } else if (min_os >= anti_cheat::OS_WIN7_SP1) {
+        return anti_cheat::WIN7_PLUS_BASIC;   // Win7+ 默认基础组
+    } else {
+        return anti_cheat::LEGACY_FULL;       // 更老版本全功能
+    }
+}
+
+bool CheatConfigManager::IsVehScanEnabled() const
+{
+    anti_cheat::RolloutGroup group = GetRolloutGroupEnum();
+    switch (group) {
+        case anti_cheat::WIN10_PLUS_ADVANCED:
+        case anti_cheat::WIN7_PLUS_ADVANCED:
+        case anti_cheat::LEGACY_FULL:
+            return true;  // 高级组和全功能组开启VEH扫描
+        case anti_cheat::WIN10_PLUS_BASIC:
+        case anti_cheat::WIN7_PLUS_BASIC:
+        default:
+            return false; // 基础组不开启VEH扫描
+    }
+}
+
+bool CheatConfigManager::IsHandleScanEnabled() const
+{
+    anti_cheat::RolloutGroup group = GetRolloutGroupEnum();
+    switch (group) {
+        case anti_cheat::WIN10_PLUS_ADVANCED:
+        case anti_cheat::WIN7_PLUS_ADVANCED:
+        case anti_cheat::LEGACY_FULL:
+            return true;  // 高级组和全功能组开启Handle扫描
+        case anti_cheat::WIN10_PLUS_BASIC:
+        case anti_cheat::WIN7_PLUS_BASIC:
+        default:
+            return false; // 基础组不开启Handle扫描
+    }
+}
+
+std::string CheatConfigManager::GetRolloutGroupName() const
+{
+    anti_cheat::RolloutGroup group = GetRolloutGroupEnum();
+    switch (group) {
+        case anti_cheat::WIN10_PLUS_BASIC:
+            return "win10-plus-basic";
+        case anti_cheat::WIN10_PLUS_ADVANCED:
+            return "win10-plus-advanced";
+        case anti_cheat::WIN7_PLUS_BASIC:
+            return "win7-plus-basic";
+        case anti_cheat::WIN7_PLUS_ADVANCED:
+            return "win7-plus-advanced";
+        case anti_cheat::LEGACY_FULL:
+            return "legacy-full";
+        default:
+            return "unknown";
+    }
 }
 
 // 新增生产环境配置参数（减少硬编码）
@@ -715,17 +752,9 @@ void CheatConfigManager::SetDefaultValues(ConfigData& configData)
     configData.config->set_heavy_scan_budget_ms(25000);
 
     // --- 容量与缓存控制 ---
-    configData.config->set_max_mouse_move_events(5000);
-    configData.config->set_max_mouse_click_events(500);
-    configData.config->set_max_keyboard_events(2048);
+
     configData.config->set_process_cache_duration_minutes(15);
     configData.config->set_signature_cache_duration_minutes(60);
-
-    // --- 输入自动化检测参数 ---
-    configData.config->set_keyboard_macro_min_sequence_length(40);
-    configData.config->set_keyboard_macro_min_pattern_length(10);
-    configData.config->set_mouse_click_stddev_threshold(10.0);
-    configData.config->set_mouse_move_collinear_threshold(15);
 
     // --- 安全与性能阈值 ---
     configData.config->set_max_veh_handlers_to_scan(32);
@@ -736,10 +765,15 @@ void CheatConfigManager::SetDefaultValues(ConfigData& configData)
 
     // 新增：最低OS与传感器默认开关
     configData.config->set_min_os(anti_cheat::OS_WIN7_SP1);  // 初期面向 Win7 SP1+
-    configData.config->set_enable_veh_scan(true);
-    configData.config->set_enable_handle_scan(true);
-    // 灰度分组默认值，便于服务端按需分流
+    // [已弃用] 传统开关，保留兼容性
+    configData.config->set_enable_veh_scan(false);  // 现在由灰度分组控制
+    configData.config->set_enable_handle_scan(false);  // 现在由灰度分组控制
+    
+    // [已弃用] 字符串格式灰度分组，保留兼容性
     configData.config->set_rollout_group("stable");
+    
+    // 新的灰度分组策略：默认为Win10+基础组（安全保守）
+    configData.config->set_rollout_group_enum(anti_cheat::WIN10_PLUS_BASIC);
 
     // 不再在客户端生成/校验配置签名：配置下发已在传输层加密与鉴权
 
