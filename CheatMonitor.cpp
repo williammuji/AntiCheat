@@ -1003,7 +1003,6 @@ struct CheatMonitor::Pimpl
     void MonitorLoop();
     void ExecuteLightweightSensorSafe(ISensor* sensor, const char* name);
     bool ExecuteHeavyweightSensorSafe(ISensor* sensor, const char* name);
-    void UploadReport(); // [已弃用] 保留用于向后兼容
     
     // 新的分类上报方法
     void UploadHardwareReport();
@@ -1382,18 +1381,18 @@ private:
     static DebugDetectionResult CheckRemoteDebugger_Internal()
     {
         DebugDetectionResult result = {false, nullptr, 0};
-                          __try
-                          {
-                              BOOL isDebuggerPresent = FALSE;
-                              if (CheckRemoteDebuggerPresent(GetCurrentProcess(), &isDebuggerPresent) &&
-                                  isDebuggerPresent)
-                              {
+        __try
+        {
+            BOOL isDebuggerPresent = FALSE;
+            if (CheckRemoteDebuggerPresent(GetCurrentProcess(), &isDebuggerPresent) &&
+                isDebuggerPresent)
+            {
                 result.detected = true;
                 result.description = "CheckRemoteDebuggerPresent() API返回true";
-                              }
-                          }
-                          __except (EXCEPTION_EXECUTE_HANDLER)
-                          {
+            }
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
             result.exceptionCode = GetExceptionCode();
         }
         return result;
@@ -1402,21 +1401,21 @@ private:
     static DebugDetectionResult CheckPEBBeingDebugged_Internal()
     {
         DebugDetectionResult result = {false, nullptr, 0};
-                          __try
-                          {
+        __try
+        {
 #ifdef _WIN64
-                              auto pPeb = (PPEB)__readgsqword(0x60);
+            auto pPeb = (PPEB)__readgsqword(0x60);
 #else
-                        auto pPeb = (PPEB)__readfsdword(0x30);
+            auto pPeb = (PPEB)__readfsdword(0x30);
 #endif
-                              if (pPeb && IsValidPointer(pPeb, sizeof(PEB)) && pPeb->BeingDebugged)
-                              {
+            if (pPeb && IsValidPointer(pPeb, sizeof(PEB)) && pPeb->BeingDebugged)
+            {
                 result.detected = true;
                 result.description = "PEB->BeingDebugged 标志位为true";
-                              }
-                          }
-                          __except (EXCEPTION_EXECUTE_HANDLER)
-                          {
+            }
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
             result.exceptionCode = GetExceptionCode();
         }
         return result;
@@ -1425,12 +1424,12 @@ private:
     static DebugDetectionResult CheckCloseHandleDebugger_Internal()
     {
         DebugDetectionResult result = {false, nullptr, 0};
-                          __try
-                          {
-                              CheckCloseHandleException();
-                          }
-                          __except (EXCEPTION_EXECUTE_HANDLER)
-                          {
+        __try
+        {
+            CheckCloseHandleException();
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
             result.exceptionCode = GetExceptionCode();
         }
         return result;
@@ -1439,21 +1438,21 @@ private:
     static DebugDetectionResult CheckDebugRegisters_Internal()
     {
         DebugDetectionResult result = {false, nullptr, 0};
-                          __try
-                          {
-                              CONTEXT ctx = {};
-                              ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
-                              if (GetThreadContext(GetCurrentThread(), &ctx))
-                              {
-                                  if (ctx.Dr0 != 0 || ctx.Dr1 != 0 || ctx.Dr2 != 0 || ctx.Dr3 != 0)
-                                  {
+        __try
+        {
+            CONTEXT ctx = {};
+            ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+            if (GetThreadContext(GetCurrentThread(), &ctx))
+            {
+                if (ctx.Dr0 != 0 || ctx.Dr1 != 0 || ctx.Dr2 != 0 || ctx.Dr3 != 0)
+                {
                     result.detected = true;
                     result.description = "检测到硬件断点 (Debug Registers)";
-                                  }
-                              }
-                          }
-                          __except (EXCEPTION_EXECUTE_HANDLER)
-                          {
+                }
+            }
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
             result.exceptionCode = GetExceptionCode();
         }
         return result;
@@ -1462,22 +1461,22 @@ private:
     static DebugDetectionResult CheckKernelDebuggerNtQuery_Internal()
     {
         DebugDetectionResult result = {false, nullptr, 0};
-                          __try
-                          {
-                              SYSTEM_KERNEL_DEBUGGER_INFORMATION info;
-                              if (g_pNtQuerySystemInformation &&
-                                  NT_SUCCESS(g_pNtQuerySystemInformation(SystemKernelDebuggerInformation, &info,
-                                                                         sizeof(info), NULL)))
-                              {
-                                  if (info.KernelDebuggerEnabled && !info.KernelDebuggerNotPresent)
-                                  {
+        __try
+        {
+            SYSTEM_KERNEL_DEBUGGER_INFORMATION info;
+            if (g_pNtQuerySystemInformation &&
+                NT_SUCCESS(g_pNtQuerySystemInformation(SystemKernelDebuggerInformation, &info,
+                                                       sizeof(info), NULL)))
+            {
+                if (info.KernelDebuggerEnabled && !info.KernelDebuggerNotPresent)
+                {
                     result.detected = true;
                     result.description = "检测到内核调试器 (NtQuerySystemInformation)";
-                                  }
-                              }
-                          }
-                          __except (EXCEPTION_EXECUTE_HANDLER)
-                          {
+                }
+            }
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
             result.exceptionCode = GetExceptionCode();
         }
         return result;
@@ -1486,16 +1485,16 @@ private:
     static DebugDetectionResult CheckKernelDebuggerKUSER_Internal()
     {
         DebugDetectionResult result = {false, nullptr, 0};
-                          __try
-                          {
-                              if (IsKernelDebuggerPresent_KUserSharedData())
-                              {
+        __try
+        {
+            if (IsKernelDebuggerPresent_KUserSharedData())
+            {
                 result.detected = true;
                 result.description = "检测到内核调试器 (KUSER_SHARED_DATA)";
-                              }
-                          }
-                          __except (EXCEPTION_EXECUTE_HANDLER)
-                          {
+            }
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
             result.exceptionCode = GetExceptionCode();
         }
         return result;
@@ -1849,26 +1848,26 @@ private:
     static IntegrityCheckResult CheckSelfIntegrityInternal_Safe(const CStyleIntegrityData* data)
     {
         IntegrityCheckResult result;
-                __try
-                {
-                    PVOID codeBase = nullptr;
-                    DWORD codeSize = 0;
+        __try
+        {
+            PVOID codeBase = nullptr;
+            DWORD codeSize = 0;
 
             if (!GetCodeSectionInfo(data->hSelfModule, codeBase, codeSize))
-                    {
-                        LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR,
+            {
+                LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR,
                               "SelfIntegritySensor: 获取代码段信息失败，尝试%d/%d", data->attempt + 1, data->maxRetries);
                 result.shouldContinue = true;
                 return result;
-                    }
+            }
 
-                    if (!codeBase || codeSize == 0)
-                    {
-                        LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR,
-                                      "SelfIntegritySensor: 无效的代码段信息 (base=%p, size=%lu)", codeBase, codeSize);
+            if (!codeBase || codeSize == 0)
+            {
+                LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR,
+                              "SelfIntegritySensor: 无效的代码段信息 (base=%p, size=%lu)", codeBase, codeSize);
                 result.shouldContinue = true;
                 return result;
-                    }
+            }
 
                     // 验证内存区域可读性
                     MEMORY_BASIC_INFORMATION mbi = {};
@@ -1938,8 +1937,8 @@ private:
                 result.shouldBreak = true;
                     }
                 }
-                __except (EXCEPTION_EXECUTE_HANDLER)
-                {
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
             result.exceptionDetected = true;
             result.exceptionCode = GetExceptionCode();
             LOG_ERROR_F(AntiCheatLogger::LogCategory::SENSOR, "SelfIntegritySensor异常: 0x%08X, 尝试%d/%d", 
