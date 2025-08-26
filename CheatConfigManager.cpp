@@ -1,4 +1,4 @@
-#include "CheatConfigManager.h"
+﻿#include "CheatConfigManager.h"
 #include "CheatMonitor.h"  // 为了访问 Utils::StringToWide 和通知 CheatMonitor
 #include <stdexcept>
 #include <algorithm>  // for std::replace

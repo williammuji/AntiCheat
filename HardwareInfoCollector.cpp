@@ -1,11 +1,12 @@
-#include "HardwareInfoCollector.h"
+﻿#include "HardwareInfoCollector.h"
 
-#define NOMINMAX
 #include <windows.h>
+#include <winternl.h>  // For NTSTATUS and NT_SUCCESS
 #include <Iphlpapi.h>
 #include <intrin.h>
 
 #include <sstream>
+#include <iomanip>
 
 #pragma comment(lib, "iphlpapi.lib")
 
@@ -127,33 +128,46 @@ bool HardwareInfoCollector::EnsureCollected()
         fingerprint_->set_computer_name(WideToUtf8(computerName));
     }
 
-    // 4. OS Version - 生产环境修复：使用RtlGetVersion确保准确性
-    typedef NTSTATUS(WINAPI * RtlGetVersion_t)(LPOSVERSIONINFOEXW);
-    auto pRtlGetVersion = (RtlGetVersion_t)GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "RtlGetVersion");
-
-    OSVERSIONINFOEXW osInfo = {0};
-    osInfo.dwOSVersionInfoSize = sizeof(OSVERSIONINFOEXW);
-
-    bool versionObtained = false;
-    if (pRtlGetVersion && pRtlGetVersion(&osInfo) == 0)
-    {  // STATUS_SUCCESS = 0
-        versionObtained = true;
-    }
-    else if (GetVersionExW(reinterpret_cast<LPOSVERSIONINFOW>(&osInfo)))
+    // 4. OS Version - 使用RtlGetVersion获取准确的系统版本信息
     {
-        versionObtained = true;
-    }
-
-    if (versionObtained)
-    {
-        std::wstringstream wss;
-        wss << L"Windows " << osInfo.dwMajorVersion << L"." << osInfo.dwMinorVersion << L" (Build "
-            << osInfo.dwBuildNumber << L")";
-        fingerprint_->set_os_version(WideToUtf8(wss.str()));
-    }
-    else
-    {
-        fingerprint_->set_os_version("Windows Unknown");
+        // 定义RtlGetVersion函数指针类型
+        using RtlGetVersionFunc = NTSTATUS (WINAPI *)(PRTL_OSVERSIONINFOW);
+        
+        // 获取ntdll.dll模块句柄
+        HMODULE hNtdll = GetModuleHandleW(L"ntdll.dll");
+        if (hNtdll)
+        {
+            // 获取RtlGetVersion函数地址
+            RtlGetVersionFunc RtlGetVersion = reinterpret_cast<RtlGetVersionFunc>(
+                GetProcAddress(hNtdll, "RtlGetVersion"));
+            
+            if (RtlGetVersion)
+            {
+                RTL_OSVERSIONINFOW osInfo = {};
+                osInfo.dwOSVersionInfoSize = sizeof(osInfo);
+                
+                if (NT_SUCCESS(RtlGetVersion(&osInfo)))
+                {
+                    std::wstringstream wss;
+                    wss << L"Windows " << osInfo.dwMajorVersion << L"." 
+                        << osInfo.dwMinorVersion << L" (Build " 
+                        << osInfo.dwBuildNumber << L")";
+                    fingerprint_->set_os_version(WideToUtf8(wss.str()));
+                }
+                else
+                {
+                    fingerprint_->set_os_version("Windows Unknown (RtlGetVersion failed)");
+                }
+            }
+            else
+            {
+                fingerprint_->set_os_version("Windows Unknown (RtlGetVersion not found)");
+            }
+        }
+        else
+        {
+            fingerprint_->set_os_version("Windows Unknown (ntdll not found)");
+        }
     }
 
     // 5. CPU Brand String
