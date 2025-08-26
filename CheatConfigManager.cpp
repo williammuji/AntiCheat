@@ -172,24 +172,30 @@ int32_t CheatConfigManager::GetMaxHandlesToScan() const
     return GetCurrentConfig()->config->max_handles_to_scan();
 }
 
-bool CheatConfigManager::IsVehScanEnabledLegacy() const
+anti_cheat::OsMinimum CheatConfigManager::GetRequiredMinOs() const
 {
-    return GetCurrentConfig()->config->enable_veh_scan();
-}
-
-bool CheatConfigManager::IsHandleScanEnabledLegacy() const
-{
-    return GetCurrentConfig()->config->enable_handle_scan();
-}
-
-anti_cheat::OsMinimum CheatConfigManager::GetMinOs() const
-{
-    return GetCurrentConfig()->config->min_os();
+    anti_cheat::RolloutGroup rolloutGroup = GetRolloutGroupEnum();
+    
+    switch (rolloutGroup) {
+        case anti_cheat::WIN10_PLUS_BASIC:
+        case anti_cheat::WIN10_PLUS_ADVANCED:
+            return anti_cheat::OS_WIN10;  // WIN10_PLUS组要求Win10+
+            
+        case anti_cheat::WIN7_PLUS_BASIC:
+        case anti_cheat::WIN7_PLUS_ADVANCED:
+            return anti_cheat::OS_WIN7_SP1;  // WIN7_PLUS组要求Win7+
+            
+        case anti_cheat::LEGACY_FULL:
+        case anti_cheat::ROLLOUT_UNKNOWN:
+        default:
+            return anti_cheat::OS_WIN7_SP1;  // 其他任何情况，强制Win7+
+    }
 }
 
 std::string CheatConfigManager::GetRolloutGroup() const
 {
-    return GetCurrentConfig()->config->rollout_group();
+    // 字符串格式的灰度分组已弃用，基于enum生成可读字符串
+    return GetRolloutGroupName();
 }
 
 // 新的灰度分组策略实现
@@ -199,15 +205,8 @@ anti_cheat::RolloutGroup CheatConfigManager::GetRolloutGroupEnum() const
         return GetCurrentConfig()->config->rollout_group_enum();
     }
     
-    // 如果没有设置新的分组，使用默认策略：根据OS版本自动分配基础组
-    anti_cheat::OsMinimum min_os = GetMinOs();
-    if (min_os >= anti_cheat::OS_WIN10) {
-        return anti_cheat::WIN10_PLUS_BASIC;  // Win10+ 默认基础组
-    } else if (min_os >= anti_cheat::OS_WIN7_SP1) {
-        return anti_cheat::WIN7_PLUS_BASIC;   // Win7+ 默认基础组
-    } else {
-        return anti_cheat::LEGACY_FULL;       // 更老版本全功能
-    }
+    // 如果没有设置rollout_group_enum，使用保守的默认值
+    return anti_cheat::WIN7_PLUS_BASIC;  // 默认为Win7+基础组
 }
 
 bool CheatConfigManager::IsVehScanEnabled() const
@@ -761,16 +760,8 @@ void CheatConfigManager::SetDefaultValues(ConfigData& configData)
     // 生产环境优化：降低句柄扫描上限，避免性能瓶颈
     configData.config->set_max_handles_to_scan(30000);
 
-    configData.config->set_config_version("default_fallback_v1");
-
-    // 新增：最低OS与传感器默认开关
-    configData.config->set_min_os(anti_cheat::OS_WIN7_SP1);  // 初期面向 Win7 SP1+
-    // [已弃用] 传统开关，保留兼容性
-    configData.config->set_enable_veh_scan(false);  // 现在由灰度分组控制
-    configData.config->set_enable_handle_scan(false);  // 现在由灰度分组控制
-    
-    // [已弃用] 字符串格式灰度分组，保留兼容性
-    configData.config->set_rollout_group("stable");
+    // 注意：config_version和min_os字段已删除，改为基于rollout_group_enum推导
+    // 注意：传统开关字段和字符串格式灰度分组字段已从proto中删除
     
     // 新的灰度分组策略：默认为Win10+基础组（安全保守）
     configData.config->set_rollout_group_enum(anti_cheat::WIN10_PLUS_BASIC);
