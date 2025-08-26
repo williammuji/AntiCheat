@@ -207,4 +207,14 @@ message ClientConfig {
   optional bool enable_veh_scan = 111;       // 开启VEH Hook扫描
   optional bool enable_handle_scan = 112;    // 开启系统句柄扫描
   optional string rollout_group = 120;       // 灰度标签，由服务器分流管理
+
+  // [新增] 生产环境配置参数（减少硬编码）
+  optional int32 veh_scan_timeout_ms = 130;           // VEH扫描超时时间
+  optional int32 iat_scan_timeout_ms = 131;           // IAT扫描超时时间
+  optional int32 memory_scan_chunk_size = 132;        // 内存扫描块大小
+  optional int32 cpu_yield_interval = 133;           // CPU让出间隔
+  optional int32 max_retry_attempts = 134;           // 最大重试次数
+  optional int32 backoff_base_ms = 135;              // 退避基础时间(毫秒)
+  optional int32 max_backoff_ms = 136;               // 最大退避时间(毫秒)
+  optional int32 performance_report_interval = 137;  // 性能报告间隔(次)
 }

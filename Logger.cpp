@@ -1,4 +1,4 @@
-#include "Logger.h"
+﻿#include "Logger.h"
 #include <iostream>
 #include <cstdarg>
 #include <cstdio>
@@ -16,15 +16,15 @@ static const char* GetLevelString(LogLevel level)
 {
     switch (level)
     {
-        case LogLevel::DEBUG:
+        case LogLevel::LOG_LEVEL_DEBUG:
             return "DEBUG";
-        case LogLevel::INFO:
+        case LogLevel::LOG_LEVEL_INFO:
             return "INFO";
-        case LogLevel::WARNING:
+        case LogLevel::LOG_LEVEL_WARNING:
             return "WARNING";
-        case LogLevel::ERROR:
+        case LogLevel::LOG_LEVEL_ERROR:
             return "ERROR";
-        case LogLevel::CRITICAL:
+        case LogLevel::LOG_LEVEL_CRITICAL:
             return "CRITICAL";
         default:
             return "UNKNOWN";
@@ -88,7 +88,7 @@ void LogPerformance(const std::string& operation, double durationMs)
 {
     std::ostringstream oss;
     oss << "Performance: " << operation << " took " << durationMs << "ms";
-    Log(LogLevel::INFO, LogCategory::PERFORMANCE, oss.str());
+    Log(LogLevel::LOG_LEVEL_INFO, LogCategory::PERFORMANCE, oss.str());
 }
 
 void LogSensorExecution(const std::string& sensorName, double durationMs, bool timeout)
@@ -99,21 +99,21 @@ void LogSensorExecution(const std::string& sensorName, double durationMs, bool t
     {
         oss << " (TIMEOUT)";
     }
-    Log(timeout ? LogLevel::WARNING : LogLevel::DEBUG, LogCategory::SENSOR, oss.str());
+    Log(timeout ? LogLevel::LOG_LEVEL_WARNING : LogLevel::LOG_LEVEL_DEBUG, LogCategory::SENSOR, oss.str());
 }
 
 void LogSecurityEvent(const std::string& eventType, const std::string& details)
 {
     std::ostringstream oss;
     oss << "Security Event: " << eventType << " - " << details;
-    Log(LogLevel::WARNING, LogCategory::SECURITY, oss.str());
+    Log(LogLevel::LOG_LEVEL_WARNING, LogCategory::SECURITY, oss.str());
 }
 
 void LogSystemInfo(const std::string& osVersion, const std::string& architecture)
 {
     std::ostringstream oss;
     oss << "System Info: OS=" << osVersion << ", Arch=" << architecture;
-    Log(LogLevel::INFO, LogCategory::SYSTEM, oss.str());
+    Log(LogLevel::LOG_LEVEL_INFO, LogCategory::SYSTEM, oss.str());
 }
 
 }  // namespace AntiCheatLogger
