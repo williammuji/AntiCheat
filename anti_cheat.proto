@@ -39,8 +39,8 @@ enum CheatCategory {
   RUNTIME_MODULE_NEW_UNKNOWN = 302; // 检测到新的、未知的模块（DLL）被加载到游戏进程中。
   RUNTIME_MEMORY_EXEC_PRIVATE = 303; // 发现不属于任何模块的私有可执行内存区域，这是DLL注入或Shellcode的典型特征。
   RUNTIME_ILLEGAL_FUNCTION_CALL = 304; // 检测到对关键游戏函数的非法调用（例如，来自未知模块或Shellcode）。
-  RUNTIME_ERROR = 399; // 反作弊系统内部发生非致命错误。
   RUNTIME_THREAD_SHELLCODE = 305; // 新增：检测到线程起始地址位于模块之外，疑似Shellcode
+  RUNTIME_ERROR = 399; // 反作弊系统内部发生非致命错误。
 
   // --- 系统信息与状态类别 (5xx) ---
   SYSTEM_INITIALIZED = 500; // 反作弊系统初始化成功并建立基线。
@@ -227,7 +227,6 @@ message ClientConfig {
   optional OsMinimum min_os = 110;           // 最低支持的客户端操作系统版本
   optional bool enable_veh_scan = 111;       // 开启VEH Hook扫描 [已弃用，使用rollout_group_enum控制]
   optional bool enable_handle_scan = 112;    // 开启系统句柄扫描 [已弃用，使用rollout_group_enum控制]
-  optional string rollout_group = 120;       // 灰度标签字符串，由服务器分流管理 [已弃用，使用rollout_group_enum]
   
   // 新的灰度分组策略
   optional RolloutGroup rollout_group_enum = 121;  // 基于OS版本+功能开关的灰度分组
