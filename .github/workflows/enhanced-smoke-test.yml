@@ -81,29 +81,13 @@ jobs:
         appendedCacheKey: ${{ matrix.platform }}
         runVcpkgInstall: true
 
-    - name: 📚 安装依赖
+    - name: 📚 vcpkg集成
       shell: powershell
       run: |
-        Write-Host "=== 安装vcpkg依赖 ==="
-        $triplet = "${{ matrix.platform }}-windows"
-        
-        # 安装核心依赖
-        vcpkg install protobuf:$triplet
-        if ($LASTEXITCODE -ne 0) { 
-          Write-Error "protobuf安装失败"
-          exit 1 
-        }
-        
-        # 安装测试依赖(仅在标准/完整测试时)
-        if ("${{ github.event.inputs.test_level }}" -ne "quick") {
-          vcpkg install gtest:$triplet
-          if ($LASTEXITCODE -ne 0) { 
-            Write-Warning "gtest安装失败，继续..."
-          }
-        }
-        
+        Write-Host "=== vcpkg manifest模式集成 ==="
+        # 在manifest模式下，依赖会由CMake自动处理，无需手动安装
         vcpkg integrate install
-        vcpkg list
+        Write-Host "vcpkg集成完成，依赖将由CMake自动处理"
 
     - name: ⚙️ 配置CMake
       shell: powershell

@@ -3,14 +3,8 @@
   "version": "1.0.0",
   "description": "MMORPG Anti-Cheat Module",
   "dependencies": [
-    {
-      "name": "protobuf",
-      "version>=": "3.21.0"
-    },
-    {
-      "name": "gtest",
-      "version>=": "1.12.0"
-    }
+    "protobuf",
+    "gtest"
   ],
   "builtin-baseline": "f7423ee180c4b7f40d43402c2feb3859161ef625",
   "supports": "windows"
