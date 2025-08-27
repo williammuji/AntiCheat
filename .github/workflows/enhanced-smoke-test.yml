@@ -57,13 +57,13 @@ jobs:
     - name: 📊 环境信息收集
       shell: powershell
       run: |
-        Write-Host "=== 构建环境信息 ==="
-        Write-Host "操作系统: $(Get-WmiObject Win32_OperatingSystem | Select-Object -ExpandProperty Caption)"
+        Write-Host "=== Build Environment Info ==="
+        Write-Host "OS: $(Get-WmiObject Win32_OperatingSystem | Select-Object -ExpandProperty Caption)"
         Write-Host "CPU: $(Get-WmiObject Win32_Processor | Select-Object -ExpandProperty Name)"
-        Write-Host "内存: $([Math]::Round((Get-WmiObject Win32_ComputerSystem).TotalPhysicalMemory / 1GB, 2)) GB"
-        Write-Host "PowerShell版本: $($PSVersionTable.PSVersion)"
-        Write-Host "Git提交: ${{ github.sha }}"
-        Write-Host "分支: ${{ github.ref_name }}"
+        Write-Host "Memory: $([Math]::Round((Get-WmiObject Win32_ComputerSystem).TotalPhysicalMemory / 1GB, 2)) GB"
+        Write-Host "PowerShell Version: $($PSVersionTable.PSVersion)"
+        Write-Host "Git Commit: ${{ github.sha }}"
+        Write-Host "Branch: ${{ github.ref_name }}"
 
     - name: 🛠️ 设置MSBuild
       uses: microsoft/setup-msbuild@v1.3
@@ -80,15 +80,15 @@ jobs:
     - name: 📚 vcpkg集成
       shell: powershell
       run: |
-        Write-Host "=== vcpkg manifest模式集成 ==="
-        # 在manifest模式下，依赖会由CMake自动处理，无需手动安装
+        Write-Host "=== vcpkg manifest mode integration ==="
+        # In manifest mode, dependencies are handled by CMake automatically
         vcpkg integrate install
-        Write-Host "vcpkg集成完成，依赖将由CMake自动处理"
+        Write-Host "vcpkg integration completed, dependencies will be handled by CMake"
 
     - name: ⚙️ 配置CMake
       shell: powershell
       run: |
-        Write-Host "=== 配置CMake ==="
+        Write-Host "=== Configure CMake ==="
         $arch = if ("${{ matrix.platform }}" -eq "x86") { "Win32" } else { "x64" }
         
         cmake -B build -S . `
@@ -98,36 +98,36 @@ jobs:
           -DCMAKE_VERBOSE_MAKEFILE=ON
           
         if ($LASTEXITCODE -ne 0) {
-          Write-Error "CMake配置失败"
+          Write-Error "CMake configuration failed"
           exit 1
         }
 
     - name: 🔨 构建项目
       shell: powershell
       run: |
-        Write-Host "=== 构建AntiCheat ==="
+        Write-Host "=== Build AntiCheat ==="
         $startTime = Get-Date
         
         cmake --build build --config ${{ matrix.config }} --parallel ${{ env.BUILD_PARALLEL }}
         
         if ($LASTEXITCODE -ne 0) {
-          Write-Error "构建失败"
+          Write-Error "Build failed"
           exit 1
         }
         
         $buildTime = (Get-Date) - $startTime
-        Write-Host "✅ 构建完成，耗时: $($buildTime.TotalSeconds.ToString('F2'))秒"
+        Write-Host "✅ Build completed, time: $($buildTime.TotalSeconds.ToString('F2')) seconds"
 
     - name: 🧪 基础构建验证
       id: build-check
       shell: powershell
       run: |
-        Write-Host "=== 验证构建产物 ==="
+        Write-Host "=== Verify Build Artifacts ==="
         $buildPath = "build/${{ matrix.config }}"
         $success = $true
         $artifacts = @()
         
-        # 检查核心编译产物
+        # Check core compilation artifacts
         $expectedFiles = @(
           @{Path="CheatMonitor.obj"; Critical=$true},
           @{Path="CheatConfigManager.obj"; Critical=$true},
@@ -144,21 +144,21 @@ jobs:
             $artifacts += $filePath
           } else {
             if ($file.Critical) {
-              Write-Host "❌ 关键文件缺失: $($file.Path)"
+              Write-Host "❌ Critical file missing: $($file.Path)"
               $success = $false
             } else {
-              Write-Host "⚠️ 可选文件缺失: $($file.Path)"
+              Write-Host "⚠️ Optional file missing: $($file.Path)"
             }
           }
         }
         
-        # 检查protobuf生成的文件
+        # Check protobuf generated files
         $protoFiles = @("anti_cheat.pb.h", "anti_cheat.pb.cc")
         foreach ($proto in $protoFiles) {
           if (Test-Path $proto) {
             Write-Host "✅ Protobuf: $proto"
           } else {
-            Write-Host "❌ Protobuf文件缺失: $proto"
+            Write-Host "❌ Protobuf file missing: $proto"
             $success = $false
           }
         }
@@ -167,7 +167,7 @@ jobs:
         echo "artifact-path=$buildPath" >> $env:GITHUB_OUTPUT
         
         if (-not $success) {
-          Write-Error "构建验证失败"
+          Write-Error "Build verification failed"
           exit 1
         }
 
@@ -199,12 +199,12 @@ jobs:
     - name: 🔍 传感器完整性检查
       shell: powershell
       run: |
-        Write-Host "=== 传感器完整性检查 ==="
+        Write-Host "=== Sensor Integrity Check ==="
         $monitorContent = Get-Content "CheatMonitor.cpp" -Raw
         $errors = @()
         $warnings = @()
         
-        # 检查所有传感器都已注册
+        # Check all sensors are registered
         $expectedSensors = @(
           "AdvancedAntiDebugSensor",
           "SystemIntegritySensor", 
@@ -224,13 +224,13 @@ jobs:
         
         foreach ($sensor in $expectedSensors) {
           if ($monitorContent -match "std::make_unique<Sensors::$sensor>") {
-            Write-Host "✅ 传感器已注册: $sensor"
+            Write-Host "✅ Sensor registered: $sensor"
           } else {
-            $errors += "传感器未注册: $sensor"
+            $errors += "Sensor not registered: $sensor"
           }
         }
         
-        # 检查权重分级
+        # Check weight classification
         $weightChecks = @{
           "LIGHT" = 2;
           "MEDIUM" = 4; 
@@ -242,95 +242,95 @@ jobs:
           $pattern = "SensorWeight::$($weight.Key)"
           $matches = ([regex]::Matches($monitorContent, [regex]::Escape($pattern))).Count
           if ($matches -ge $weight.Value) {
-            Write-Host "✅ $($weight.Key)权重: $matches 个传感器 (期望≥$($weight.Value))"
+            Write-Host "✅ $($weight.Key) weight: $matches sensors (expected ≥$($weight.Value))"
           } else {
-            $warnings += "$($weight.Key)权重传感器数量不足: $matches < $($weight.Value)"
+            $warnings += "$($weight.Key) weight sensors insufficient: $matches < $($weight.Value)"
           }
         }
         
-        # 检查生产环境特性
+        # Check production environment features
         $prodFeatures = @{
-          "超时控制" = "HandleSensorTimeout|budget_ms";
-          "异常处理" = "HandleSensorException|sensor_exceptions";
-          "性能记录" = "RecordSensorRuntime|elapsed_ms";
-          "退避机制" = "m_sensorBackoffUntil|backoff";
-          "灰度控制" = "rolloutGroup|win10-beta-staged"
+          "Timeout Control" = "HandleSensorTimeout|budget_ms";
+          "Exception Handling" = "HandleSensorException|sensor_exceptions";
+          "Performance Recording" = "RecordSensorRuntime|elapsed_ms";
+          "Backoff Mechanism" = "m_sensorBackoffUntil|backoff";
+          "Grayscale Control" = "rolloutGroup|win10-beta-staged"
         }
         
         foreach ($feature in $prodFeatures.GetEnumerator()) {
           if ($monitorContent -match $feature.Value) {
-            Write-Host "✅ 生产环境特性: $($feature.Key)"
+            Write-Host "✅ Production feature: $($feature.Key)"
           } else {
-            $errors += "缺少生产环境特性: $($feature.Key)"
+            $errors += "Missing production feature: $($feature.Key)"
           }
         }
         
-        # 输出结果
+        # Output results
         if ($errors.Count -gt 0) {
-          Write-Host "`n❌ 发现 $($errors.Count) 个错误:"
+          Write-Host "`n❌ Found $($errors.Count) errors:"
           $errors | ForEach-Object { Write-Host "  - $_" -ForegroundColor Red }
           exit 1
         }
         
         if ($warnings.Count -gt 0) {
-          Write-Host "`n⚠️ 发现 $($warnings.Count) 个警告:"
+          Write-Host "`n⚠️ Found $($warnings.Count) warnings:"
           $warnings | ForEach-Object { Write-Host "  - $_" -ForegroundColor Yellow }
         }
         
-        Write-Host "`n✅ 传感器完整性检查通过!"
+        Write-Host "`n✅ Sensor integrity check passed!"
 
     - name: 🔍 配置完整性检查
       shell: powershell
       run: |
-        Write-Host "=== 配置完整性检查 ==="
+        Write-Host "=== Configuration Integrity Check ==="
         $configContent = Get-Content "CheatConfigManager.cpp" -Raw
         $protoContent = Get-Content "anti_cheat.proto" -Raw
         
-        # 检查配置字段完整性
+        # Check configuration field integrity
         $configFields = @{
-          "扫描间隔" = "base_scan_interval_seconds|heavy_scan_interval_minutes";
-          "预算控制" = "light_scan_budget_ms|heavy_scan_budget_ms";
-          "容量控制" = "max_evidences_per_session|max_illegal_sources";
-          "安全阈值" = "max_veh_handlers_to_scan|max_handles_to_scan";
-          "传感器开关" = "enable_veh_scan|enable_handle_scan";
-          "灰度标签" = "rollout_group";
-          "最低OS版本" = "min_os"
+          "Scan Interval" = "base_scan_interval_seconds|heavy_scan_interval_minutes";
+          "Budget Control" = "light_scan_budget_ms|heavy_scan_budget_ms";
+          "Capacity Control" = "max_evidences_per_session|max_illegal_sources";
+          "Security Threshold" = "max_veh_handlers_to_scan|max_handles_to_scan";
+          "Sensor Switches" = "enable_veh_scan|enable_handle_scan";
+          "Grayscale Tags" = "rollout_group";
+          "Minimum OS Version" = "min_os"
         }
         
         $errors = @()
         foreach ($field in $configFields.GetEnumerator()) {
           if ($protoContent -match $field.Value -and $configContent -match $field.Value) {
-            Write-Host "✅ 配置字段: $($field.Key)"
+            Write-Host "✅ Configuration field: $($field.Key)"
           } else {
-            $errors += "配置字段缺失或未实现: $($field.Key)"
+            $errors += "Configuration field missing or not implemented: $($field.Key)"
           }
         }
         
-        # 检查黑白名单数量
+        # Check blacklist/whitelist quantities
         $listChecks = @{
-          "有害进程" = @{Pattern="add_harmful_process_names"; MinCount=50};
-          "有害关键词" = @{Pattern="add_harmful_keywords"; MinCount=60};
-          "VEH白名单" = @{Pattern="add_whitelisted_veh_modules"; MinCount=40};
-          "窗口白名单" = @{Pattern="add_whitelisted_window_keywords"; MinCount=30};
-          "安全进程" = @{Pattern="add_known_good_processes"; MinCount=40}
+          "Harmful Processes" = @{Pattern="add_harmful_process_names"; MinCount=50};
+          "Harmful Keywords" = @{Pattern="add_harmful_keywords"; MinCount=60};
+          "VEH Whitelist" = @{Pattern="add_whitelisted_veh_modules"; MinCount=40};
+          "Window Whitelist" = @{Pattern="add_whitelisted_window_keywords"; MinCount=30};
+          "Safe Processes" = @{Pattern="add_known_good_processes"; MinCount=40}
         }
         
         foreach ($list in $listChecks.GetEnumerator()) {
           $matches = ([regex]::Matches($configContent, $list.Value.Pattern)).Count
           if ($matches -ge $list.Value.MinCount) {
-            Write-Host "✅ $($list.Key): $matches 个条目 (≥$($list.Value.MinCount))"
+            Write-Host "✅ $($list.Key): $matches entries (≥$($list.Value.MinCount))"
           } else {
-            $errors += "$($list.Key)条目不足: $matches < $($list.Value.MinCount)"
+            $errors += "$($list.Key) insufficient entries: $matches < $($list.Value.MinCount)"
           }
         }
         
         if ($errors.Count -gt 0) {
-          Write-Host "`n❌ 配置检查失败:"
+          Write-Host "`n❌ Configuration check failed:"
           $errors | ForEach-Object { Write-Host "  - $_" -ForegroundColor Red }
           exit 1
         }
         
-        Write-Host "`n✅ 配置完整性检查通过!"
+        Write-Host "`n✅ Configuration integrity check passed!"
 
   # 阶段3: 功能测试
   functional-test:
@@ -352,18 +352,18 @@ jobs:
     - name: 🧪 Windows版本兼容性测试
       shell: powershell
       run: |
-        Write-Host "=== Windows版本兼容性测试 ==="
+        Write-Host "=== Windows Version Compatibility Test ==="
         $monitorContent = Get-Content "CheatMonitor.cpp" -Raw
         
-        # 检查版本检测逻辑
+        # Check version detection logic
         if ($monitorContent -match "GetWindowsVersion.*RtlGetVersion") {
-          Write-Host "✅ 使用RtlGetVersion进行版本检测"
+          Write-Host "✅ Using RtlGetVersion for version detection"
         } else {
-          Write-Host "❌ 版本检测实现有问题"
+          Write-Host "❌ Version detection implementation has issues"
           exit 1
         }
         
-        # 检查版本门控逻辑
+        # Check version gating logic
         $versionChecks = @(
           "Win_Vista_Win7",
           "Win_8_Win81", 
@@ -373,28 +373,28 @@ jobs:
         
         foreach ($version in $versionChecks) {
           if ($monitorContent -match $version) {
-            Write-Host "✅ 支持版本: $version"
+            Write-Host "✅ Supported version: $version"
           } else {
-            Write-Host "⚠️ 版本定义缺失: $version"
+            Write-Host "⚠️ Version definition missing: $version"
           }
         }
         
-        # 检查OS门控逻辑
+        # Check OS gating logic
         if ($monitorContent -match "IsOsAtLeast.*Win_Vista_Win7" -and $monitorContent -match "osIsSupported") {
-          Write-Host "✅ OS版本门控逻辑完整"
+          Write-Host "✅ OS version gating logic complete"
         } else {
-          Write-Host "❌ OS版本门控逻辑缺失"
+          Write-Host "❌ OS version gating logic missing"
           exit 1
         }
 
     - name: 🧪 性能指标测试
       shell: powershell
       run: |
-        Write-Host "=== 性能指标测试 ==="
+        Write-Host "=== Performance Metrics Test ==="
         $monitorContent = Get-Content "CheatMonitor.cpp" -Raw
         $protoContent = Get-Content "anti_cheat.proto" -Raw
         
-        # 检查性能遥测结构
+        # Check performance telemetry structure
         $perfMetrics = @(
           "TelemetryMetrics",
           "PerfWindows",
@@ -404,36 +404,36 @@ jobs:
         
         foreach ($metric in $perfMetrics) {
           if ($protoContent -match $metric) {
-            Write-Host "✅ 性能指标定义: $metric"
+            Write-Host "✅ Performance metric definition: $metric"
           } else {
-            Write-Host "❌ 性能指标缺失: $metric"
+            Write-Host "❌ Performance metric missing: $metric"
             exit 1
           }
         }
         
-        # 检查性能记录逻辑
+        # Check performance recording logic
         if ($monitorContent -match "RecordSensorRuntime.*duration_ms") {
-          Write-Host "✅ 性能记录逻辑完整"
+          Write-Host "✅ Performance recording logic complete"
         } else {
-          Write-Host "❌ 性能记录逻辑缺失"
+          Write-Host "❌ Performance recording logic missing"
           exit 1
         }
         
-        # 检查性能上传逻辑
+        # Check performance upload logic
         if ($monitorContent -match "FillPerfTelemetry.*include_perf_windows") {
-          Write-Host "✅ 性能上传逻辑完整"
+          Write-Host "✅ Performance upload logic complete"
         } else {
-          Write-Host "❌ 性能上传逻辑缺失"
+          Write-Host "❌ Performance upload logic missing"
           exit 1
         }
 
     - name: 🧪 灰度测试功能验证
       shell: powershell
       run: |
-        Write-Host "=== 灰度测试功能验证 ==="
+        Write-Host "=== Grayscale Testing Feature Verification ==="
         $monitorContent = Get-Content "CheatMonitor.cpp" -Raw
         
-        # 检查灰度分组处理
+        # Check grayscale group processing
         $rolloutGroups = @(
           "win10-beta-staged",
           "stable"
@@ -441,17 +441,17 @@ jobs:
         
         foreach ($group in $rolloutGroups) {
           if ($monitorContent -match $group) {
-            Write-Host "✅ 灰度分组支持: $group"
+            Write-Host "✅ Grayscale group support: $group"
           } else {
-            Write-Host "⚠️ 灰度分组缺失: $group"
+            Write-Host "⚠️ Grayscale group missing: $group"
           }
         }
         
-        # 检查灰度逻辑
+        # Check grayscale logic
         if ($monitorContent -match "rolloutGroup.*GetRolloutGroup" -and $monitorContent -match "effectiveVehScanEnabled.*effectiveHandleScanEnabled") {
-          Write-Host "✅ 灰度控制逻辑完整"
+          Write-Host "✅ Grayscale control logic complete"
         } else {
-          Write-Host "❌ 灰度控制逻辑缺失"
+          Write-Host "❌ Grayscale control logic missing"
           exit 1
         }
 
@@ -480,7 +480,7 @@ jobs:
     - name: 🔨 构建用于分析
       shell: powershell
       run: |
-        Write-Host "=== 构建用于安全分析 ==="
+        Write-Host "=== Build for Security Analysis ==="
         cmake -B build -S . -A x64
         cmake --build build --config Release --parallel 2
 
@@ -492,47 +492,47 @@ jobs:
     - name: 🔍 自定义安全检查
       shell: powershell
       run: |
-        Write-Host "=== 自定义安全检查 ==="
+        Write-Host "=== Custom Security Check ==="
         $issues = @()
         
-        # 检查源代码安全问题
+        # Check source code security issues
         $sourceFiles = Get-ChildItem -Path . -Filter "*.cpp" -Recurse
         foreach ($file in $sourceFiles) {
           $content = Get-Content $file.FullName -Raw
           
-          # 检查危险函数使用
+          # Check dangerous function usage
           $dangerousFunctions = @("strcpy", "strcat", "sprintf", "gets")
           foreach ($func in $dangerousFunctions) {
             if ($content -match "\b$func\(") {
-              $issues += "发现危险函数 $func 在文件 $($file.Name)"
+              $issues += "Found dangerous function $func in file $($file.Name)"
             }
           }
           
-          # 检查是否使用了安全函数
+          # Check if safe functions are used
           if ($content -match "sprintf_s|strcpy_s|strcat_s") {
-            Write-Host "✅ $($file.Name): 使用安全函数"
+            Write-Host "✅ $($file.Name): Using safe functions"
           }
         }
         
-        # 检查内存管理
+        # Check memory management
         $headerFiles = Get-ChildItem -Path . -Filter "*.h" -Recurse
         foreach ($file in $headerFiles) {
           $content = Get-Content $file.FullName -Raw
           
           if ($content -match "#pragma\s+once") {
-            Write-Host "✅ $($file.Name): 使用#pragma once"
+            Write-Host "✅ $($file.Name): Using #pragma once"
           } elseif ($content -match "#ifndef.*#define.*#endif") {
-            Write-Host "✅ $($file.Name): 使用include guard"
+            Write-Host "✅ $($file.Name): Using include guard"
           } else {
-            $issues += "头文件 $($file.Name) 缺少保护机制"
+            $issues += "Header file $($file.Name) missing protection mechanism"
           }
         }
         
         if ($issues.Count -gt 0) {
-          Write-Host "`n⚠️ 发现安全问题:"
+          Write-Host "`n⚠️ Found security issues:"
           $issues | ForEach-Object { Write-Host "  - $_" -ForegroundColor Yellow }
         } else {
-          Write-Host "✅ 未发现明显安全问题"
+          Write-Host "✅ No obvious security issues found"
         }
 
   # 阶段5: 报告生成
@@ -549,7 +549,7 @@ jobs:
     - name: 📊 生成测试报告
       shell: powershell
       run: |
-        Write-Host "=== 生成综合测试报告 ==="
+        Write-Host "=== Generate Comprehensive Test Report ==="
         
         $buildSuccess = "${{ needs.build-validation.result }}" -eq "success"
         $qualitySuccess = "${{ needs.code-quality.result }}" -eq "success"
@@ -558,37 +558,37 @@ jobs:
         
         $overallSuccess = $buildSuccess -and $qualitySuccess -and $functionalSuccess -and $securitySuccess
         
-        $report = "AntiCheat系统冒烟测试报告`n"
-        $report += "========================`n`n"
-        $report += "测试概述:`n"
-        $report += "- 触发方式: ${{ github.event_name }}`n"
-        $report += "- 分支: ${{ github.ref_name }}`n"
-        $report += "- 提交: ${{ github.sha }}`n"
-        $report += "- 测试时间: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss UTC')`n"
-        $report += "- 测试级别: ${{ github.event.inputs.test_level || 'standard' }}`n"
-        $report += "- 平台过滤: ${{ github.event.inputs.platform_filter || 'all' }}`n`n"
-        $report += "测试阶段结果:`n"
-        $report += "- 构建验证: $($buildSuccess ? '通过' : '失败') - 多平台构建和编译产物验证`n"
-        $report += "- 代码质量: $($qualitySuccess ? '通过' : '失败') - 传感器完整性和配置检查`n"
-        $report += "- 功能测试: $($functionalSuccess ? '通过' : '失败') - Windows兼容性和性能指标测试`n"
-        $report += "- 安全扫描: $($securitySuccess ? '通过' : '失败') - CodeQL静态分析和安全检查`n`n"
-        $report += "关键验证项目:`n"
-        $report += "- 传感器系统: 14个传感器 (LIGHT/MEDIUM/HEAVY/CRITICAL)`n"
-        $report += "- 生产环境特性: 超时控制、异常处理、性能监控、灰度测试`n"
-        $report += "- 平台兼容性: Windows 7+, x86/x64双平台`n"
-        $report += "- 配置管理: 300+字段完全服务器控制`n`n"
-        $report += "构建指标:`n"
-        $report += "- 编译时间: ~3-5分钟 (并行构建)`n"
-        $report += "- 产物大小: ~50MB (Debug), ~20MB (Release)`n"
-        $report += "- 依赖管理: vcpkg + protobuf`n`n"
-        $report += "安全评估:`n"
-        $report += "- 静态分析: CodeQL扫描通过`n"
-        $report += "- 内存安全: 使用安全函数(sprintf_s等)`n"
-        $report += "- 头文件保护: 所有头文件具备保护机制`n`n"
-        $report += "总体评估:`n"
-        $report += "$($overallSuccess ? '所有测试通过，系统达到生产环境标准!' : '部分测试失败，需要修复后重新测试')`n`n"
+        $report = "AntiCheat System Smoke Test Report`n"
+        $report += "================================`n`n"
+        $report += "Test Overview:`n"
+        $report += "- Trigger: ${{ github.event_name }}`n"
+        $report += "- Branch: ${{ github.ref_name }}`n"
+        $report += "- Commit: ${{ github.sha }}`n"
+        $report += "- Test Time: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss UTC')`n"
+        $report += "- Test Level: ${{ github.event.inputs.test_level || 'standard' }}`n"
+        $report += "- Platform Filter: ${{ github.event.inputs.platform_filter || 'all' }}`n`n"
+        $report += "Test Stage Results:`n"
+        $report += "- Build Validation: $($buildSuccess ? 'PASS' : 'FAIL') - Multi-platform build and compilation verification`n"
+        $report += "- Code Quality: $($qualitySuccess ? 'PASS' : 'FAIL') - Sensor integrity and configuration checks`n"
+        $report += "- Functional Test: $($functionalSuccess ? 'PASS' : 'FAIL') - Windows compatibility and performance metrics`n"
+        $report += "- Security Scan: $($securitySuccess ? 'PASS' : 'FAIL') - CodeQL static analysis and security checks`n`n"
+        $report += "Key Verification Items:`n"
+        $report += "- Sensor System: 14 sensors (LIGHT/MEDIUM/HEAVY/CRITICAL)`n"
+        $report += "- Production Features: Timeout control, exception handling, performance monitoring, grayscale testing`n"
+        $report += "- Platform Compatibility: Windows 7+, x86/x64 dual platform`n"
+        $report += "- Configuration Management: 300+ fields fully server-controlled`n`n"
+        $report += "Build Metrics:`n"
+        $report += "- Compilation Time: ~3-5 minutes (parallel build)`n"
+        $report += "- Artifact Size: ~50MB (Debug), ~20MB (Release)`n"
+        $report += "- Dependency Management: vcpkg + protobuf`n`n"
+        $report += "Security Assessment:`n"
+        $report += "- Static Analysis: CodeQL scan passed`n"
+        $report += "- Memory Safety: Using safe functions (sprintf_s, etc.)`n"
+        $report += "- Header Protection: All headers have protection mechanisms`n`n"
+        $report += "Overall Assessment:`n"
+        $report += "$($overallSuccess ? 'All tests passed, system meets production environment standards!' : 'Some tests failed, need to fix and retest')`n`n"
         $report += "---`n"
-        $report += "*本报告由AntiCheat Enhanced Smoke Test自动生成*"
+        $report += "*This report is automatically generated by AntiCheat Enhanced Smoke Test*"
         
         Set-Content -Path "smoke-test-report.md" -Value $report
         Write-Host $report
@@ -624,9 +624,9 @@ jobs:
         $securitySuccess = "${{ needs.security-scan.result }}" -eq "success" -or "${{ needs.security-scan.result }}" -eq "skipped"
         
         if ($buildSuccess -and $qualitySuccess -and $functionalSuccess -and $securitySuccess) {
-          Write-Host "🎉 冒烟测试全部通过!"
+          Write-Host "🎉 All smoke tests passed!"
           exit 0
         } else {
-          Write-Host "❌ 冒烟测试失败，请检查日志"
+          Write-Host "❌ Smoke tests failed, please check logs"
           exit 1
         }
