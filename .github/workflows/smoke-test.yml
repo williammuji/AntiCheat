@@ -95,10 +95,10 @@ jobs:
         foreach ($file in $expectedFiles) {
           $filePath = Join-Path $buildPath $file
           if (Test-Path $filePath) {
-            Write-Host "✅ $file compilation successful"
+            Write-Host "✅ $file - compilation successful"
             $testResults += "PASS: $file compilation"
           } else {
-            Write-Host "❌ $file compilation failed"
+            Write-Host "❌ $file - compilation failed"
             $testResults += "FAIL: $file compilation"
           }
         }
@@ -116,14 +116,14 @@ jobs:
           if (Test-Path $header) {
             $content = Get-Content $header -Raw
             if ($content -match "#pragma once" -or $content -match "#ifndef.*#define") {
-              Write-Host "✅ $header header protection normal"
+              Write-Host "✅ $header - header protection normal"
               $testResults += "PASS: $header header protection"
             } else {
-              Write-Host "⚠️ $header missing header protection"
+              Write-Host "⚠️ $header - missing header protection"
               $testResults += "WARN: $header header protection"
             }
           } else {
-            Write-Host "❌ $header file does not exist"
+            Write-Host "❌ $header - file does not exist"
             $testResults += "FAIL: $header does not exist"
           }
         }
@@ -144,10 +144,10 @@ jobs:
           $pattern = $check.Value
           $matches = ([regex]::Matches($configContent, $pattern)).Count
           if ($matches -gt 5) {  # At least 5 entries
-            Write-Host "✅ $($check.Key): $matches entries"
+            Write-Host "✅ $($check.Key) - $matches entries"
             $testResults += "PASS: $($check.Key) ($matches entries)"
           } else {
-            Write-Host "⚠️ $($check.Key): only $matches entries"
+            Write-Host "⚠️ $($check.Key) - only $matches entries"
             $testResults += "WARN: $($check.Key) ($matches entries)"
           }
         }
@@ -166,10 +166,10 @@ jobs:
         foreach ($weight in $sensorChecks) {
           $matches = ([regex]::Matches($monitorContent, [regex]::Escape($weight))).Count
           if ($matches -gt 0) {
-            Write-Host "✅ $weight: $matches sensors"
+            Write-Host "✅ $weight - $matches sensors"
             $testResults += "PASS: $weight ($matches sensors)"
           } else {
-            Write-Host "❌ $weight: not found"
+            Write-Host "❌ $weight - not found"
             $testResults += "FAIL: $weight not found"
           }
         }
