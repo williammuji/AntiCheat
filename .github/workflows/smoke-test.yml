@@ -37,15 +37,15 @@ jobs:
     - name: 📚 vcpkg集成
       shell: powershell
       run: |
-        Write-Host "=== vcpkg manifest模式集成 ==="
-        # 在manifest模式下，依赖会由CMake自动处理，无需手动安装
+        Write-Host "=== vcpkg manifest mode integration ==="
+        # In manifest mode, dependencies are handled by CMake automatically
         vcpkg integrate install
-        Write-Host "vcpkg集成完成，依赖将由CMake自动处理"
+        Write-Host "vcpkg integration completed, dependencies will be handled by CMake"
 
     - name: Configure CMake
       shell: powershell
       run: |
-        Write-Host "=== 配置CMake ==="
+        Write-Host "=== Configure CMake ==="
         $arch = if ("${{ matrix.platform }}" -eq "x86") { "Win32" } else { "x64" }
         
         cmake -B build -S . `
@@ -56,36 +56,36 @@ jobs:
     - name: Build AntiCheat
       shell: powershell
       run: |
-        Write-Host "=== 构建AntiCheat ==="
+        Write-Host "=== Build AntiCheat ==="
         cmake --build build --config ${{ matrix.config }} --parallel
 
     - name: Generate test data
       shell: powershell
       run: |
-        # 创建测试用的protobuf数据
+        # Create test protobuf data
         New-Item -ItemType Directory -Force -Path "test_data"
         
-        # 模拟配置数据
+        # Simulate configuration data
         $testConfig = @"
         base_scan_interval_seconds: 20
         heavy_scan_interval_minutes: 20
         report_upload_interval_minutes: 30
         rollout_group_enum: "WIN10_PLUS_BASIC"
         harmful_process_names: ["cheatengine", "ollydbg"]
-        harmful_keywords: ["外挂", "hack"]
+        harmful_keywords: ["cheat", "hack"]
         "@
         Set-Content -Path "test_data/config.txt" -Value $testConfig
 
     - name: Run smoke tests
       shell: powershell
       run: |
-        Write-Host "=== AntiCheat 冒烟测试开始 ==="
+        Write-Host "=== AntiCheat Smoke Test Started ==="
         
         $buildPath = "build/${{ matrix.config }}"
         $testResults = @()
         
-        # 测试1: 检查编译产物
-        Write-Host "测试1: 检查编译产物..."
+        # Test 1: Check compilation artifacts
+        Write-Host "Test 1: Check compilation artifacts..."
         $expectedFiles = @(
           "CheatMonitor.obj",
           "CheatConfigManager.obj",
@@ -95,16 +95,16 @@ jobs:
         foreach ($file in $expectedFiles) {
           $filePath = Join-Path $buildPath $file
           if (Test-Path $filePath) {
-            Write-Host "✅ $file 编译成功"
-            $testResults += "PASS: $file 编译"
+            Write-Host "✅ $file compilation successful"
+            $testResults += "PASS: $file compilation"
           } else {
-            Write-Host "❌ $file 编译失败"
-            $testResults += "FAIL: $file 编译"
+            Write-Host "❌ $file compilation failed"
+            $testResults += "FAIL: $file compilation"
           }
         }
         
-        # 测试2: 检查头文件包含
-        Write-Host "`n测试2: 检查头文件..."
+        # Test 2: Check header files
+        Write-Host "`nTest 2: Check header files..."
         $headerFiles = @(
           "CheatMonitor.h",
           "CheatConfigManager.h", 
@@ -116,44 +116,44 @@ jobs:
           if (Test-Path $header) {
             $content = Get-Content $header -Raw
             if ($content -match "#pragma once" -or $content -match "#ifndef.*#define") {
-              Write-Host "✅ $header 头文件保护正常"
-              $testResults += "PASS: $header 头文件保护"
+              Write-Host "✅ $header header protection normal"
+              $testResults += "PASS: $header header protection"
             } else {
-              Write-Host "⚠️ $header 缺少头文件保护"
-              $testResults += "WARN: $header 头文件保护"
+              Write-Host "⚠️ $header missing header protection"
+              $testResults += "WARN: $header header protection"
             }
           } else {
-            Write-Host "❌ $header 文件不存在"
-            $testResults += "FAIL: $header 不存在"
+            Write-Host "❌ $header file does not exist"
+            $testResults += "FAIL: $header does not exist"
           }
         }
         
-        # 测试3: 检查配置完整性
-        Write-Host "`n测试3: 检查配置名单完整性..."
+        # Test 3: Check configuration integrity
+        Write-Host "`nTest 3: Check configuration list integrity..."
         $configContent = Get-Content "CheatConfigManager.cpp" -Raw
         
         $configChecks = @{
-          "有害进程检测" = "add_harmful_process_names"
-          "有害关键词检测" = "add_harmful_keywords" 
-          "窗口白名单" = "add_whitelisted_window_keywords"
-          "VEH模块白名单" = "add_whitelisted_veh_modules"
-          "优良进程白名单" = "add_known_good_processes"
+          "Harmful Process Detection" = "add_harmful_process_names"
+          "Harmful Keyword Detection" = "add_harmful_keywords" 
+          "Window Whitelist" = "add_whitelisted_window_keywords"
+          "VEH Module Whitelist" = "add_whitelisted_veh_modules"
+          "Good Process Whitelist" = "add_known_good_processes"
         }
         
         foreach ($check in $configChecks.GetEnumerator()) {
           $pattern = $check.Value
           $matches = ([regex]::Matches($configContent, $pattern)).Count
-          if ($matches -gt 5) {  # 至少5个条目
-            Write-Host "✅ $($check.Key): $matches 个条目"
-            $testResults += "PASS: $($check.Key) ($matches 条目)"
+          if ($matches -gt 5) {  # At least 5 entries
+            Write-Host "✅ $($check.Key): $matches entries"
+            $testResults += "PASS: $($check.Key) ($matches entries)"
           } else {
-            Write-Host "⚠️ $($check.Key): 仅 $matches 个条目"
-            $testResults += "WARN: $($check.Key) ($matches 条目)"
+            Write-Host "⚠️ $($check.Key): only $matches entries"
+            $testResults += "WARN: $($check.Key) ($matches entries)"
           }
         }
         
-        # 测试4: 检查传感器权重实现
-        Write-Host "`n测试4: 检查传感器权重分级..."
+        # Test 4: Check sensor weight implementation
+        Write-Host "`nTest 4: Check sensor weight classification..."
         $monitorContent = Get-Content "CheatMonitor.cpp" -Raw
         
         $sensorChecks = @(
@@ -166,34 +166,34 @@ jobs:
         foreach ($weight in $sensorChecks) {
           $matches = ([regex]::Matches($monitorContent, [regex]::Escape($weight))).Count
           if ($matches -gt 0) {
-            Write-Host "✅ $weight: $matches 个传感器"
-            $testResults += "PASS: $weight ($matches 个传感器)"
+            Write-Host "✅ $weight: $matches sensors"
+            $testResults += "PASS: $weight ($matches sensors)"
           } else {
-            Write-Host "❌ $weight: 未找到"
-            $testResults += "FAIL: $weight 未找到"
+            Write-Host "❌ $weight: not found"
+            $testResults += "FAIL: $weight not found"
           }
         }
         
-        # 测试5: 检查性能遥测修复
-        Write-Host "`n测试5: 检查性能遥测修复..."
+        # Test 5: Check performance telemetry fix
+        Write-Host "`nTest 5: Check performance telemetry fix..."
         if ($monitorContent -match "RecordSensorRuntime.*elapsed_ms") {
-          Write-Host "✅ 性能遥测数据记录已修复"
-          $testResults += "PASS: 性能遥测修复"
+          Write-Host "✅ Performance telemetry data recording fixed"
+          $testResults += "PASS: Performance telemetry fix"
         } else {
-          Write-Host "❌ 性能遥测数据记录未修复"
-          $testResults += "FAIL: 性能遥测修复"
+          Write-Host "❌ Performance telemetry data recording not fixed"
+          $testResults += "FAIL: Performance telemetry fix"
         }
         
-        # 输出测试结果汇总
-        Write-Host "`n=== 测试结果汇总 ==="
+        # Output test results summary
+        Write-Host "`n=== Test Results Summary ==="
         $passCount = ($testResults | Where-Object { $_ -like "PASS:*" }).Count
         $failCount = ($testResults | Where-Object { $_ -like "FAIL:*" }).Count  
         $warnCount = ($testResults | Where-Object { $_ -like "WARN:*" }).Count
         
-        Write-Host "通过: $passCount"
-        Write-Host "失败: $failCount" 
-        Write-Host "警告: $warnCount"
-        Write-Host "总计: $($testResults.Count)"
+        Write-Host "Passed: $passCount"
+        Write-Host "Failed: $failCount" 
+        Write-Host "Warnings: $warnCount"
+        Write-Host "Total: $($testResults.Count)"
         
         foreach ($result in $testResults) {
           if ($result -like "FAIL:*") {
@@ -205,15 +205,15 @@ jobs:
           }
         }
         
-        # 设置退出码
+        # Set exit code
         if ($failCount -gt 0) {
-          Write-Host "`n❌ 冒烟测试失败: $failCount 个关键测试未通过"
+          Write-Host "`n❌ Smoke test failed: $failCount critical tests failed"
           exit 1
         } elseif ($warnCount -gt 3) {
-          Write-Host "`n⚠️ 冒烟测试警告: $warnCount 个测试有警告"
-          exit 0  # 警告不阻塞，但会在日志中体现
+          Write-Host "`n⚠️ Smoke test warning: $warnCount tests have warnings"
+          exit 0  # Warnings don't block, but will be reflected in logs
         } else {
-          Write-Host "`n✅ 冒烟测试通过!"
+          Write-Host "`n✅ Smoke test passed!"
           exit 0
         }
 
@@ -234,34 +234,34 @@ jobs:
       shell: powershell
       run: |
         $report = @"
-        # AntiCheat 冒烟测试报告
+        # AntiCheat Smoke Test Report
         
-        **平台**: ${{ matrix.platform }}
-        **配置**: ${{ matrix.config }}
-        **时间**: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
-        **提交**: ${{ github.sha }}
+        **Platform**: ${{ matrix.platform }}
+        **Configuration**: ${{ matrix.config }}
+        **Time**: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
+        **Commit**: ${{ github.sha }}
         
-        ## 测试范围
-        1. ✅ 编译产物检查
-        2. ✅ 头文件完整性
-        3. ✅ 配置名单完整性 
-        4. ✅ 传感器权重分级
-        5. ✅ 性能遥测修复
+        ## Test Scope
+        1. ✅ Compilation artifact check
+        2. ✅ Header file integrity
+        3. ✅ Configuration list integrity 
+        4. ✅ Sensor weight classification
+        5. ✅ Performance telemetry fix
         
-        ## 配置名单统计
-        - 有害进程: 50+ 个条目
-        - 有害关键词: 60+ 个条目 
-        - 窗口白名单: 30+ 个条目
-        - VEH模块白名单: 40+ 个条目
-        - 优良进程白名单: 40+ 个条目
+        ## Configuration List Statistics
+        - Harmful processes: 50+ entries
+        - Harmful keywords: 60+ entries 
+        - Window whitelist: 30+ entries
+        - VEH module whitelist: 40+ entries
+        - Good process whitelist: 40+ entries
         
-        ## 传感器权重分级
-        - LIGHT级: 2个传感器 (< 1ms)
-        - MEDIUM级: 4个传感器 (1-10ms)
-        - HEAVY级: 7个传感器 (10-100ms) 
-        - CRITICAL级: 1个传感器 (> 100ms)
+        ## Sensor Weight Classification
+        - LIGHT level: 2 sensors (< 1ms)
+        - MEDIUM level: 4 sensors (1-10ms)
+        - HEAVY level: 7 sensors (10-100ms) 
+        - CRITICAL level: 1 sensor (> 100ms)
         
-        测试通过 ✅
+        Test passed ✅
         "@
         
         Set-Content -Path "smoke-test-report.md" -Value $report
@@ -305,7 +305,7 @@ jobs:
 
     - name: Security scan summary
       run: |
-        echo "🔒 安全扫描完成"
-        echo "- CodeQL静态分析: ✅"
-        echo "- 内存安全检查: ✅" 
-        echo "- 依赖漏洞扫描: ✅"
+        echo "🔒 Security scan completed"
+        echo "- CodeQL static analysis: ✅"
+        echo "- Memory safety check: ✅" 
+        echo "- Dependency vulnerability scan: ✅"
