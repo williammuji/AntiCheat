@@ -343,10 +343,26 @@ jobs:
       with:
         languages: cpp
 
+    - name: Setup vcpkg for analysis
+      uses: lukka/run-vcpkg@v11
+      with:
+        vcpkgDirectory: '${{ github.workspace }}/vcpkg'
+        vcpkgGitCommitId: 'f7423ee180c4b7f40d43402c2feb3859161ef625'
+        vcpkgJsonGlob: 'vcpkg.json'
+        appendedCacheKey: 'x64'
+        runVcpkgInstall: true
+        vcpkgArguments: '--triplet=x64-windows'
+
     - name: Build for analysis
+      shell: powershell
       run: |
-        cmake -B build -S . -A x64
-        cmake --build build --config Release
+        Write-Host "=== Build for Security Analysis ==="
+        cmake -B build -S . `
+          -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake" `
+          -DVCPKG_TARGET_TRIPLET="x64-windows" `
+          -DVCPKG_HOST_TRIPLET="x64-windows" `
+          -A x64
+        cmake --build build --config Release --parallel
 
     - name: Perform CodeQL Analysis
       uses: github/codeql-action/analyze@v2
