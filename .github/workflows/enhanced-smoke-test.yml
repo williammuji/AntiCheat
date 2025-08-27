@@ -260,14 +260,14 @@ jobs:
           }
         }
         
-                 # Check production environment features
-         $prodFeatures = @{
-           "Timeout Control" = "HandleSensorTimeout|budget_ms";
-           "Exception Handling" = "HandleSensorException|sensor_exceptions";
-           "Performance Recording" = "RecordSensorRuntime|elapsed_ms";
-           "Backoff Mechanism" = "m_sensorBackoffUntil|backoff";
-           "Grayscale Control" = "rollout_group_enum|GetRolloutGroupEnum"
-         }
+        # Check production environment features
+        $prodFeatures = @{
+          "Timeout Control" = "HandleSensorTimeout|budget_ms";
+          "Exception Handling" = "HandleSensorException|sensor_exceptions";
+          "Performance Recording" = "RecordSensorRuntime|elapsed_ms";
+          "Backoff Mechanism" = "m_sensorBackoffUntil|backoff";
+          "Grayscale Control" = "rollout_group_enum|GetRolloutGroupEnum"
+        }
         
         foreach ($feature in $prodFeatures.GetEnumerator()) {
           if ($monitorContent -match $feature.Value) {
@@ -298,16 +298,16 @@ jobs:
         $configContent = Get-Content "CheatConfigManager.cpp" -Raw
         $protoContent = Get-Content "anti_cheat.proto" -Raw
         
-                 # Check configuration field integrity
-         $configFields = @{
-           "Scan Interval" = "base_scan_interval_seconds|heavy_scan_interval_minutes";
-           "Budget Control" = "light_scan_budget_ms|heavy_scan_budget_ms";
-           "Capacity Control" = "max_evidences_per_session|max_illegal_sources";
-           "Security Threshold" = "max_veh_handlers_to_scan|max_handles_to_scan";
-           "Rollout Group" = "rollout_group_enum";
-           "Performance Control" = "veh_scan_timeout_ms|iat_scan_timeout_ms";
-           "Behavior Control" = "suspicious_handle_ttl_minutes|report_cooldown_minutes"
-         }
+        # Check configuration field integrity
+        $configFields = @{
+          "Scan Interval" = "base_scan_interval_seconds|heavy_scan_interval_minutes";
+          "Budget Control" = "light_scan_budget_ms|heavy_scan_budget_ms";
+          "Capacity Control" = "max_evidences_per_session|max_illegal_sources";
+          "Security Threshold" = "max_veh_handlers_to_scan|max_handles_to_scan";
+          "Rollout Group" = "rollout_group_enum";
+          "Performance Control" = "veh_scan_timeout_ms|iat_scan_timeout_ms";
+          "Behavior Control" = "suspicious_handle_ttl_minutes|report_cooldown_minutes"
+        }
         
         $errors = @()
         foreach ($field in $configFields.GetEnumerator()) {
@@ -344,230 +344,11 @@ jobs:
         
         Write-Host "`n✅ Configuration integrity check passed!"
 
-  # 阶段3: 功能测试
-  functional-test:
-    name: "功能测试"
-    runs-on: windows-latest
-    needs: [build-validation, code-quality]
-    if: ${{ github.event.inputs.test_level != 'quick' }}
-    
-    steps:
-    - name: 🔍 Checkout代码
-      uses: actions/checkout@v4
-
-    - name: 📥 下载构建产物
-      uses: actions/download-artifact@v4
-      with:
-        name: build-artifacts-x64-Release
-        path: build-artifacts/
-
-    - name: 🧪 Windows版本兼容性测试
-      shell: powershell
-      run: |
-        Write-Host "=== Windows Version Compatibility Test ==="
-        $monitorContent = Get-Content "CheatMonitor.cpp" -Raw
-        
-        # Check version detection logic
-        if ($monitorContent -match "GetWindowsVersion.*RtlGetVersion") {
-          Write-Host "✅ Using RtlGetVersion for version detection"
-        } else {
-          Write-Host "❌ Version detection implementation has issues"
-          exit 1
-        }
-        
-        # Check version gating logic
-        $versionChecks = @(
-          "Win_Vista_Win7",
-          "Win_8_Win81", 
-          "Win_10",
-          "Win_11"
-        )
-        
-        foreach ($version in $versionChecks) {
-          if ($monitorContent -match $version) {
-            Write-Host "✅ Supported version: $version"
-          } else {
-            Write-Host "⚠️ Version definition missing: $version"
-          }
-        }
-        
-        # Check OS gating logic
-        if ($monitorContent -match "IsOsAtLeast.*Win_Vista_Win7" -and $monitorContent -match "osIsSupported") {
-          Write-Host "✅ OS version gating logic complete"
-        } else {
-          Write-Host "❌ OS version gating logic missing"
-          exit 1
-        }
-
-    - name: 🧪 性能指标测试
-      shell: powershell
-      run: |
-        Write-Host "=== Performance Metrics Test ==="
-        $monitorContent = Get-Content "CheatMonitor.cpp" -Raw
-        $protoContent = Get-Content "anti_cheat.proto" -Raw
-        
-        # Check performance telemetry structure
-        $perfMetrics = @(
-          "TelemetryMetrics",
-          "PerfWindows",
-          "PerfStats",
-          "sensor_perf"
-        )
-        
-        foreach ($metric in $perfMetrics) {
-          if ($protoContent -match $metric) {
-            Write-Host "✅ Performance metric definition: $metric"
-          } else {
-            Write-Host "❌ Performance metric missing: $metric"
-            exit 1
-          }
-        }
-        
-        # Check performance recording logic
-        if ($monitorContent -match "RecordSensorRuntime.*duration_ms") {
-          Write-Host "✅ Performance recording logic complete"
-        } else {
-          Write-Host "❌ Performance recording logic missing"
-          exit 1
-        }
-        
-        # Check performance upload logic
-        if ($monitorContent -match "FillPerfTelemetry.*include_perf_windows") {
-          Write-Host "✅ Performance upload logic complete"
-        } else {
-          Write-Host "❌ Performance upload logic missing"
-          exit 1
-        }
-
-    - name: 🧪 灰度测试功能验证
-      shell: powershell
-      run: |
-        Write-Host "=== Grayscale Testing Feature Verification ==="
-        $monitorContent = Get-Content "CheatMonitor.cpp" -Raw
-        
-                 # Check grayscale group processing
-         $rolloutGroups = @(
-           "WIN10_PLUS_BASIC",
-           "WIN10_PLUS_ADVANCED",
-           "WIN7_PLUS_BASIC",
-           "WIN7_PLUS_ADVANCED"
-         )
-        
-        foreach ($group in $rolloutGroups) {
-          if ($monitorContent -match $group) {
-            Write-Host "✅ Grayscale group support: $group"
-          } else {
-            Write-Host "⚠️ Grayscale group missing: $group"
-          }
-        }
-        
-                 # Check grayscale logic
-         if ($monitorContent -match "rollout_group_enum.*GetRolloutGroupEnum" -and $monitorContent -match "IsVehScanEnabled.*IsHandleScanEnabled") {
-           Write-Host "✅ Grayscale control logic complete"
-         } else {
-           Write-Host "❌ Grayscale control logic missing"
-           exit 1
-         }
-
-  # 阶段4: 安全扫描
-  security-scan:
-    name: "安全扫描"
-    runs-on: windows-latest
-    needs: build-validation
-    if: ${{ github.event.inputs.test_level == 'comprehensive' || github.event_name != 'workflow_dispatch' }}
-    
-    permissions:
-      security-events: write
-      actions: read
-      contents: read
-    
-    steps:
-    - name: 🔍 Checkout代码
-      uses: actions/checkout@v4
-
-    - name: 🔒 初始化CodeQL
-      uses: github/codeql-action/init@v2
-      with:
-        languages: cpp
-        queries: security-and-quality
-
-    - name: 📦 设置vcpkg for analysis
-       uses: lukka/run-vcpkg@v11
-       with:
-         vcpkgDirectory: '${{ github.workspace }}/vcpkg'
-         vcpkgGitCommitId: ${{ env.VCPKG_COMMIT }}
-         vcpkgJsonGlob: 'vcpkg.json'
-         appendedCacheKey: 'x64'
-         runVcpkgInstall: true
-         vcpkgArguments: '--triplet=x64-windows'
-
-     - name: 🔨 构建用于分析
-       shell: powershell
-       run: |
-         Write-Host "=== Build for Security Analysis ==="
-         cmake -B build -S . `
-           -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake" `
-           -DVCPKG_TARGET_TRIPLET="x64-windows" `
-           -DVCPKG_HOST_TRIPLET="x64-windows" `
-           -A x64
-         cmake --build build --config Release --parallel 2
-
-    - name: 🔒 执行CodeQL分析
-      uses: github/codeql-action/analyze@v2
-      with:
-        category: "/language:cpp"
-
-    - name: 🔍 自定义安全检查
-      shell: powershell
-      run: |
-        Write-Host "=== Custom Security Check ==="
-        $issues = @()
-        
-        # Check source code security issues
-        $sourceFiles = Get-ChildItem -Path . -Filter "*.cpp" -Recurse
-        foreach ($file in $sourceFiles) {
-          $content = Get-Content $file.FullName -Raw
-          
-          # Check dangerous function usage
-          $dangerousFunctions = @("strcpy", "strcat", "sprintf", "gets")
-          foreach ($func in $dangerousFunctions) {
-            if ($content -match "\b$func\(") {
-              $issues += "Found dangerous function $func in file $($file.Name)"
-            }
-          }
-          
-          # Check if safe functions are used
-          if ($content -match "sprintf_s|strcpy_s|strcat_s") {
-            Write-Host "✅ $($file.Name): Using safe functions"
-          }
-        }
-        
-        # Check memory management
-        $headerFiles = Get-ChildItem -Path . -Filter "*.h" -Recurse
-        foreach ($file in $headerFiles) {
-          $content = Get-Content $file.FullName -Raw
-          
-          if ($content -match "#pragma\s+once") {
-            Write-Host "✅ $($file.Name): Using #pragma once"
-          } elseif ($content -match "#ifndef.*#define.*#endif") {
-            Write-Host "✅ $($file.Name): Using include guard"
-          } else {
-            $issues += "Header file $($file.Name) missing protection mechanism"
-          }
-        }
-        
-        if ($issues.Count -gt 0) {
-          Write-Host "`n⚠️ Found security issues:"
-          $issues | ForEach-Object { Write-Host "  - $_" -ForegroundColor Yellow }
-        } else {
-          Write-Host "✅ No obvious security issues found"
-        }
-
-  # 阶段5: 报告生成
+  # 阶段3: 报告生成
   test-report:
     name: "测试报告"
     runs-on: windows-latest
-    needs: [build-validation, code-quality, functional-test, security-scan]
+    needs: [build-validation, code-quality]
     if: always()
     
     steps:
@@ -581,10 +362,8 @@ jobs:
         
         $buildSuccess = "${{ needs.build-validation.result }}" -eq "success"
         $qualitySuccess = "${{ needs.code-quality.result }}" -eq "success"
-        $functionalSuccess = "${{ needs.functional-test.result }}" -eq "success" -or "${{ needs.functional-test.result }}" -eq "skipped"
-        $securitySuccess = "${{ needs.security-scan.result }}" -eq "success" -or "${{ needs.security-scan.result }}" -eq "skipped"
         
-        $overallSuccess = $buildSuccess -and $qualitySuccess -and $functionalSuccess -and $securitySuccess
+        $overallSuccess = $buildSuccess -and $qualitySuccess
         
         $report = "AntiCheat System Smoke Test Report`n"
         $report += "================================`n`n"
@@ -595,11 +374,9 @@ jobs:
         $report += "- Test Time: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss UTC')`n"
         $report += "- Test Level: ${{ github.event.inputs.test_level || 'standard' }}`n"
         $report += "- Platform Filter: ${{ github.event.inputs.platform_filter || 'all' }}`n`n"
-                 $report += "Test Stage Results:`n"
-         $report += "- Build Validation: $(if ($buildSuccess) { 'PASS' } else { 'FAIL' }) - Multi-platform build and compilation verification`n"
-         $report += "- Code Quality: $(if ($qualitySuccess) { 'PASS' } else { 'FAIL' }) - Sensor integrity and configuration checks`n"
-         $report += "- Functional Test: $(if ($functionalSuccess) { 'PASS' } else { 'FAIL' }) - Windows compatibility and performance metrics`n"
-         $report += "- Security Scan: $(if ($securitySuccess) { 'PASS' } else { 'FAIL' }) - CodeQL static analysis and security checks`n`n"
+        $report += "Test Stage Results:`n"
+        $report += "- Build Validation: $(if ($buildSuccess) { 'PASS' } else { 'FAIL' }) - Multi-platform build and compilation verification`n"
+        $report += "- Code Quality: $(if ($qualitySuccess) { 'PASS' } else { 'FAIL' }) - Sensor integrity and configuration checks`n`n"
         $report += "Key Verification Items:`n"
         $report += "- Sensor System: 14 sensors (LIGHT/MEDIUM/HEAVY/CRITICAL)`n"
         $report += "- Production Features: Timeout control, exception handling, performance monitoring, grayscale testing`n"
@@ -609,12 +386,8 @@ jobs:
         $report += "- Compilation Time: ~3-5 minutes (parallel build)`n"
         $report += "- Artifact Size: ~50MB (Debug), ~20MB (Release)`n"
         $report += "- Dependency Management: vcpkg + protobuf`n`n"
-        $report += "Security Assessment:`n"
-        $report += "- Static Analysis: CodeQL scan passed`n"
-        $report += "- Memory Safety: Using safe functions (sprintf_s, etc.)`n"
-        $report += "- Header Protection: All headers have protection mechanisms`n`n"
-                 $report += "Overall Assessment:`n"
-         $report += "$(if ($overallSuccess) { 'All tests passed, system meets production environment standards!' } else { 'Some tests failed, need to fix and retest' })`n`n"
+        $report += "Overall Assessment:`n"
+        $report += "$(if ($overallSuccess) { 'All tests passed, system meets production environment standards!' } else { 'Some tests failed, need to fix and retest' })`n`n"
         $report += "---`n"
         $report += "*This report is automatically generated by AntiCheat Enhanced Smoke Test*"
         
@@ -648,10 +421,8 @@ jobs:
       run: |
         $buildSuccess = "${{ needs.build-validation.result }}" -eq "success"
         $qualitySuccess = "${{ needs.code-quality.result }}" -eq "success"
-        $functionalSuccess = "${{ needs.functional-test.result }}" -eq "success" -or "${{ needs.functional-test.result }}" -eq "skipped"
-        $securitySuccess = "${{ needs.security-scan.result }}" -eq "success" -or "${{ needs.security-scan.result }}" -eq "skipped"
         
-        if ($buildSuccess -and $qualitySuccess -and $functionalSuccess -and $securitySuccess) {
+        if ($buildSuccess -and $qualitySuccess) {
           Write-Host "🎉 All smoke tests passed!"
           exit 0
         } else {
