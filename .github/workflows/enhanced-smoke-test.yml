@@ -491,12 +491,26 @@ jobs:
         languages: cpp
         queries: security-and-quality
 
-    - name: 🔨 构建用于分析
-      shell: powershell
-      run: |
-        Write-Host "=== Build for Security Analysis ==="
-        cmake -B build -S . -A x64
-        cmake --build build --config Release --parallel 2
+    - name: 📦 设置vcpkg for analysis
+       uses: lukka/run-vcpkg@v11
+       with:
+         vcpkgDirectory: '${{ github.workspace }}/vcpkg'
+         vcpkgGitCommitId: ${{ env.VCPKG_COMMIT }}
+         vcpkgJsonGlob: 'vcpkg.json'
+         appendedCacheKey: 'x64'
+         runVcpkgInstall: true
+         vcpkgArguments: '--triplet=x64-windows'
+
+     - name: 🔨 构建用于分析
+       shell: powershell
+       run: |
+         Write-Host "=== Build for Security Analysis ==="
+         cmake -B build -S . `
+           -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake" `
+           -DVCPKG_TARGET_TRIPLET="x64-windows" `
+           -DVCPKG_HOST_TRIPLET="x64-windows" `
+           -A x64
+         cmake --build build --config Release --parallel 2
 
     - name: 🔒 执行CodeQL分析
       uses: github/codeql-action/analyze@v2
