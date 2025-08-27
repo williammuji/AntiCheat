@@ -260,14 +260,14 @@ jobs:
           }
         }
         
-        # Check production environment features
-        $prodFeatures = @{
-          "Timeout Control" = "HandleSensorTimeout|budget_ms";
-          "Exception Handling" = "HandleSensorException|sensor_exceptions";
-          "Performance Recording" = "RecordSensorRuntime|elapsed_ms";
-          "Backoff Mechanism" = "m_sensorBackoffUntil|backoff";
-          "Grayscale Control" = "rolloutGroup|win10-beta-staged"
-        }
+                 # Check production environment features
+         $prodFeatures = @{
+           "Timeout Control" = "HandleSensorTimeout|budget_ms";
+           "Exception Handling" = "HandleSensorException|sensor_exceptions";
+           "Performance Recording" = "RecordSensorRuntime|elapsed_ms";
+           "Backoff Mechanism" = "m_sensorBackoffUntil|backoff";
+           "Grayscale Control" = "rollout_group_enum|GetRolloutGroupEnum"
+         }
         
         foreach ($feature in $prodFeatures.GetEnumerator()) {
           if ($monitorContent -match $feature.Value) {
@@ -298,16 +298,16 @@ jobs:
         $configContent = Get-Content "CheatConfigManager.cpp" -Raw
         $protoContent = Get-Content "anti_cheat.proto" -Raw
         
-        # Check configuration field integrity
-        $configFields = @{
-          "Scan Interval" = "base_scan_interval_seconds|heavy_scan_interval_minutes";
-          "Budget Control" = "light_scan_budget_ms|heavy_scan_budget_ms";
-          "Capacity Control" = "max_evidences_per_session|max_illegal_sources";
-          "Security Threshold" = "max_veh_handlers_to_scan|max_handles_to_scan";
-          "Sensor Switches" = "enable_veh_scan|enable_handle_scan";
-          "Grayscale Tags" = "rollout_group";
-          "Minimum OS Version" = "min_os"
-        }
+                 # Check configuration field integrity
+         $configFields = @{
+           "Scan Interval" = "base_scan_interval_seconds|heavy_scan_interval_minutes";
+           "Budget Control" = "light_scan_budget_ms|heavy_scan_budget_ms";
+           "Capacity Control" = "max_evidences_per_session|max_illegal_sources";
+           "Security Threshold" = "max_veh_handlers_to_scan|max_handles_to_scan";
+           "Rollout Group" = "rollout_group_enum";
+           "Performance Control" = "veh_scan_timeout_ms|iat_scan_timeout_ms";
+           "Behavior Control" = "suspicious_handle_ttl_minutes|report_cooldown_minutes"
+         }
         
         $errors = @()
         foreach ($field in $configFields.GetEnumerator()) {
@@ -445,11 +445,13 @@ jobs:
         Write-Host "=== Grayscale Testing Feature Verification ==="
         $monitorContent = Get-Content "CheatMonitor.cpp" -Raw
         
-        # Check grayscale group processing
-        $rolloutGroups = @(
-          "win10-beta-staged",
-          "stable"
-        )
+                 # Check grayscale group processing
+         $rolloutGroups = @(
+           "WIN10_PLUS_BASIC",
+           "WIN10_PLUS_ADVANCED",
+           "WIN7_PLUS_BASIC",
+           "WIN7_PLUS_ADVANCED"
+         )
         
         foreach ($group in $rolloutGroups) {
           if ($monitorContent -match $group) {
@@ -459,13 +461,13 @@ jobs:
           }
         }
         
-        # Check grayscale logic
-        if ($monitorContent -match "rolloutGroup.*GetRolloutGroup" -and $monitorContent -match "effectiveVehScanEnabled.*effectiveHandleScanEnabled") {
-          Write-Host "✅ Grayscale control logic complete"
-        } else {
-          Write-Host "❌ Grayscale control logic missing"
-          exit 1
-        }
+                 # Check grayscale logic
+         if ($monitorContent -match "rollout_group_enum.*GetRolloutGroupEnum" -and $monitorContent -match "IsVehScanEnabled.*IsHandleScanEnabled") {
+           Write-Host "✅ Grayscale control logic complete"
+         } else {
+           Write-Host "❌ Grayscale control logic missing"
+           exit 1
+         }
 
   # 阶段4: 安全扫描
   security-scan:
@@ -579,11 +581,11 @@ jobs:
         $report += "- Test Time: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss UTC')`n"
         $report += "- Test Level: ${{ github.event.inputs.test_level || 'standard' }}`n"
         $report += "- Platform Filter: ${{ github.event.inputs.platform_filter || 'all' }}`n`n"
-        $report += "Test Stage Results:`n"
-        $report += "- Build Validation: $($buildSuccess ? 'PASS' : 'FAIL') - Multi-platform build and compilation verification`n"
-        $report += "- Code Quality: $($qualitySuccess ? 'PASS' : 'FAIL') - Sensor integrity and configuration checks`n"
-        $report += "- Functional Test: $($functionalSuccess ? 'PASS' : 'FAIL') - Windows compatibility and performance metrics`n"
-        $report += "- Security Scan: $($securitySuccess ? 'PASS' : 'FAIL') - CodeQL static analysis and security checks`n`n"
+                 $report += "Test Stage Results:`n"
+         $report += "- Build Validation: $(if ($buildSuccess) { 'PASS' } else { 'FAIL' }) - Multi-platform build and compilation verification`n"
+         $report += "- Code Quality: $(if ($qualitySuccess) { 'PASS' } else { 'FAIL' }) - Sensor integrity and configuration checks`n"
+         $report += "- Functional Test: $(if ($functionalSuccess) { 'PASS' } else { 'FAIL' }) - Windows compatibility and performance metrics`n"
+         $report += "- Security Scan: $(if ($securitySuccess) { 'PASS' } else { 'FAIL' }) - CodeQL static analysis and security checks`n`n"
         $report += "Key Verification Items:`n"
         $report += "- Sensor System: 14 sensors (LIGHT/MEDIUM/HEAVY/CRITICAL)`n"
         $report += "- Production Features: Timeout control, exception handling, performance monitoring, grayscale testing`n"
@@ -597,8 +599,8 @@ jobs:
         $report += "- Static Analysis: CodeQL scan passed`n"
         $report += "- Memory Safety: Using safe functions (sprintf_s, etc.)`n"
         $report += "- Header Protection: All headers have protection mechanisms`n`n"
-        $report += "Overall Assessment:`n"
-        $report += "$($overallSuccess ? 'All tests passed, system meets production environment standards!' : 'Some tests failed, need to fix and retest')`n`n"
+                 $report += "Overall Assessment:`n"
+         $report += "$(if ($overallSuccess) { 'All tests passed, system meets production environment standards!' } else { 'Some tests failed, need to fix and retest' })`n`n"
         $report += "---`n"
         $report += "*This report is automatically generated by AntiCheat Enhanced Smoke Test*"
         
