@@ -174,7 +174,7 @@ static const auto g_pNtQueryInformationThread = reinterpret_cast<PNtQueryInforma
 #define STATUS_ACCESS_DENIED ((NTSTATUS)0xC0000022L)
 #endif
 
-// 这个函数被设计为“不安全的”，因为它直接处理可能无效的句柄。
+// 这个函数被设计为"不安全的"，因为它直接处理可能无效的句柄。
 // 它不使用任何需要对象展开的C++类，因此可以安全地使用 __try/__except。
 // 返回值: 如果句柄确实指向我们自己的进程，则返回true，否则返回false。
 
@@ -454,7 +454,7 @@ SignatureStatus VerifyFileSignature(const std::wstring &filePath, WindowsVersion
             case TRUST_E_PROVIDER_UNKNOWN:
             case CERT_E_CHAINING:
             case TRUST_E_BAD_DIGEST:                       // 在XP上，SHA-2签名可能导致错误的摘要
-                return SignatureStatus::FAILED_TO_VERIFY;  // 降级为“无法判断”而非“不信任”
+                return SignatureStatus::FAILED_TO_VERIFY;  // 降级为"无法判断"而非"不信任"
         }
     }
 
@@ -533,7 +533,7 @@ bool IsValidPointer(const void *ptr, size_t size)
     return (start_addr + size) <= (reinterpret_cast<uintptr_t>(mbi.BaseAddress) + mbi.RegionSize);
 }
 
-// 用于动态查找VEH链表偏移量的“诱饵”处理函数。
+// 用于动态查找VEH链表偏移量的"诱饵"处理函数。
 // 它什么也不做，只是作为一个可被识别的指针存在。
 LONG WINAPI DecoyVehHandler(PEXCEPTION_POINTERS ExceptionInfo)
 {
@@ -543,7 +543,7 @@ LONG WINAPI DecoyVehHandler(PEXCEPTION_POINTERS ExceptionInfo)
 
 // 此函数不应使用任何需要堆栈展开的C++对象。
 // 使用 __try/__except 块来安全地执行此反调试检查。
-// 如果没有调试器，会触发一个异常并被捕获。如果附加了调试器，它可能会“吞掉”这个异常，
+// 如果没有调试器，会触发一个异常并被捕获。如果附加了调试器，它可能会"吞掉"这个异常，
 // 从而改变程序的执行路径，但这本身不是一个可靠的证据来源，更多是用于增加逆向分析的难度。
 void CheckCloseHandleException()
 {
@@ -1044,7 +1044,7 @@ struct CheatMonitor::Pimpl
 
     // 扩展监控辅助函数
     bool IsPathInWhitelist(const std::wstring &modulePath);
-    // 使用“诱饵处理函数”技术动态查找VEH链表的地址
+    // 使用"诱饵处理函数"技术动态查找VEH链表的地址
     uintptr_t FindVehListAddress();
 
     // VM detection helpers
@@ -1141,7 +1141,7 @@ void CheatMonitor::Pimpl::FillPerfTelemetry(anti_cheat::TelemetryMetrics &tm, bo
 }
 
 // ScanContext: 为传感器提供所需依赖的上下文对象
-// 这是“依赖倒置”原则的体现，传感器不直接依赖Pimpl，而是依赖这个抽象的上下文
+// 这是"依赖倒置"原则的体现，传感器不直接依赖Pimpl，而是依赖这个抽象的上下文
 class ScanContext
 {
    private:
@@ -1396,18 +1396,18 @@ private:
     static DebugDetectionResult CheckRemoteDebugger_Internal()
     {
         DebugDetectionResult result = {false, nullptr, 0};
-        __try
-        {
-            BOOL isDebuggerPresent = FALSE;
-            if (CheckRemoteDebuggerPresent(GetCurrentProcess(), &isDebuggerPresent) &&
-                isDebuggerPresent)
-            {
+                          __try
+                          {
+                              BOOL isDebuggerPresent = FALSE;
+                              if (CheckRemoteDebuggerPresent(GetCurrentProcess(), &isDebuggerPresent) &&
+                                  isDebuggerPresent)
+                              {
                 result.detected = true;
                 result.description = "CheckRemoteDebuggerPresent() API返回true";
-            }
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER)
-        {
+                              }
+                          }
+                          __except (EXCEPTION_EXECUTE_HANDLER)
+                          {
             result.exceptionCode = GetExceptionCode();
         }
         return result;
@@ -1416,21 +1416,21 @@ private:
     static DebugDetectionResult CheckPEBBeingDebugged_Internal()
     {
         DebugDetectionResult result = {false, nullptr, 0};
-        __try
-        {
+                          __try
+                          {
 #ifdef _WIN64
-            auto pPeb = (PPEB)__readgsqword(0x60);
+                              auto pPeb = (PPEB)__readgsqword(0x60);
 #else
-            auto pPeb = (PPEB)__readfsdword(0x30);
+                        auto pPeb = (PPEB)__readfsdword(0x30);
 #endif
-            if (pPeb && IsValidPointer(pPeb, sizeof(PEB)) && pPeb->BeingDebugged)
-            {
+                              if (pPeb && IsValidPointer(pPeb, sizeof(PEB)) && pPeb->BeingDebugged)
+                              {
                 result.detected = true;
                 result.description = "PEB->BeingDebugged 标志位为true";
-            }
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER)
-        {
+                              }
+                          }
+                          __except (EXCEPTION_EXECUTE_HANDLER)
+                          {
             result.exceptionCode = GetExceptionCode();
         }
         return result;
@@ -1439,12 +1439,12 @@ private:
     static DebugDetectionResult CheckCloseHandleDebugger_Internal()
     {
         DebugDetectionResult result = {false, nullptr, 0};
-        __try
-        {
-            CheckCloseHandleException();
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER)
-        {
+                          __try
+                          {
+                              CheckCloseHandleException();
+                          }
+                          __except (EXCEPTION_EXECUTE_HANDLER)
+                          {
             result.exceptionCode = GetExceptionCode();
         }
         return result;
@@ -1453,21 +1453,21 @@ private:
     static DebugDetectionResult CheckDebugRegisters_Internal()
     {
         DebugDetectionResult result = {false, nullptr, 0};
-        __try
-        {
-            CONTEXT ctx = {};
-            ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
-            if (GetThreadContext(GetCurrentThread(), &ctx))
-            {
-                if (ctx.Dr0 != 0 || ctx.Dr1 != 0 || ctx.Dr2 != 0 || ctx.Dr3 != 0)
-                {
+                          __try
+                          {
+                              CONTEXT ctx = {};
+                              ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+                              if (GetThreadContext(GetCurrentThread(), &ctx))
+                              {
+                                  if (ctx.Dr0 != 0 || ctx.Dr1 != 0 || ctx.Dr2 != 0 || ctx.Dr3 != 0)
+                                  {
                     result.detected = true;
                     result.description = "检测到硬件断点 (Debug Registers)";
-                }
-            }
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER)
-        {
+                                  }
+                              }
+                          }
+                          __except (EXCEPTION_EXECUTE_HANDLER)
+                          {
             result.exceptionCode = GetExceptionCode();
         }
         return result;
@@ -1476,22 +1476,22 @@ private:
     static DebugDetectionResult CheckKernelDebuggerNtQuery_Internal()
     {
         DebugDetectionResult result = {false, nullptr, 0};
-        __try
-        {
-            SYSTEM_KERNEL_DEBUGGER_INFORMATION info;
-            if (g_pNtQuerySystemInformation &&
-                NT_SUCCESS(g_pNtQuerySystemInformation(SystemKernelDebuggerInformation, &info,
-                                                       sizeof(info), NULL)))
-            {
-                if (info.KernelDebuggerEnabled && !info.KernelDebuggerNotPresent)
-                {
+                          __try
+                          {
+                              SYSTEM_KERNEL_DEBUGGER_INFORMATION info;
+                              if (g_pNtQuerySystemInformation &&
+                                  NT_SUCCESS(g_pNtQuerySystemInformation(SystemKernelDebuggerInformation, &info,
+                                                                         sizeof(info), NULL)))
+                              {
+                                  if (info.KernelDebuggerEnabled && !info.KernelDebuggerNotPresent)
+                                  {
                     result.detected = true;
                     result.description = "检测到内核调试器 (NtQuerySystemInformation)";
-                }
-            }
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER)
-        {
+                                  }
+                              }
+                          }
+                          __except (EXCEPTION_EXECUTE_HANDLER)
+                          {
             result.exceptionCode = GetExceptionCode();
         }
         return result;
@@ -1500,16 +1500,16 @@ private:
     static DebugDetectionResult CheckKernelDebuggerKUSER_Internal()
     {
         DebugDetectionResult result = {false, nullptr, 0};
-        __try
-        {
-            if (IsKernelDebuggerPresent_KUserSharedData())
-            {
+                          __try
+                          {
+                              if (IsKernelDebuggerPresent_KUserSharedData())
+                              {
                 result.detected = true;
                 result.description = "检测到内核调试器 (KUSER_SHARED_DATA)";
-            }
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER)
-        {
+                              }
+                          }
+                          __except (EXCEPTION_EXECUTE_HANDLER)
+                          {
             result.exceptionCode = GetExceptionCode();
         }
         return result;
@@ -1884,26 +1884,26 @@ private:
     static IntegrityCheckResult CheckSelfIntegrityInternal_Safe(const CStyleIntegrityData* data)
     {
         IntegrityCheckResult result;
-        __try
-        {
-            PVOID codeBase = nullptr;
-            DWORD codeSize = 0;
+                __try
+                {
+                    PVOID codeBase = nullptr;
+                    DWORD codeSize = 0;
 
             if (!GetCodeSectionInfo(data->hSelfModule, codeBase, codeSize))
-            {
-                LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR,
+                    {
+                        LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR,
                               "SelfIntegritySensor: 获取代码段信息失败，尝试%d/%d", data->attempt + 1, data->maxRetries);
                 result.shouldContinue = true;
                 return result;
-            }
+                    }
 
-            if (!codeBase || codeSize == 0)
-            {
-                LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR,
-                              "SelfIntegritySensor: 无效的代码段信息 (base=%p, size=%lu)", codeBase, codeSize);
+                    if (!codeBase || codeSize == 0)
+                    {
+                        LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR,
+                                      "SelfIntegritySensor: 无效的代码段信息 (base=%p, size=%lu)", codeBase, codeSize);
                 result.shouldContinue = true;
                 return result;
-            }
+                    }
 
                     // 验证内存区域可读性
                     MEMORY_BASIC_INFORMATION mbi = {};
@@ -1973,8 +1973,8 @@ private:
                 result.shouldBreak = true;
                     }
                 }
-        __except (EXCEPTION_EXECUTE_HANDLER)
-        {
+                __except (EXCEPTION_EXECUTE_HANDLER)
+                {
             result.exceptionDetected = true;
             result.exceptionCode = GetExceptionCode();
             LOG_ERROR_F(AntiCheatLogger::LogCategory::SENSOR, "SelfIntegritySensor异常: 0x%08X, 尝试%d/%d", 
@@ -3256,6 +3256,18 @@ class PrivateExecutableMemorySensor : public ISensor
 
         try
         {
+            // 性能优化：智能区域过滤和增量扫描
+            static std::unordered_set<uintptr_t> scannedRegions;
+            static std::chrono::steady_clock::time_point lastFullScan = std::chrono::steady_clock::now();
+            const auto now = std::chrono::steady_clock::now();
+            
+            // 每5分钟执行一次完整扫描，其他时候执行增量扫描
+            const bool isFullScan = (now - lastFullScan) > std::chrono::minutes(5);
+            if (isFullScan) {
+                scannedRegions.clear();
+                lastFullScan = now;
+            }
+
             LPBYTE address = nullptr;
             MEMORY_BASIC_INFORMATION mbi;
 
@@ -3271,7 +3283,23 @@ class PrivateExecutableMemorySensor : public ISensor
                     break;  // 超出用户地址空间范围
                 }
 
-                if ((i++ & 15) == 0)
+                // 性能优化：跳过已知安全区域
+                if (IsKnownSafeRegion(currentAddr, mbi.RegionSize))
+                {
+                    address = reinterpret_cast<LPBYTE>(mbi.BaseAddress) + mbi.RegionSize;
+                    continue;
+                }
+
+                // 性能优化：增量扫描 - 跳过已扫描区域
+                uintptr_t regionHash = currentAddr ^ (currentAddr >> 12);
+                if (!isFullScan && scannedRegions.count(regionHash) > 0)
+                {
+                    address = reinterpret_cast<LPBYTE>(mbi.BaseAddress) + mbi.RegionSize;
+                    continue;
+                }
+                scannedRegions.insert(regionHash);
+
+                if ((i++ & 31) == 0)  // 优化：减少超时检查频率
                 {
                     auto now = std::chrono::steady_clock::now();
                     if (std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count() > budget_ms)
@@ -3281,9 +3309,9 @@ class PrivateExecutableMemorySensor : public ISensor
                     }
 
                     // 生产环境优化：内存扫描过程中让出CPU
-                    if ((i & 127) == 0 && i > 0)  // 每128次让出CPU
+                    if ((i & 255) == 0 && i > 0)  // 优化：减少CPU让出频率
                     {
-                        Sleep(1);
+                        Sleep(0);  // 优化：使用Sleep(0)而不是Sleep(1)
                     }
                 }
 
@@ -3326,6 +3354,22 @@ class PrivateExecutableMemorySensor : public ISensor
         {
             context.HandleSensorException(GetName(), "Unknown exception");
         }
+    }
+
+   private:
+    // 性能优化：智能安全区域检测
+    static bool IsKnownSafeRegion(uintptr_t baseAddr, SIZE_T regionSize)
+    {
+        // 跳过系统保留区域
+        if (baseAddr < 0x10000) return true;  // 64KB以下
+        
+        // 跳过大内存池（通常由内存分配器管理）
+        if (regionSize > 0x1000000) return true;  // 16MB以上
+        
+        // 跳过特定地址范围（根据系统特性调整）
+        if (baseAddr >= 0x7FFE0000 && baseAddr < 0x7FFF0000) return true;  // 系统保留
+        
+        return false;
     }
 };
 
@@ -3516,6 +3560,18 @@ class HiddenModuleSensor : public ISensor
                 return;
             }
             
+            // 性能优化：智能区域过滤和增量扫描
+            static std::unordered_set<uintptr_t> scannedRegions;
+            static std::chrono::steady_clock::time_point lastFullScan = std::chrono::steady_clock::now();
+            const auto now = std::chrono::steady_clock::now();
+            
+            // 每5分钟执行一次完整扫描，其他时候执行增量扫描
+            const bool isFullScan = (now - lastFullScan) > std::chrono::minutes(5);
+            if (isFullScan) {
+                scannedRegions.clear();
+                lastFullScan = now;
+            }
+            
             MEMORY_BASIC_INFORMATION mbi;
             LPBYTE address = nullptr;
 
@@ -3531,7 +3587,23 @@ class HiddenModuleSensor : public ISensor
                     break;  // 超出用户地址空间范围
                 }
 
-                if ((i++ & 15) == 0)
+                // 性能优化：跳过已知安全区域
+                if (IsKnownSafeRegion(currentAddr, mbi.RegionSize))
+                {
+                    address = reinterpret_cast<LPBYTE>(mbi.BaseAddress) + mbi.RegionSize;
+                    continue;
+                }
+
+                // 性能优化：增量扫描 - 跳过已扫描区域
+                uintptr_t regionHash = currentAddr ^ (currentAddr >> 12);
+                if (!isFullScan && scannedRegions.count(regionHash) > 0)
+                {
+                    address = reinterpret_cast<LPBYTE>(mbi.BaseAddress) + mbi.RegionSize;
+                    continue;
+                }
+                scannedRegions.insert(regionHash);
+
+                if ((i++ & 31) == 0)  // 优化：减少超时检查频率
                 {
                     auto now = std::chrono::steady_clock::now();
                     if (std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count() > budget_ms)
@@ -3541,9 +3613,9 @@ class HiddenModuleSensor : public ISensor
                     }
 
                     // 生产环境优化：让出CPU时间片
-                    if ((i & 127) == 0 && i > 0)  // 每128次让出CPU
+                    if ((i & 255) == 0 && i > 0)  // 优化：减少CPU让出频率
                     {
-                        Sleep(1);
+                        Sleep(0);  // 优化：使用Sleep(0)而不是Sleep(1)
                     }
                 }
 
@@ -3605,7 +3677,22 @@ class HiddenModuleSensor : public ISensor
         }
     }
 
-private:
+   private:
+    // 性能优化：智能安全区域检测
+    static bool IsKnownSafeRegion(uintptr_t baseAddr, SIZE_T regionSize)
+    {
+        // 跳过系统保留区域
+        if (baseAddr < 0x10000) return true;  // 64KB以下
+        
+        // 跳过大内存池（通常由内存分配器管理）
+        if (regionSize > 0x1000000) return true;  // 16MB以上
+        
+        // 跳过特定地址范围（根据系统特性调整）
+        if (baseAddr >= 0x7FFE0000 && baseAddr < 0x7FFF0000) return true;  // 系统保留
+        
+        return false;
+    }
+
     struct HiddenMemoryCheckResult
     {
         bool shouldReport = false;
@@ -3661,7 +3748,7 @@ typedef NTSTATUS(WINAPI *NtCreateThread_t)(PHANDLE ThreadHandle, ACCESS_MASK Des
                                            PSIZE_T StackSize, PSIZE_T MaximumStackSize,
                                            PPS_ATTRIBUTE_LIST AttributeList);
 
-// 指向原始函数的“跳板”
+// 指向原始函数的"跳板"
 static VirtualAlloc_t pTrampolineVirtualAlloc = nullptr;
 static VirtualAllocEx_t pTrampolineVirtualAllocEx = nullptr;
 static VirtualProtect_t pTrampolineVirtualProtect = nullptr;
@@ -4201,19 +4288,19 @@ bool CheatMonitor::Pimpl::IsCurrentOsSupported() const
     anti_cheat::OsMinimum requiredMinOs = CheatConfigManager::GetInstance().GetRequiredMinOs();
     
     switch (requiredMinOs) {
-        case anti_cheat::OS_ANY:
-            return true;
-        case anti_cheat::OS_WIN7_SP1:
-            return m_windowsVersion == Win_Vista_Win7 || m_windowsVersion == Win_8_Win81 ||
-                   m_windowsVersion == Win_10 || m_windowsVersion == Win_11;
-        case anti_cheat::OS_WIN8:
-            return m_windowsVersion == Win_8_Win81 || m_windowsVersion == Win_10 || m_windowsVersion == Win_11;
-        case anti_cheat::OS_WIN10:
-            return m_windowsVersion == Win_10 || m_windowsVersion == Win_11;
-        case anti_cheat::OS_WIN11:
-            return m_windowsVersion == Win_11;
-        default:
-            return false;
+            case anti_cheat::OS_ANY:
+                return true;
+            case anti_cheat::OS_WIN7_SP1:
+                return m_windowsVersion == Win_Vista_Win7 || m_windowsVersion == Win_8_Win81 ||
+                       m_windowsVersion == Win_10 || m_windowsVersion == Win_11;
+            case anti_cheat::OS_WIN8:
+                return m_windowsVersion == Win_8_Win81 || m_windowsVersion == Win_10 || m_windowsVersion == Win_11;
+            case anti_cheat::OS_WIN10:
+                return m_windowsVersion == Win_10 || m_windowsVersion == Win_11;
+            case anti_cheat::OS_WIN11:
+                return m_windowsVersion == Win_11;
+            default:
+                return false;
     }
 }
 
@@ -4302,7 +4389,7 @@ void CheatMonitor::Pimpl::UploadHardwareReport()
 {
     if (!m_hwCollector)
         return;
-    
+
     auto fp = m_hwCollector->ConsumeFingerprint();
     if (!fp)
         return;
@@ -4340,7 +4427,7 @@ void CheatMonitor::Pimpl::UploadEvidenceReport()
     evidence_report->set_report_timestamp_ms(
         std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::system_clock::now().time_since_epoch()).count());
-    
+
     // 移动证据到报告中，并清空本地缓存
     for (auto &evidence : m_evidences)
     {
@@ -4348,7 +4435,7 @@ void CheatMonitor::Pimpl::UploadEvidenceReport()
     }
     m_evidences.clear();
     m_uniqueEvidence.clear();  // 清空去重集合
-    
+
     SendReport(report);
 }
 
@@ -4383,10 +4470,10 @@ void CheatMonitor::Pimpl::UploadTelemetryReport()
     FillPerfTelemetry(tm, sendPerfThisTime);
     
     *telemetry_report->mutable_metrics() = tm;
-    
+
     // 控制台打印本地快照（便于本地soak测试）
     LogPerfTelemetry();
-    
+
     SendReport(report);
 }
 
@@ -5046,8 +5133,8 @@ void CheatMonitor::Pimpl::VerifyModuleSignature(HMODULE hModule)
         }
     }
 
-    //  改进签名验证逻辑，更严格地处理验证失败的情况，解决专家提出的“宽松处理”问题。
-    // 只有在明确验证为“可信”或“不可信”时才更新缓存。
+    //  改进签名验证逻辑，更严格地处理验证失败的情况，解决专家提出的"宽松处理"问题。
+    // 只有在明确验证为"可信"或"不可信"时才更新缓存。
     // 如果验证过程本身失败（例如，网络问题导致无法检查吊销列表），则不更新缓存，
     // 以便在下一次扫描时重试。
     switch (Utils::VerifyFileSignature(modulePath, m_windowsVersion))
@@ -5166,7 +5253,7 @@ PBYTE FindPattern(PBYTE base, SIZE_T size, const BYTE *pattern, SIZE_T patternSi
 
 uintptr_t CheatMonitor::Pimpl::FindVehListAddress()
 {
-    //  采用单一、更可靠的“诱饵处理函数”方法来定位VEH链表。
+    //  采用单一、更可靠的"诱饵处理函数"方法来定位VEH链表。
     // 此方法比依赖脆弱的字节码模式匹配要稳定得多，能更好地适应Windows版本更新。
     PVOID pDecoyHandler = AddVectoredExceptionHandler(1, DecoyVehHandler);
     if (!pDecoyHandler)
