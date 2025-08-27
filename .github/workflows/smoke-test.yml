@@ -29,24 +29,34 @@ jobs:
       uses: lukka/run-vcpkg@v11
       with:
         vcpkgDirectory: '${{ github.workspace }}/vcpkg'
-        vcpkgGitCommitId: '2023.12.12'
+        vcpkgGitCommitId: 'f7423ee180c4b7f40d43402c2feb3859161ef625'
         vcpkgJsonGlob: 'vcpkg.json'
+        appendedCacheKey: ${{ matrix.platform }}
+        runVcpkgInstall: true
 
-    - name: Install dependencies
+    - name: 📚 vcpkg集成
+      shell: powershell
       run: |
-        vcpkg install protobuf:${{ matrix.platform }}-windows
-        vcpkg install gtest:${{ matrix.platform }}-windows
+        Write-Host "=== vcpkg manifest模式集成 ==="
+        # 在manifest模式下，依赖会由CMake自动处理，无需手动安装
         vcpkg integrate install
+        Write-Host "vcpkg集成完成，依赖将由CMake自动处理"
 
     - name: Configure CMake
+      shell: powershell
       run: |
-        cmake -B build -S . ^
-          -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake" ^
-          -DVCPKG_TARGET_TRIPLET=${{ matrix.platform }}-windows ^
-          -A "${{ matrix.platform == 'x86' && 'Win32' || 'x64' }}"
+        Write-Host "=== 配置CMake ==="
+        $arch = if ("${{ matrix.platform }}" -eq "x86") { "Win32" } else { "x64" }
+        
+        cmake -B build -S . `
+          -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake" `
+          -DVCPKG_TARGET_TRIPLET="${{ matrix.platform }}-windows" `
+          -A $arch
 
     - name: Build AntiCheat
+      shell: powershell
       run: |
+        Write-Host "=== 构建AntiCheat ==="
         cmake --build build --config ${{ matrix.config }} --parallel
 
     - name: Generate test data
@@ -60,9 +70,7 @@ jobs:
         base_scan_interval_seconds: 20
         heavy_scan_interval_minutes: 20
         report_upload_interval_minutes: 30
-        enable_veh_scan: true
-        enable_handle_scan: true
-        rollout_group: "test"
+        rollout_group_enum: "WIN10_PLUS_BASIC"
         harmful_process_names: ["cheatengine", "ollydbg"]
         harmful_keywords: ["外挂", "hack"]
         "@

@@ -40,11 +40,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        platform: ${{ 
-          (github.event.inputs.platform_filter == 'x64-only' && fromJson('["x64"]')) ||
-          (github.event.inputs.platform_filter == 'x86-only' && fromJson('["x86"]')) ||
-          fromJson('["x86", "x64"]')
-        }}
+        platform: [x86, x64]
         config: [Debug, Release]
         
     outputs:
@@ -562,66 +558,37 @@ jobs:
         
         $overallSuccess = $buildSuccess -and $qualitySuccess -and $functionalSuccess -and $securitySuccess
         
-        $report = @"
-# 🚀 AntiCheat系统冒烟测试报告
-
-## 📋 测试概述
-- **触发方式**: ${{ github.event_name }}
-- **分支**: ${{ github.ref_name }}
-- **提交**: ${{ github.sha }}
-- **测试时间**: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss UTC')
-- **测试级别**: ${{ github.event.inputs.test_level || 'standard' }}
-- **平台过滤**: ${{ github.event.inputs.platform_filter || 'all' }}
-
-## 🏗️ 测试阶段结果
-
-| 阶段 | 状态 | 说明 |
-|------|------|------|
-| 构建验证 | $($buildSuccess ? '✅ 通过' : '❌ 失败') | 多平台构建和编译产物验证 |
-| 代码质量 | $($qualitySuccess ? '✅ 通过' : '❌ 失败') | 传感器完整性和配置检查 |
-| 功能测试 | $($functionalSuccess ? '✅ 通过' : '❌ 失败') | Windows兼容性和性能指标测试 |
-| 安全扫描 | $($securitySuccess ? '✅ 通过' : '❌ 失败') | CodeQL静态分析和安全检查 |
-
-## 🎯 关键验证项目
-
-### ✅ 传感器系统 (14个传感器)
-- **轻量级传感器**: AdvancedAntiDebug, SystemIntegrity (< 1ms)
-- **中等传感器**: IatHook, SelfIntegrity, Environment, SuspiciousLaunch (1-10ms)  
-- **重量级传感器**: MemoryScan, ProcessHandle, HandleCorrelation, NewActivity, PrivateExecutableMemory, HiddenModule, ThreadIntegrity (10-100ms)
-- **关键传感器**: VehHook (> 100ms)
-
-### ✅ 生产环境特性
-- **超时控制**: 所有传感器具备预算控制
-- **异常处理**: 完整的异常捕获和退避机制  
-- **性能监控**: 2h/72h滚动窗口统计
-- **灰度测试**: 支持多分组策略控制
-
-### ✅ 平台兼容性
-- **Windows 7+**: 全版本支持
-- **架构支持**: x86/x64双平台
-- **API兼容**: 动态加载高版本API，提供降级方案
-
-### ✅ 配置管理
-- **动态配置**: 300+字段完全服务器控制
-- **黑白名单**: 200+条目覆盖主流场景
-- **无锁读取**: 读时复制避免锁争用
-
-## 📈 构建指标
-- **编译时间**: ~3-5分钟 (并行构建)
-- **产物大小**: ~50MB (Debug), ~20MB (Release)
-- **依赖管理**: vcpkg + protobuf
-
-## 🔒 安全评估
-- **静态分析**: CodeQL扫描通过
-- **内存安全**: 使用安全函数(sprintf_s等)
-- **头文件保护**: 所有头文件具备保护机制
-
-## 📊 总体评估
-$($overallSuccess ? '🎉 **所有测试通过，系统达到生产环境标准!**' : '⚠️ **部分测试失败，需要修复后重新测试**')
-
----
-*本报告由AntiCheat Enhanced Smoke Test自动生成*
-"@
+        $report = "AntiCheat系统冒烟测试报告`n"
+        $report += "========================`n`n"
+        $report += "测试概述:`n"
+        $report += "- 触发方式: ${{ github.event_name }}`n"
+        $report += "- 分支: ${{ github.ref_name }}`n"
+        $report += "- 提交: ${{ github.sha }}`n"
+        $report += "- 测试时间: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss UTC')`n"
+        $report += "- 测试级别: ${{ github.event.inputs.test_level || 'standard' }}`n"
+        $report += "- 平台过滤: ${{ github.event.inputs.platform_filter || 'all' }}`n`n"
+        $report += "测试阶段结果:`n"
+        $report += "- 构建验证: $($buildSuccess ? '通过' : '失败') - 多平台构建和编译产物验证`n"
+        $report += "- 代码质量: $($qualitySuccess ? '通过' : '失败') - 传感器完整性和配置检查`n"
+        $report += "- 功能测试: $($functionalSuccess ? '通过' : '失败') - Windows兼容性和性能指标测试`n"
+        $report += "- 安全扫描: $($securitySuccess ? '通过' : '失败') - CodeQL静态分析和安全检查`n`n"
+        $report += "关键验证项目:`n"
+        $report += "- 传感器系统: 14个传感器 (LIGHT/MEDIUM/HEAVY/CRITICAL)`n"
+        $report += "- 生产环境特性: 超时控制、异常处理、性能监控、灰度测试`n"
+        $report += "- 平台兼容性: Windows 7+, x86/x64双平台`n"
+        $report += "- 配置管理: 300+字段完全服务器控制`n`n"
+        $report += "构建指标:`n"
+        $report += "- 编译时间: ~3-5分钟 (并行构建)`n"
+        $report += "- 产物大小: ~50MB (Debug), ~20MB (Release)`n"
+        $report += "- 依赖管理: vcpkg + protobuf`n`n"
+        $report += "安全评估:`n"
+        $report += "- 静态分析: CodeQL扫描通过`n"
+        $report += "- 内存安全: 使用安全函数(sprintf_s等)`n"
+        $report += "- 头文件保护: 所有头文件具备保护机制`n`n"
+        $report += "总体评估:`n"
+        $report += "$($overallSuccess ? '所有测试通过，系统达到生产环境标准!' : '部分测试失败，需要修复后重新测试')`n`n"
+        $report += "---`n"
+        $report += "*本报告由AntiCheat Enhanced Smoke Test自动生成*"
         
         Set-Content -Path "smoke-test-report.md" -Value $report
         Write-Host $report
