@@ -33,6 +33,7 @@ jobs:
         vcpkgJsonGlob: 'vcpkg.json'
         appendedCacheKey: ${{ matrix.platform }}
         runVcpkgInstall: true
+        vcpkgArguments: '--triplet=${{ matrix.platform }}-windows'
 
     - name: 📚 vcpkg集成
       shell: powershell
@@ -48,9 +49,15 @@ jobs:
         Write-Host "=== Configure CMake ==="
         $arch = if ("${{ matrix.platform }}" -eq "x86") { "Win32" } else { "x64" }
         
+        # Ensure vcpkg dependencies are properly installed
+        Write-Host "Checking vcpkg installation..."
+        vcpkg list
+        
+        Write-Host "Configuring CMake with vcpkg..."
         cmake -B build -S . `
           -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake" `
           -DVCPKG_TARGET_TRIPLET="${{ matrix.platform }}-windows" `
+          -DVCPKG_HOST_TRIPLET="${{ matrix.platform }}-windows" `
           -A $arch
 
     - name: Build AntiCheat
