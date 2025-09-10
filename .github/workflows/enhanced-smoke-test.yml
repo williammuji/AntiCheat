@@ -74,9 +74,9 @@ jobs:
         vcpkgDirectory: '${{ github.workspace }}/vcpkg'
         vcpkgGitCommitId: ${{ env.VCPKG_COMMIT }}
         vcpkgJsonGlob: 'vcpkg.json'
-        appendedCacheKey: ${{ matrix.platform }}
+        appendedCacheKey: ${{ matrix.platform }}-${{ matrix.config }}
         runVcpkgInstall: true
-        vcpkgArguments: '--triplet=${{ matrix.platform }}-windows'
+        vcpkgArguments: '--triplet=${{ matrix.platform }}-windows --x-install-root=${{ github.workspace }}/vcpkg_installed'
 
     - name: 📚 vcpkg集成
       shell: powershell
@@ -219,18 +219,13 @@ jobs:
         # Check all sensors are registered
         $expectedSensors = @(
           "AdvancedAntiDebugSensor",
-          "SystemIntegritySensor", 
+          "SystemCodeIntegritySensor", 
+          "ProcessAndWindowMonitorSensor",
           "IatHookSensor",
-          "SelfIntegritySensor",
-          "EnvironmentSensor",
-          "SuspiciousLaunchSensor",
-          "MemoryScanSensor",
+          "ModuleIntegritySensor",
           "ProcessHandleSensor",
-          "HandleCorrelationSensor",
-          "NewActivitySensor",
-          "PrivateExecutableMemorySensor",
-          "HiddenModuleSensor",
-          "ThreadIntegritySensor",
+          "ThreadAndModuleActivitySensor",
+          "MemorySecuritySensor",
           "VehHookSensor"
         )
         
@@ -245,8 +240,8 @@ jobs:
         # Check weight classification
         $weightChecks = @{
           "LIGHT" = 2;
-          "MEDIUM" = 4; 
-          "HEAVY" = 7;
+          "MEDIUM" = 2; 
+          "HEAVY" = 4;
           "CRITICAL" = 1
         }
         
@@ -266,7 +261,7 @@ jobs:
           "Exception Handling" = "HandleSensorException|sensor_exceptions";
           "Performance Recording" = "RecordSensorRuntime|elapsed_ms";
           "Backoff Mechanism" = "m_sensorBackoffUntil|backoff";
-          "Grayscale Control" = "rollout_group_enum|GetRolloutGroupEnum"
+          "OS Version Control" = "min_os_version|GetMinOs"
         }
         
         foreach ($feature in $prodFeatures.GetEnumerator()) {
@@ -304,7 +299,7 @@ jobs:
           "Budget Control" = "light_scan_budget_ms|heavy_scan_budget_ms";
           "Capacity Control" = "max_evidences_per_session|max_illegal_sources";
           "Security Threshold" = "max_veh_handlers_to_scan|max_handles_to_scan";
-          "Rollout Group" = "rollout_group_enum";
+          "OS Version" = "min_os_version";
           "Performance Control" = "veh_scan_timeout_ms|iat_scan_timeout_ms";
           "Behavior Control" = "suspicious_handle_ttl_minutes|report_cooldown_minutes"
         }
@@ -378,7 +373,7 @@ jobs:
         $report += "- Build Validation: $(if ($buildSuccess) { 'PASS' } else { 'FAIL' }) - Multi-platform build and compilation verification`n"
         $report += "- Code Quality: $(if ($qualitySuccess) { 'PASS' } else { 'FAIL' }) - Sensor integrity and configuration checks`n`n"
         $report += "Key Verification Items:`n"
-        $report += "- Sensor System: 14 sensors (LIGHT/MEDIUM/HEAVY/CRITICAL)`n"
+        $report += "- Sensor System: 9 sensors (LIGHT/MEDIUM/HEAVY/CRITICAL)`n"
         $report += "- Production Features: Timeout control, exception handling, performance monitoring, grayscale testing`n"
         $report += "- Platform Compatibility: Windows 7+, x86/x64 dual platform`n"
         $report += "- Configuration Management: 300+ fields fully server-controlled`n`n"

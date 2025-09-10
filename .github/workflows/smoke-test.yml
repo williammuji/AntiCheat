@@ -31,9 +31,9 @@ jobs:
         vcpkgDirectory: '${{ github.workspace }}/vcpkg'
         vcpkgGitCommitId: 'f7423ee180c4b7f40d43402c2feb3859161ef625'
         vcpkgJsonGlob: 'vcpkg.json'
-        appendedCacheKey: ${{ matrix.platform }}
+        appendedCacheKey: ${{ matrix.platform }}-${{ matrix.config }}
         runVcpkgInstall: true
-        vcpkgArguments: '--triplet=${{ matrix.platform }}-windows'
+        vcpkgArguments: '--triplet=${{ matrix.platform }}-windows --x-install-root=${{ github.workspace }}/vcpkg_installed'
 
     - name: 📚 vcpkg集成
       shell: powershell
@@ -58,13 +58,29 @@ jobs:
           -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake" `
           -DVCPKG_TARGET_TRIPLET="${{ matrix.platform }}-windows" `
           -DVCPKG_HOST_TRIPLET="${{ matrix.platform }}-windows" `
-          -A $arch
+          -A $arch `
+          -DCMAKE_VERBOSE_MAKEFILE=ON
+          
+        if ($LASTEXITCODE -ne 0) {
+          Write-Error "CMake configuration failed"
+          exit 1
+        }
 
     - name: Build AntiCheat
       shell: powershell
       run: |
         Write-Host "=== Build AntiCheat ==="
-        cmake --build build --config ${{ matrix.config }} --parallel
+        $startTime = Get-Date
+        
+        cmake --build build --config ${{ matrix.config }} --parallel 4
+        
+        if ($LASTEXITCODE -ne 0) {
+          Write-Error "Build failed"
+          exit 1
+        }
+        
+        $buildTime = (Get-Date) - $startTime
+        Write-Host "✅ Build completed, time: $($buildTime.TotalSeconds.ToString('F2')) seconds"
         
         # Verify build success
         Write-Host "=== Verifying build artifacts ==="
@@ -93,7 +109,7 @@ jobs:
         base_scan_interval_seconds: 20
         heavy_scan_interval_minutes: 20
         report_upload_interval_minutes: 30
-        rollout_group_enum: "WIN10_PLUS_BASIC"
+        min_os_version: "OS_WIN10"
         harmful_process_names: ["cheatengine", "ollydbg"]
         harmful_keywords: ["cheat", "hack"]
         "@

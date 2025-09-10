@@ -29,8 +29,6 @@ class CheatMonitor final
     CheatMonitor(const CheatMonitor &) = delete;
     CheatMonitor &operator=(const CheatMonitor &) = delete;
 
-    std::mutex m_initMutex;  // 用于保护 Initialize 和 Shutdown 的互斥锁
-
     std::unique_ptr<Pimpl> m_pimpl;
 };
 

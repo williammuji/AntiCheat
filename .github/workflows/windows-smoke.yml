@@ -10,17 +10,49 @@ on:
 jobs:
   build-windows:
     runs-on: windows-latest
+    
+    strategy:
+      matrix:
+        platform: [x86, x64]
+        config: [Debug, Release]
+    
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Setup vcpkg cache
-        uses: actions/cache@v4
         with:
-          path: vcpkg
-          key: vcpkg-${{ runner.os }}-1
+          submodules: recursive
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v1.3
+
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgDirectory: '${{ github.workspace }}/vcpkg'
+          vcpkgGitCommitId: 'f7423ee180c4b7f40d43402c2feb3859161ef625'
+          vcpkgJsonGlob: 'vcpkg.json'
+          appendedCacheKey: ${{ matrix.platform }}-${{ matrix.config }}
+          runVcpkgInstall: true
+          vcpkgArguments: '--triplet=${{ matrix.platform }}-windows --x-install-root=${{ github.workspace }}/vcpkg_installed'
 
       - name: Run smoke build (with vcpkg)
         shell: pwsh
         run: |
+          Write-Host "=== Windows Smoke Build ==="
+          Write-Host "Platform: ${{ matrix.platform }}"
+          Write-Host "Config: ${{ matrix.config }}"
+          
+          # Use the build script with proper parameters
           ./scripts/build.ps1 -UseVcpkg
+          
+          # Verify build artifacts
+          Write-Host "=== Verifying Build Artifacts ==="
+          $artifacts = Get-ChildItem -Path "build-smoke" -Recurse -Include "*.obj", "*.lib", "*.exe", "*.pdb" -ErrorAction SilentlyContinue
+          Write-Host "Found $($artifacts.Count) build artifacts"
+          
+          if ($artifacts.Count -eq 0) {
+            Write-Error "No build artifacts found - build may have failed"
+            exit 1
+          } else {
+            Write-Host "✅ Build verification passed"
+          }

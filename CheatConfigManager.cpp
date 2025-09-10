@@ -139,17 +139,20 @@ int32_t CheatConfigManager::GetMaxIllegalSources() const
 {
     return GetCurrentConfig()->config->max_illegal_sources();
 }
-int32_t CheatConfigManager::GetLightScanBudgetMs() const
-{
-    return GetCurrentConfig()->config->light_scan_budget_ms();
-}
-int32_t CheatConfigManager::GetHeavyScanBudgetMs() const
-{
-    return GetCurrentConfig()->config->heavy_scan_budget_ms();
-}
 
 // --- 容量与缓存控制 ---
-
+int32_t CheatConfigManager::GetMaxMouseMoveEvents() const
+{
+    return GetCurrentConfig()->config->max_mouse_move_events();
+}
+int32_t CheatConfigManager::GetMaxMouseClickEvents() const
+{
+    return GetCurrentConfig()->config->max_mouse_click_events();
+}
+int32_t CheatConfigManager::GetMaxKeyboardEvents() const
+{
+    return GetCurrentConfig()->config->max_keyboard_events();
+}
 int32_t CheatConfigManager::GetProcessCacheDurationMinutes() const
 {
     return GetCurrentConfig()->config->process_cache_duration_minutes();
@@ -158,155 +161,163 @@ int32_t CheatConfigManager::GetSignatureCacheDurationMinutes() const
 {
     return GetCurrentConfig()->config->signature_cache_duration_minutes();
 }
+int32_t CheatConfigManager::GetSignatureVerificationThrottleSeconds() const
+{
+    return GetCurrentConfig()->config->signature_verification_throttle_seconds();
+}
+int32_t CheatConfigManager::GetSignatureVerificationFailureThrottleMs() const
+{
+    return GetCurrentConfig()->config->signature_verification_failure_throttle_ms();
+}
 
 // --- 输入自动化检测参数 ---
+int32_t CheatConfigManager::GetMaxMouseMoveEvents() const
+{
+    return GetCurrentConfig()->config->max_mouse_move_events();
+}
 
+int32_t CheatConfigManager::GetMaxMouseClickEvents() const
+{
+    return GetCurrentConfig()->config->max_mouse_click_events();
+}
+
+int32_t CheatConfigManager::GetMaxKeyboardEvents() const
+{
+    return GetCurrentConfig()->config->max_keyboard_events();
+}
+
+int32_t CheatConfigManager::GetKeyboardMacroMinSequenceLength() const
+{
+    return GetCurrentConfig()->config->keyboard_macro_min_sequence_length();
+}
+
+int32_t CheatConfigManager::GetKeyboardMacroMinPatternLength() const
+{
+    return GetCurrentConfig()->config->keyboard_macro_min_pattern_length();
+}
+
+double CheatConfigManager::GetMouseClickStddevThreshold() const
+{
+    return GetCurrentConfig()->config->mouse_click_stddev_threshold();
+}
+
+int32_t CheatConfigManager::GetMouseMoveCollinearThreshold() const
+{
+    return GetCurrentConfig()->config->mouse_move_collinear_threshold();
+}
+
+// --- 输入自动化检测参数 ---
+int32_t CheatConfigManager::GetKeyboardMacroMinSequenceLength() const
+{
+    return GetCurrentConfig()->config->keyboard_macro_min_sequence_length();
+}
+int32_t CheatConfigManager::GetKeyboardMacroMinPatternLength() const
+{
+    return GetCurrentConfig()->config->keyboard_macro_min_pattern_length();
+}
+
+// --- 新增的Getters ---
+
+double CheatConfigManager::GetMouseClickStddevThreshold() const
+{
+    return GetCurrentConfig()->config->mouse_click_stddev_threshold();
+}
+
+int32_t CheatConfigManager::GetMouseMoveCollinearThreshold() const
+{
+    return GetCurrentConfig()->config->mouse_move_collinear_threshold();
+}
 
 int32_t CheatConfigManager::GetMaxVehHandlersToScan() const
 {
     return GetCurrentConfig()->config->max_veh_handlers_to_scan();
 }
 
-int32_t CheatConfigManager::GetMaxHandlesToScan() const
+int32_t CheatConfigManager::GetMaxCodeSectionSize() const
 {
-    return GetCurrentConfig()->config->max_handles_to_scan();
+    return GetCurrentConfig()->config->max_code_section_size();
 }
 
-anti_cheat::OsMinimum CheatConfigManager::GetRequiredMinOs() const
+anti_cheat::OsVersion CheatConfigManager::GetMinOsVersion() const
 {
-    anti_cheat::RolloutGroup rolloutGroup = GetRolloutGroupEnum();
-    
-    switch (rolloutGroup) {
-        case anti_cheat::WIN10_PLUS_BASIC:
-        case anti_cheat::WIN10_PLUS_ADVANCED:
-            return anti_cheat::OS_WIN10;  // WIN10_PLUS组要求Win10+
-            
-        case anti_cheat::WIN7_PLUS_BASIC:
-        case anti_cheat::WIN7_PLUS_ADVANCED:
-            return anti_cheat::OS_WIN7_SP1;  // WIN7_PLUS组要求Win7+
-            
-        case anti_cheat::LEGACY_FULL:
-        case anti_cheat::ROLLOUT_UNKNOWN:
+    // 直接返回配置的OS版本要求
+    return GetCurrentConfig()->config->min_os_version();
+}
+
+std::string CheatConfigManager::GetMinOsVersionName() const
+{
+    auto osVersion = GetCurrentConfig()->config->min_os_version();
+    switch (osVersion)
+    {
+        case anti_cheat::OS_ANY:
+            return "所有版本";
+        case anti_cheat::OS_WIN_XP:
+            return "Windows XP及以上";
+        case anti_cheat::OS_WIN7_SP1:
+            return "Windows 7 SP1及以上";
+        case anti_cheat::OS_WIN10:
+            return "Windows 10及以上";
         default:
-            return anti_cheat::OS_WIN7_SP1;  // 其他任何情况，强制Win7+
+            return "未知版本";
     }
 }
 
-std::string CheatConfigManager::GetRolloutGroup() const
+// 通用配置参数（所有Sensor共用）
+int32_t CheatConfigManager::GetSensorTimeoutMs() const
 {
-    // 字符串格式的灰度分组已弃用，基于enum生成可读字符串
-    return GetRolloutGroupName();
+    return GetCurrentConfig()->config->sensor_timeout_ms();
 }
 
-// 新的灰度分组策略实现
-anti_cheat::RolloutGroup CheatConfigManager::GetRolloutGroupEnum() const
+int32_t CheatConfigManager::GetHeavyScanBudgetMs() const
 {
-    if (GetCurrentConfig()->config->has_rollout_group_enum()) {
-        return GetCurrentConfig()->config->rollout_group_enum();
-    }
-    
-    // 如果没有设置rollout_group_enum，使用保守的默认值
-    return anti_cheat::WIN7_PLUS_BASIC;  // 默认为Win7+基础组
+    return GetCurrentConfig()->config->heavy_scan_budget_ms();
 }
 
-bool CheatConfigManager::IsVehScanEnabled() const
+// [新增] PrivateExecutableMemorySensor配置参数getter
+int32_t CheatConfigManager::GetMinMemoryRegionSize() const
 {
-    anti_cheat::RolloutGroup group = GetRolloutGroupEnum();
-    switch (group) {
-        case anti_cheat::WIN10_PLUS_ADVANCED:
-        case anti_cheat::WIN7_PLUS_ADVANCED:
-        case anti_cheat::LEGACY_FULL:
-            return true;  // 高级组和全功能组开启VEH扫描
-        case anti_cheat::WIN10_PLUS_BASIC:
-        case anti_cheat::WIN7_PLUS_BASIC:
-        default:
-            return false; // 基础组不开启VEH扫描
-    }
+    return GetCurrentConfig()->config->min_memory_region_size();
 }
 
-bool CheatConfigManager::IsHandleScanEnabled() const
+int32_t CheatConfigManager::GetMaxMemoryRegionSize() const
 {
-    anti_cheat::RolloutGroup group = GetRolloutGroupEnum();
-    switch (group) {
-        case anti_cheat::WIN10_PLUS_ADVANCED:
-        case anti_cheat::WIN7_PLUS_ADVANCED:
-        case anti_cheat::LEGACY_FULL:
-            return true;  // 高级组和全功能组开启Handle扫描
-        case anti_cheat::WIN10_PLUS_BASIC:
-        case anti_cheat::WIN7_PLUS_BASIC:
-        default:
-            return false; // 基础组不开启Handle扫描
-    }
+    return GetCurrentConfig()->config->max_memory_region_size();
 }
 
-std::string CheatConfigManager::GetRolloutGroupName() const
+// 移除maxScannedRegions相关配置，依赖budget_ms机制
+
+// 删除不必要的数量限制和频率配置getter
+
+// [新增] EnvironmentSensor配置参数getter
+int32_t CheatConfigManager::GetMaxProcessesToScan() const
 {
-    anti_cheat::RolloutGroup group = GetRolloutGroupEnum();
-    switch (group) {
-        case anti_cheat::WIN10_PLUS_BASIC:
-            return "win10-plus-basic";
-        case anti_cheat::WIN10_PLUS_ADVANCED:
-            return "win10-plus-advanced";
-        case anti_cheat::WIN7_PLUS_BASIC:
-            return "win7-plus-basic";
-        case anti_cheat::WIN7_PLUS_ADVANCED:
-            return "win7-plus-advanced";
-        case anti_cheat::LEGACY_FULL:
-            return "legacy-full";
-        default:
-            return "unknown";
-    }
+    return GetCurrentConfig()->config->max_processes_to_scan();
 }
 
-// 新增生产环境配置参数（减少硬编码）
-int32_t CheatConfigManager::GetVehScanTimeoutMs() const
+// [新增] 性能调优参数
+int32_t CheatConfigManager::GetMaxWindowCount() const
 {
-    return GetCurrentConfig()->config->has_veh_scan_timeout_ms() ? GetCurrentConfig()->config->veh_scan_timeout_ms()
-                                                                 : 5000;  // 默认5秒
+    return GetCurrentConfig()->config->max_window_count();
 }
 
-int32_t CheatConfigManager::GetIatScanTimeoutMs() const
+int32_t CheatConfigManager::GetMaxHandleScanCount() const
 {
-    return GetCurrentConfig()->config->has_iat_scan_timeout_ms() ? GetCurrentConfig()->config->iat_scan_timeout_ms()
-                                                                 : 3000;  // 默认3秒
+    return GetCurrentConfig()->config->max_handle_scan_count();
 }
 
-int32_t CheatConfigManager::GetMemoryScanChunkSize() const
+int32_t CheatConfigManager::GetInitialBufferSizeMb() const
 {
-    return GetCurrentConfig()->config->has_memory_scan_chunk_size()
-                   ? GetCurrentConfig()->config->memory_scan_chunk_size()
-                   : 1024;  // 默认1KB
+    return GetCurrentConfig()->config->initial_buffer_size_mb();
 }
 
-int32_t CheatConfigManager::GetCpuYieldInterval() const
+int32_t CheatConfigManager::GetMaxBufferSizeMb() const
 {
-    return GetCurrentConfig()->config->has_cpu_yield_interval() ? GetCurrentConfig()->config->cpu_yield_interval()
-                                                                : 128;  // 默认每128次迭代
+    return GetCurrentConfig()->config->max_buffer_size_mb();
 }
 
-int32_t CheatConfigManager::GetMaxRetryAttempts() const
+int32_t CheatConfigManager::GetSensorStatsUploadIntervalMinutes() const
 {
-    return GetCurrentConfig()->config->has_max_retry_attempts() ? GetCurrentConfig()->config->max_retry_attempts()
-                                                                : 3;  // 默认3次重试
-}
-
-int32_t CheatConfigManager::GetBackoffBaseMs() const
-{
-    return GetCurrentConfig()->config->has_backoff_base_ms() ? GetCurrentConfig()->config->backoff_base_ms()
-                                                             : 300;  // 默认300ms基础退避
-}
-
-int32_t CheatConfigManager::GetMaxBackoffMs() const
-{
-    return GetCurrentConfig()->config->has_max_backoff_ms() ? GetCurrentConfig()->config->max_backoff_ms()
-                                                            : 60000;  // 默认60秒最大退避
-}
-
-int32_t CheatConfigManager::GetPerformanceReportInterval() const
-{
-    return GetCurrentConfig()->config->has_performance_report_interval()
-                   ? GetCurrentConfig()->config->performance_report_interval()
-                   : 6;  // 默认每6次报告
+    return GetCurrentConfig()->config->sensor_stats_upload_interval_minutes();
 }
 
 // --- 私有辅助函数 ---
@@ -314,9 +325,10 @@ int32_t CheatConfigManager::GetPerformanceReportInterval() const
 void CheatConfigManager::SetDefaultValues(ConfigData& configData)
 {
     // 生产环境优化：调整扫描和上报间隔，平衡性能与安全
-    configData.config->set_base_scan_interval_seconds(20);      // 从15s增加到20s，减少CPU占用
-    configData.config->set_heavy_scan_interval_minutes(20);     // 从15min增加到20min，减少性能影响
-    configData.config->set_report_upload_interval_minutes(30);  // 从15min增加到30min，减少网络开销
+    configData.config->set_base_scan_interval_seconds(45);             // 轻量级扫描间隔45秒
+    configData.config->set_heavy_scan_interval_minutes(8);             // 重量级扫描间隔8分钟
+    configData.config->set_report_upload_interval_minutes(30);         // 证据上报间隔30分钟
+    configData.config->set_sensor_stats_upload_interval_minutes(120);  // 传感器统计上报间隔2小时
 
     // 1. 有害进程名 (Harmful Process Names)
     configData.config->clear_harmful_process_names();
@@ -378,29 +390,20 @@ void CheatConfigManager::SetDefaultValues(ConfigData& configData)
     configData.config->add_harmful_process_names("autohotkey");     // AHK自动化工具
     configData.config->add_harmful_process_names("ahk");            // AHK缩写
     configData.config->add_harmful_process_names("autoit3");        // AutoIt自动化
-    configData.config->add_harmful_process_names("autojs");         // AutoJS自动化
-    configData.config->add_harmful_process_names("touchsprite");    // 触动精灵
-    // MMORPG特定威胁
-    configData.config->add_harmful_process_names("manaplus");       // ManaPlus开源MMORPG客户端
-    configData.config->add_harmful_process_names("wow_bot");        // WoW类bot
-    configData.config->add_harmful_process_names("fishbot");        // 钓鱼机器人
-    configData.config->add_harmful_process_names("farmbot");        // 打怪机器人
-    configData.config->add_harmful_process_names("goldfarmer");     // 金币工作室
-    configData.config->add_harmful_process_names("multiboxing");    // 多开同步工具
-    configData.config->add_harmful_process_names("isboxer");        // 知名多开工具
-    configData.config->add_harmful_process_names("hotkeynet");      // 按键同步工具
-    configData.config->add_harmful_process_names("wowhead");        // 游戏数据库(某些情况)
-    configData.config->add_harmful_process_names("dps_meter");      // DPS统计可能涉及内存读取
-    configData.config->add_harmful_process_names("recount");        // 伤害统计插件
-    configData.config->add_harmful_process_names("bigwigs");        // 团本助手(可能读取内存)
-    // 虚拟机和容器技术
-    configData.config->add_harmful_process_names("virtualbox");     // VirtualBox
-    configData.config->add_harmful_process_names("vmware");         // VMware
-    configData.config->add_harmful_process_names("vmplayer");       // VMware Player
-    configData.config->add_harmful_process_names("hyper-v");        // Hyper-V
-    configData.config->add_harmful_process_names("parallels");      // Parallels Desktop
-    configData.config->add_harmful_process_names("sandboxie");      // 沙盒
-    configData.config->add_harmful_process_names("docker");         // Docker容器
+    // 专业进程分析工具
+    configData.config->add_harmful_process_names("procexp");         // Process Explorer
+    configData.config->add_harmful_process_names("procexp64");       // Process Explorer 64位
+    configData.config->add_harmful_process_names("procexp.exe");     // Process Explorer带扩展名
+    configData.config->add_harmful_process_names("prochacker");      // Process Hacker
+    configData.config->add_harmful_process_names("prochacker.exe");  // Process Hacker带扩展名
+    configData.config->add_harmful_process_names("apimonitor");      // API Monitor
+    configData.config->add_harmful_process_names("apimonitor.exe");  // API Monitor带扩展名
+    configData.config->add_harmful_process_names("regmon");          // Registry Monitor
+    configData.config->add_harmful_process_names("filemon");         // File Monitor
+    // 网络分析工具
+    configData.config->add_harmful_process_names("netmon");       // Network Monitor
+    configData.config->add_harmful_process_names("tcpview");      // TCPView
+    configData.config->add_harmful_process_names("tcpview.exe");  // TCPView带扩展名
     // 注意：Python和AHK可能误杀合法开发者/用户，建议通过服务端配置控制
     // configData.config->add_harmful_process_names("python");      // Python脚本(风险高，可能误杀)
     // configData.config->add_harmful_process_names("py");          // Python简写(风险高，可能误杀)
@@ -469,38 +472,82 @@ void CheatConfigManager::SetDefaultValues(ConfigData& configData)
     configData.config->add_harmful_keywords("autohotkey");
     configData.config->add_harmful_keywords("automation");
     configData.config->add_harmful_keywords("script kiddie");
-    // MMORPG特定关键词
-    configData.config->add_harmful_keywords("gold farm");
-    configData.config->add_harmful_keywords("bot farm");
-    configData.config->add_harmful_keywords("multibox");
-    configData.config->add_harmful_keywords("多开同步");
-    configData.config->add_harmful_keywords("金币工作室");
-    configData.config->add_harmful_keywords("打金");
-    configData.config->add_harmful_keywords("代练");
-    configData.config->add_harmful_keywords("升级脚本");
-    configData.config->add_harmful_keywords("挂机脚本");
-    configData.config->add_harmful_keywords("自动打怪");
-    configData.config->add_harmful_keywords("自动任务");
-    configData.config->add_harmful_keywords("自动钓鱼");
-    configData.config->add_harmful_keywords("自动采集");
-    configData.config->add_harmful_keywords("follow bot");
-    configData.config->add_harmful_keywords("gather bot");
-    configData.config->add_harmful_keywords("fishing bot");
-    configData.config->add_harmful_keywords("quest bot");
-    configData.config->add_harmful_keywords("level bot");
-    configData.config->add_harmful_keywords("honor bot");
-    configData.config->add_harmful_keywords("pvp bot");
-    configData.config->add_harmful_keywords("auction bot");
-    configData.config->add_harmful_keywords("trade bot");
-    // 内存和进程相关高风险关键词
-    configData.config->add_harmful_keywords("process hacker");
-    configData.config->add_harmful_keywords("process monitor");
-    configData.config->add_harmful_keywords("memory scanner");
-    configData.config->add_harmful_keywords("memory hacker");
-    configData.config->add_harmful_keywords("dll injector");
-    configData.config->add_harmful_keywords("code cave");
-    configData.config->add_harmful_keywords("asm hack");
-    configData.config->add_harmful_keywords("assembly injection");
+    // MMORPG特色作弊关键词
+    configData.config->add_harmful_keywords("speed hack");
+    configData.config->add_harmful_keywords("no clip");
+    configData.config->add_harmful_keywords("fly hack");
+    configData.config->add_harmful_keywords("teleport");
+    configData.config->add_harmful_keywords("item dupe");
+    configData.config->add_harmful_keywords("gold hack");
+    configData.config->add_harmful_keywords("exp hack");
+    configData.config->add_harmful_keywords("level hack");
+    configData.config->add_harmful_keywords("skill hack");
+    configData.config->add_harmful_keywords("cooldown hack");
+    configData.config->add_harmful_keywords("mana hack");
+    configData.config->add_harmful_keywords("health hack");
+    configData.config->add_harmful_keywords("stamina hack");
+    configData.config->add_harmful_keywords("auto farm");
+    configData.config->add_harmful_keywords("auto quest");
+    configData.config->add_harmful_keywords("auto combat");
+    configData.config->add_harmful_keywords("auto loot");
+    configData.config->add_harmful_keywords("auto trade");
+    configData.config->add_harmful_keywords("auto skill");
+    configData.config->add_harmful_keywords("auto potion");
+    configData.config->add_harmful_keywords("auto revive");
+    configData.config->add_harmful_keywords("auto follow");
+    configData.config->add_harmful_keywords("auto attack");
+    configData.config->add_harmful_keywords("auto move");
+    configData.config->add_harmful_keywords("auto collect");
+    configData.config->add_harmful_keywords("auto sell");
+    configData.config->add_harmful_keywords("auto buy");
+    configData.config->add_harmful_keywords("auto craft");
+    configData.config->add_harmful_keywords("auto repair");
+    configData.config->add_harmful_keywords("auto upgrade");
+    configData.config->add_harmful_keywords("auto enhance");
+    configData.config->add_harmful_keywords("auto enchant");
+    configData.config->add_harmful_keywords("auto socket");
+    configData.config->add_harmful_keywords("auto gem");
+    configData.config->add_harmful_keywords("auto pet");
+    configData.config->add_harmful_keywords("auto mount");
+    configData.config->add_harmful_keywords("auto guild");
+    configData.config->add_harmful_keywords("auto party");
+    configData.config->add_harmful_keywords("auto raid");
+    configData.config->add_harmful_keywords("auto dungeon");
+    configData.config->add_harmful_keywords("auto pvp");
+    configData.config->add_harmful_keywords("auto arena");
+    configData.config->add_harmful_keywords("auto battleground");
+    configData.config->add_harmful_keywords("auto world boss");
+    configData.config->add_harmful_keywords("auto event");
+    configData.config->add_harmful_keywords("auto daily");
+    configData.config->add_harmful_keywords("auto weekly");
+    configData.config->add_harmful_keywords("auto monthly");
+    configData.config->add_harmful_keywords("auto seasonal");
+    configData.config->add_harmful_keywords("auto achievement");
+    configData.config->add_harmful_keywords("auto collection");
+    configData.config->add_harmful_keywords("auto exploration");
+    configData.config->add_harmful_keywords("auto mining");
+    configData.config->add_harmful_keywords("auto fishing");
+    configData.config->add_harmful_keywords("auto cooking");
+    configData.config->add_harmful_keywords("auto alchemy");
+    configData.config->add_harmful_keywords("auto blacksmith");
+    configData.config->add_harmful_keywords("auto tailor");
+    configData.config->add_harmful_keywords("auto leatherwork");
+    configData.config->add_harmful_keywords("auto engineering");
+    configData.config->add_harmful_keywords("auto jewelcrafting");
+    configData.config->add_harmful_keywords("auto inscription");
+    configData.config->add_harmful_keywords("auto herbalism");
+    configData.config->add_harmful_keywords("auto skinning");
+    configData.config->add_harmful_keywords("auto archaeology");
+    configData.config->add_harmful_keywords("auto first aid");
+    configData.config->add_harmful_keywords("auto lockpicking");
+    configData.config->add_harmful_keywords("auto pickpocket");
+    configData.config->add_harmful_keywords("auto stealth");
+    configData.config->add_harmful_keywords("auto camouflage");
+    configData.config->add_harmful_keywords("auto invisibility");
+    configData.config->add_harmful_keywords("auto ghost");
+    configData.config->add_harmful_keywords("auto spirit");
+    configData.config->add_harmful_keywords("auto phantom");
+    configData.config->add_harmful_keywords("auto shadow");
 
     // 3. 窗口白名单 (Whitelisted Window Keywords)
     configData.config->clear_whitelisted_window_keywords();
@@ -562,6 +609,43 @@ void CheatConfigManager::SetDefaultValues(ConfigData& configData)
     configData.config->add_whitelisted_window_keywords("gog galaxy");
     configData.config->add_whitelisted_window_keywords("rockstar games launcher");
     configData.config->add_whitelisted_window_keywords("chromium embedded framework");
+    // 游戏开发工具
+    configData.config->add_whitelisted_window_keywords("unity editor");
+    configData.config->add_whitelisted_window_keywords("unreal editor");
+    configData.config->add_whitelisted_window_keywords("godot");
+    configData.config->add_whitelisted_window_keywords("blender");
+    configData.config->add_whitelisted_window_keywords("maya");
+    configData.config->add_whitelisted_window_keywords("3ds max");
+    configData.config->add_whitelisted_window_keywords("cinema 4d");
+    configData.config->add_whitelisted_window_keywords("houdini");
+    configData.config->add_whitelisted_window_keywords("substance");
+    configData.config->add_whitelisted_window_keywords("photoshop");
+    configData.config->add_whitelisted_window_keywords("illustrator");
+    configData.config->add_whitelisted_window_keywords("after effects");
+    configData.config->add_whitelisted_window_keywords("premiere");
+    configData.config->add_whitelisted_window_keywords("audacity");
+    configData.config->add_whitelisted_window_keywords("fl studio");
+    configData.config->add_whitelisted_window_keywords("cubase");
+    configData.config->add_whitelisted_window_keywords("pro tools");
+    // 直播平台
+    configData.config->add_whitelisted_window_keywords("twitch");
+    configData.config->add_whitelisted_window_keywords("youtube");
+    configData.config->add_whitelisted_window_keywords("facebook gaming");
+    configData.config->add_whitelisted_window_keywords("mixer");
+    configData.config->add_whitelisted_window_keywords("trovo");
+    configData.config->add_whitelisted_window_keywords("caffeine");
+    configData.config->add_whitelisted_window_keywords("dlive");
+    configData.config->add_whitelisted_window_keywords("periscope");
+    configData.config->add_whitelisted_window_keywords("instagram live");
+    configData.config->add_whitelisted_window_keywords("tiktok live");
+    configData.config->add_whitelisted_window_keywords("douyin");
+    configData.config->add_whitelisted_window_keywords("kuaishou");
+    configData.config->add_whitelisted_window_keywords("huya");
+    configData.config->add_whitelisted_window_keywords("douyu");
+    configData.config->add_whitelisted_window_keywords("bilibili live");
+    configData.config->add_whitelisted_window_keywords("kuaishou live");
+    configData.config->add_whitelisted_window_keywords("huya live");
+    configData.config->add_whitelisted_window_keywords("douyu live");
 
     // 4. VEH模块白名单 (Whitelisted VEH Modules)
     configData.config->clear_whitelisted_veh_modules();
@@ -589,41 +673,6 @@ void CheatConfigManager::SetDefaultValues(ConfigData& configData)
     configData.config->add_whitelisted_veh_modules("qqpinyinbroker.dll");
     configData.config->add_whitelisted_veh_modules("360base.dll");
     configData.config->add_whitelisted_veh_modules("qqpcexternal.dll");
-    configData.config->add_whitelisted_veh_modules("baiduinput.dll");
-    configData.config->add_whitelisted_veh_modules("msctf.dll");
-    configData.config->add_whitelisted_veh_modules("imm32.dll");
-    // 系统核心DLL
-    configData.config->add_whitelisted_veh_modules("ntdll.dll");
-    configData.config->add_whitelisted_veh_modules("kernel32.dll");
-    configData.config->add_whitelisted_veh_modules("kernelbase.dll");
-    configData.config->add_whitelisted_veh_modules("user32.dll");
-    configData.config->add_whitelisted_veh_modules("advapi32.dll");
-    configData.config->add_whitelisted_veh_modules("ole32.dll");
-    configData.config->add_whitelisted_veh_modules("shell32.dll");
-    configData.config->add_whitelisted_veh_modules("comctl32.dll");
-    // 音频视频编解码
-    configData.config->add_whitelisted_veh_modules("mfplat.dll");
-    configData.config->add_whitelisted_veh_modules("mf.dll");
-    configData.config->add_whitelisted_veh_modules("mfcore.dll");
-    configData.config->add_whitelisted_veh_modules("winmm.dll");
-    configData.config->add_whitelisted_veh_modules("dsound.dll");
-    configData.config->add_whitelisted_veh_modules("d3d9.dll");
-    configData.config->add_whitelisted_veh_modules("d3d11.dll");
-    configData.config->add_whitelisted_veh_modules("dxgi.dll");
-    configData.config->add_whitelisted_veh_modules("opengl32.dll");
-    // 网络和通信
-    configData.config->add_whitelisted_veh_modules("ws2_32.dll");
-    configData.config->add_whitelisted_veh_modules("winhttp.dll");
-    configData.config->add_whitelisted_veh_modules("wininet.dll");
-    configData.config->add_whitelisted_veh_modules("crypt32.dll");
-    configData.config->add_whitelisted_veh_modules("secur32.dll");
-    // 游戏相关重要DLL
-    configData.config->add_whitelisted_veh_modules("xinput1_3.dll");
-    configData.config->add_whitelisted_veh_modules("xinput1_4.dll");
-    configData.config->add_whitelisted_veh_modules("dinput8.dll");
-    configData.config->add_whitelisted_veh_modules("physxloader.dll");
-    configData.config->add_whitelisted_veh_modules("steam_api64.dll");
-    configData.config->add_whitelisted_veh_modules("steam_api.dll");
 
     // 5. 优良进程白名单 (Known Good Processes)
     configData.config->clear_known_good_processes();
@@ -660,52 +709,10 @@ void CheatConfigManager::SetDefaultValues(ConfigData& configData)
     configData.config->add_known_good_processes("chrome.exe");
     configData.config->add_known_good_processes("msedge.exe");
     configData.config->add_known_good_processes("firefox.exe");
-    configData.config->add_known_good_processes("opera.exe");
-    configData.config->add_known_good_processes("brave.exe");
     configData.config->add_known_good_processes("wps.exe");
-    configData.config->add_known_good_processes("et.exe");       // WPS表格
-    configData.config->add_known_good_processes("wpp.exe");      // WPS演示
     configData.config->add_known_good_processes("cloudmusic.exe");
-    configData.config->add_known_good_processes("qqmusic.exe");
-    configData.config->add_known_good_processes("kugou.exe");
-    configData.config->add_known_good_processes("kuwo.exe");
     configData.config->add_known_good_processes("bilibili.exe");
     configData.config->add_known_good_processes("dingtalk.exe");
-    configData.config->add_known_good_processes("feishu.exe");
-    configData.config->add_known_good_processes("tencent_meeting.exe");
-    // 系统工具
-    configData.config->add_known_good_processes("taskmgr.exe");
-    configData.config->add_known_good_processes("procexp64.exe");  // Process Explorer
-    configData.config->add_known_good_processes("procexp.exe");
-    configData.config->add_known_good_processes("resmon.exe");     // Resource Monitor
-    configData.config->add_known_good_processes("perfmon.exe");    // Performance Monitor
-    configData.config->add_known_good_processes("msiexec.exe");    // Windows Installer
-    configData.config->add_known_good_processes("rundll32.exe");   // Windows系统进程
-    configData.config->add_known_good_processes("conhost.exe");    // Windows控制台主机
-    configData.config->add_known_good_processes("fontdrvhost.exe"); // Windows字体驱动
-    configData.config->add_known_good_processes("audiodg.exe");    // Windows音频引擎
-    // 直播录屏软件
-    configData.config->add_known_good_processes("obs64.exe");
-    configData.config->add_known_good_processes("obs32.exe");
-    configData.config->add_known_good_processes("streamlabs obs.exe");
-    configData.config->add_known_good_processes("xsplit.exe");
-    configData.config->add_known_good_processes("bandicam.exe");
-    configData.config->add_known_good_processes("fraps.exe");
-    // 压缩解压软件
-    configData.config->add_known_good_processes("winrar.exe");
-    configData.config->add_known_good_processes("7z.exe");
-    configData.config->add_known_good_processes("360zip.exe");
-    configData.config->add_known_good_processes("haozip.exe");
-    // 下载工具
-    configData.config->add_known_good_processes("thunder.exe");    // 迅雷
-    configData.config->add_known_good_processes("idm.exe");        // Internet Download Manager
-    configData.config->add_known_good_processes("fdm.exe");        // Free Download Manager
-    // GPU监控和超频工具
-    configData.config->add_known_good_processes("gpu-z.exe");
-    configData.config->add_known_good_processes("msi afterburner.exe");
-    configData.config->add_known_good_processes("rtss.exe");       // RivaTuner Statistics Server
-    configData.config->add_known_good_processes("hwinfo64.exe");   // HWiNFO
-    configData.config->add_known_good_processes("cpuz.exe");       // CPU-Z
 
     configData.config->clear_whitelisted_process_paths();
     wchar_t path_buffer[MAX_PATH];
@@ -737,34 +744,44 @@ void CheatConfigManager::SetDefaultValues(ConfigData& configData)
         configData.config->add_whitelisted_process_paths(Utils::WideToString(p));
     }
 
-    // --- 行为控制参数 --- 生产环境优化
-    configData.config->set_suspicious_handle_ttl_minutes(5);          // 从2min增加到5min，减少误报
-    configData.config->set_report_cooldown_minutes(60);               // 从30min增加到60min，避免上报风暴
-    configData.config->set_illegal_call_report_cooldown_minutes(10);  // 从5min增加到10min，减少重复上报
-    configData.config->set_jitter_milliseconds(3000);                 // 从5s减少到3s，提高响应性
+    // --- 行为控制参数 ---
+    configData.config->set_report_cooldown_minutes(60);  // 从30min增加到60min，避免上报风暴
+    configData.config->set_jitter_milliseconds(3000);    // 从5s减少到3s，提高响应性
 
     // --- 容量与预算控制 ---
     configData.config->set_max_evidences_per_session(512);
-    configData.config->set_max_illegal_sources(1024);
-    configData.config->set_light_scan_budget_ms(6000);
-    // 生产环境优化：适当降低重量级扫描预算，提高响应性
-    configData.config->set_heavy_scan_budget_ms(25000);
 
     // --- 容量与缓存控制 ---
+    configData.config->set_process_cache_duration_minutes(30);    // 增加到30分钟，提高效率
+    configData.config->set_signature_cache_duration_minutes(60);  // 保持60分钟
 
-    configData.config->set_process_cache_duration_minutes(15);
-    configData.config->set_signature_cache_duration_minutes(60);
+    // --- 签名验证节流控制默认值 ---
+    configData.config->set_signature_verification_throttle_seconds(1);       // 减少到1秒节流
+    configData.config->set_signature_verification_failure_throttle_ms(500);  // 减少到500毫秒节流
 
     // --- 安全与性能阈值 ---
     configData.config->set_max_veh_handlers_to_scan(32);
-    // 生产环境优化：降低句柄扫描上限，避免性能瓶颈
-    configData.config->set_max_handles_to_scan(30000);
 
-    // 注意：config_version和min_os字段已删除，改为基于rollout_group_enum推导
-    // 注意：传统开关字段和字符串格式灰度分组字段已从proto中删除
-    
-    // 新的灰度分组策略：默认为Win10+基础组（安全保守）
-    configData.config->set_rollout_group_enum(anti_cheat::WIN10_PLUS_BASIC);
+    // --- 通用配置参数（所有Sensor共用） ---
+    configData.config->set_max_code_section_size(50 * 1024 * 1024);  // 最大代码节大小(50MB)
+
+    // [新增] MemorySecuritySensor配置参数
+    configData.config->set_min_memory_region_size(4 * 1024);  // 最小内存区域大小(4KB)
+    configData.config->set_max_memory_region_size(16 * 1024 *
+                                                  1024);  // 最大内存区域大小(16MB)
+                                                          // 移除maxScannedRegions相关配置，依赖budget_ms机制
+
+    // [新增] EnvironmentSensor配置参数
+    configData.config->set_max_processes_to_scan(1000);  // 最大进程扫描数量(1000个)
+
+    // [新增] 性能调优参数
+    configData.config->set_max_window_count(100);         // 最大窗口数量限制(100个)
+    configData.config->set_max_handle_scan_count(50000);  // 最大句柄扫描数量(50K个)
+    configData.config->set_initial_buffer_size_mb(1);     // 初始缓冲区大小(1MB)
+    configData.config->set_max_buffer_size_mb(4);         // 最大缓冲区大小(4MB)
+
+    // 新增：最低OS版本要求
+    configData.config->set_min_os_version(anti_cheat::OS_WIN10);  // 默认要求Windows 10+
 
     // 不再在客户端生成/校验配置签名：配置下发已在传输层加密与鉴权
 
