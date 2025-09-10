@@ -18,8 +18,7 @@ enum CheatCategory {
   INTEGRITY_ASSET_TAMPERED = 103; // 游戏资源文件（如模型、地图、数据文件）的哈希值与预期不符。
   INTEGRITY_API_HOOK = 104; // 检测到对关键API函数的挂钩。
   INTEGRITY_SUSPICIOUS_HANDLE = 105; // 检测到可疑进程持有本进程的句柄。
-  INTEGRITY_BASELINE_LEARNED = 106; // 用于学习模块基线哈希
-  INTEGRITY_SELF_TAMPERING = 107; // 反作弊模块自身被篡改
+  INTEGRITY_SELF_TAMPERING = 106; // 反作弊模块自身被篡改
 
   // --- 外部环境与工具类别 (2xx) ---
   ENVIRONMENT_UNKNOWN = 200;
@@ -28,10 +27,6 @@ enum CheatCategory {
   ENVIRONMENT_VIRTUAL_MACHINE = 203; // 检测到游戏正在虚拟机（如VMware, VirtualBox）中运行。
   ENVIRONMENT_SUSPICIOUS_DRIVER = 204; // 检测到可疑的内核驱动程序，可能用于更底层的作弊。
   ENVIRONMENT_INVALID_PARENT_PROCESS = 205; // 检测到游戏由一个非法的父进程启动（例如，不是由官方启动器启动）。
-  ENVIRONMENT_PROCESS_HARDENING_FAILED = 206; // 进程加固失败（例如，无法设置DEP策略）。
-  ENVIRONMENT_SUSPICIOUS_LAUNCH = 207;  // 非法启动器
-  ENVIRONMENT_HANDLE_PROXY_DETECTED = 208; // 新增：检测到句柄代理攻击
-  ENVIRONMENT_UNEXPECTED_OVERLAY = 209; // 新增：检测到可疑的窗口覆盖
 
   // --- 运行时异常类别 (3xx) ---
   RUNTIME_UNKNOWN = 300;
@@ -39,12 +34,131 @@ enum CheatCategory {
   RUNTIME_MODULE_NEW_UNKNOWN = 302; // 检测到新的、未知的模块（DLL）被加载到游戏进程中。
   RUNTIME_MEMORY_EXEC_PRIVATE = 303; // 发现不属于任何模块的私有可执行内存区域，这是DLL注入或Shellcode的典型特征。
   RUNTIME_ILLEGAL_FUNCTION_CALL = 304; // 检测到对关键游戏函数的非法调用（例如，来自未知模块或Shellcode）。
-  RUNTIME_THREAD_SHELLCODE = 305; // 新增：检测到线程起始地址位于模块之外，疑似Shellcode
   RUNTIME_ERROR = 399; // 反作弊系统内部发生非致命错误。
 
   // --- 系统信息与状态类别 (5xx) ---
   SYSTEM_INITIALIZED = 500; // 反作弊系统初始化成功并建立基线。
-  SYSTEM_FINGERPRINT = 501; // 用于收集硬件指纹，本身不是作弊，但可用于关联封禁。
+}
+
+// 传感器失败原因枚举 - 统一所有传感器的失败原因分类
+enum SensorFailureReason {
+  UNKNOWN_FAILURE = 0;
+  
+  // === 通用系统级失败 (1-99) ===
+  GET_MODULE_HANDLE_FAILED = 1;        // GetModuleHandle失败
+  VIRTUAL_QUERY_FAILED = 2;            // VirtualQuery失败
+  MEMORY_STATE_ABNORMAL = 3;           // 内存状态异常
+  OPEN_PROCESS_FAILED = 4;             // OpenProcess失败
+  GET_PROCESS_PATH_FAILED = 5;         // GetProcessFullName失败
+  VERIFY_SIGNATURE_FAILED = 6;         // VerifyFileSignature失败
+  SYSTEM_API_CALL_FAILED = 7;          // 系统API调用失败
+  BUFFER_SIZE_EXCEEDED = 8;            // 缓冲区大小超限
+  RETRY_EXCEEDED = 9;                  // 重试次数超限
+  HANDLE_COUNT_EXCEEDED = 10;          // 句柄数量超限
+  OPEN_THREAD_FAILED = 11;             // OpenThread失败
+  QUERY_THREAD_INFO_FAILED = 12;       // NtQueryInformationThread失败
+  OPEN_MODULE_FAILED = 13;             // 打开模块失败
+  GET_MODULE_PATH_FAILED = 14;         // 获取模块路径失败
+  GET_CODE_SECTION_FAILED = 15;        // 获取代码节信息失败
+  GET_MODULE_CODE_SECTION_FAILED = 16; // GetModuleCodeSectionInfo失败
+  POINTER_VALIDATION_FAILED = 17;      // 指针验证失败
+  STRUCTURE_ACCESS_FAILED = 18;        // 结构体访问失败
+  HEAD_POINTER_FAILED = 19;            // 头指针失败
+  MEMORY_ACCESS_EXCEPTION = 20;        // 内存访问异常
+  PE_CHECK_FAILED = 21;                // PE文件头检查失败
+  
+  // === 重量级传感器特定失败 (100-199) ===
+  VEH_TRAVERSE_FAILED = 100;           // VEH链表遍历失败
+  MEMORY_SCAN_TIMEOUT = 101;           // 内存扫描超时
+  THREAD_SCAN_TIMEOUT = 102;           // 线程扫描超时
+  MODULE_SCAN_TIMEOUT = 103;           // 模块扫描超时
+  PROCESS_SCAN_TIMEOUT = 104;          // 进程扫描超时
+  HANDLE_SCAN_TIMEOUT = 105;           // 句柄扫描超时
+  PROCESS_HANDLE_SCAN_TIMEOUT = 106;   // 进程句柄扫描超时
+  PROCESS_HANDLE_GET_PATH_FAILED = 107; // 进程句柄检测：获取进程路径失败
+  PROCESS_HANDLE_GET_PROCESS_ID_FAILED = 108; // 进程句柄检测：GetCurrentProcessId失败
+  PROCESS_HANDLE_GET_PROCESS_TIMES_FAILED = 109; // 进程句柄检测：GetProcessTimes失败
+  
+  // === VEH Hook传感器特定失败 (110-119) ===
+  VEH_OS_VERSION_UNSUPPORTED = 110;    // VEH检测：OS版本不支持
+  VEH_WINDOWS_VERSION_UNKNOWN = 111;   // VEH检测：Windows版本未知
+  VEH_LIST_ADDRESS_FAILED = 112;       // VEH检测：链表地址获取失败
+  VEH_LIST_ACCESS_FAILED = 113;        // VEH检测：链表访问失败
+  VEH_HEAD_POINTER_INVALID = 114;      // VEH检测：头指针无效
+  
+  // === 通用超时失败 (120-129) ===
+  EXECUTION_TIMEOUT = 120;             // 执行超时
+  
+  // === 内存安全传感器特定失败 (130-134) ===
+  MEMORY_GET_MODULE_HANDLE_FAILED = 130;  // 内存检测：GetModuleHandleExW失败
+  MEMORY_ACCESS_EXCEPTION = 131;          // 内存检测：内存访问异常
+  MEMORY_OS_VERSION_UNSUPPORTED = 132;    // 内存检测：OS版本不支持
+  
+  // === 线程和模块活动传感器特定失败 (140-149) ===
+  THREAD_MODULE_OS_VERSION_UNSUPPORTED = 140;  // 线程模块检测：OS版本不支持
+  THREAD_MODULE_SYSTEM_API_FAILED = 141;       // 线程模块检测：系统API不可用
+  THREAD_MODULE_QUERY_THREAD_FAILED = 142;     // 线程模块检测：NtQueryInformationThread失败
+  THREAD_MODULE_OPEN_THREAD_FAILED = 143;      // 线程模块检测：OpenThread失败
+  THREAD_MODULE_OPEN_MODULE_FAILED = 144;      // 线程模块检测：打开模块失败
+  THREAD_MODULE_THREAD_SCAN_FAILED = 145;      // 线程模块检测：线程扫描失败
+  THREAD_MODULE_MODULE_SCAN_FAILED = 146;      // 线程模块检测：模块扫描失败
+  THREAD_MODULE_CREATE_SNAPSHOT_FAILED = 147;  // 线程模块检测：CreateToolhelp32Snapshot失败
+  THREAD_MODULE_GET_PROCESS_ID_FAILED = 148;   // 线程模块检测：GetCurrentProcessId失败
+  THREAD_MODULE_GET_PROCESS_TIMES_FAILED = 149; // 线程模块检测：GetProcessTimes失败
+  
+  // === 轻量级传感器特定失败 (200-210) ===
+  PROCESS_ENUM_FAILED = 200;           // 进程枚举失败
+  IAT_OS_VERSION_UNSUPPORTED = 201;    // IAT检测：OS版本不支持
+  MODULE_INTEGRITY_OS_VERSION_UNSUPPORTED = 202;  // 模块完整性检测：OS版本不支持
+  MODULE_INTEGRITY_ENUM_MODULES_FAILED = 203;     // 模块完整性检测：枚举模块失败
+  MODULE_INTEGRITY_GET_SELF_MODULE_FAILED = 204;  // 模块完整性检测：获取自身模块句柄失败
+  PROCESS_HANDLE_OS_VERSION_UNSUPPORTED = 205;    // 进程句柄检测：OS版本不支持
+  PROCESS_WINDOW_ENUM_WINDOWS_FAILED = 211; // 进程窗口监控：EnumWindows失败
+  PROCESS_WINDOW_GET_WINDOW_THREAD_FAILED = 212; // 进程窗口监控：GetWindowThreadProcessId失败
+  PROCESS_WINDOW_GET_WINDOW_TEXT_FAILED = 213; // 进程窗口监控：GetWindowText失败
+  PROCESS_WINDOW_OPEN_PROCESS_FAILED = 214; // 进程窗口监控：OpenProcess失败
+  PROCESS_WINDOW_GET_PROCESS_PATH_FAILED = 215; // 进程窗口监控：获取进程路径失败
+  SYSTEM_CODE_INTEGRITY_OS_VERSION_UNSUPPORTED = 216; // 系统代码完整性：OS版本不支持
+  SYSTEM_CODE_INTEGRITY_QUERY_FAILED = 217; // 系统代码完整性：NtQuerySystemInformation失败
+  ANTI_DEBUG_OS_VERSION_UNSUPPORTED = 218; // 反调试检测：OS版本不支持
+  PROCESS_HANDLE_QUERY_SYSTEM_INFO_FAILED = 219; // 进程句柄检测：NtQuerySystemInformation失败
+  
+  // === IAT Hook传感器特定失败 (220-230) ===
+  IAT_DOS_HEADER_INVALID = 220;        // IAT检测：DOS头无效
+  IAT_NT_HEADER_INVALID = 221;         // IAT检测：NT头无效
+  IAT_IMPORT_TABLE_ACCESS_FAILED = 222; // IAT检测：导入表访问失败
+  IAT_MEMORY_ACCESS_EXCEPTION = 223;   // IAT检测：内存访问异常
+  IAT_BASE_ADDRESS_INVALID = 224;      // IAT检测：基地址无效
+  IAT_DOS_SIGNATURE_INVALID = 225;     // IAT检测：DOS签名无效
+  IAT_NT_SIGNATURE_INVALID = 226;      // IAT检测：NT签名无效
+  IAT_GET_MODULE_HANDLE_FAILED = 227;  // IAT检测：GetModuleHandle失败
+  IAT_VIRTUAL_QUERY_FAILED = 228;      // IAT检测：VirtualQuery失败
+  IAT_MEMORY_STATE_ABNORMAL = 229;     // IAT检测：内存状态异常
+  
+  // === 模块完整性传感器特定失败 (230-240) ===
+  MODULE_INTEGRITY_GET_MODULE_PATH_FAILED = 230; // 模块完整性检测：GetModuleFileNameW失败
+  MODULE_INTEGRITY_GET_CODE_SECTION_FAILED = 231; // 模块完整性检测：GetModuleCodeSectionInfo失败
+  MODULE_INTEGRITY_MEMORY_ACCESS_EXCEPTION = 232; // 模块完整性检测：内存访问异常
+  
+  // === 进程句柄传感器特定失败 (240-250) ===
+  PROCESS_HANDLE_OPEN_PROCESS_FAILED = 240; // 进程句柄检测：OpenProcess失败
+  PROCESS_HANDLE_BUFFER_SIZE_EXCEEDED = 241; // 进程句柄检测：缓冲区大小超限
+  PROCESS_HANDLE_RETRY_EXCEEDED = 242; // 进程句柄检测：重试次数过多
+  PROCESS_HANDLE_HANDLE_COUNT_EXCEEDED = 243; // 进程句柄检测：句柄数量超限
+  PROCESS_HANDLE_SCAN_TIMEOUT = 244; // 进程句柄检测：扫描超时
+  
+  // === VEH Hook传感器特定失败 (250-260) ===
+  VEH_EXECUTION_TIMEOUT = 250; // VEH检测：执行超时
+  VEH_POINTER_VALIDATION_FAILED = 251; // VEH检测：指针验证失败
+  VEH_VIRTUAL_QUERY_FAILED = 252; // VEH检测：VirtualQuery失败
+  VEH_MEMORY_STATE_ABNORMAL = 253; // VEH检测：内存状态异常
+  
+  // === 异常相关失败 (300-399) ===
+  CPP_EXCEPTION_FAILURE = 300;         // C++异常失败
+  UNKNOWN_EXCEPTION_FAILURE = 301;     // 未知异常失败
+  MEMORY_ACCESS_VIOLATION = 302;       // 内存访问违规
+  STACK_OVERFLOW = 303;                // 栈溢出
+  DIVISION_BY_ZERO = 304;              // 除零错误
 }
 
 // 描述客户端硬件和软件环境的唯一标识。
@@ -100,7 +214,6 @@ message HardwareReport {
   string report_id = 1;
   uint64 report_timestamp_ms = 2;
   HardwareFingerprint fingerprint = 3;
-  string rollout_group = 4;
 }
 
 // 作弊证据专用上报消息  
@@ -128,59 +241,46 @@ message Report {
   }
 }
 
-
-
-// 最低操作系统要求
-enum OsMinimum {
-  OS_ANY = 0;
-  OS_WIN7_SP1 = 1;
-  OS_WIN8 = 2;
-  OS_WIN10 = 3;
-  OS_WIN11 = 4;
-}
-
-// 灰度测试分组策略
-enum RolloutGroup {
-  // 默认组
-  ROLLOUT_UNKNOWN = 0;
-  
-  // Windows 10+ 系列
-  WIN10_PLUS_BASIC = 1;     // Win10+ 基础组：不开放VEH, ProcessHandle扫描
-  WIN10_PLUS_ADVANCED = 2;  // Win10+ 高级组：开放VEH, ProcessHandle扫描
-  
-  // Windows 7+ 系列
-  WIN7_PLUS_BASIC = 3;      // Win7+ 基础组：不开放VEH, ProcessHandle扫描  
-  WIN7_PLUS_ADVANCED = 4;   // Win7+ 高级组：开放VEH, ProcessHandle扫描
-  
-  // 未来扩展：如果支持XP/Vista，所有功能全开
-  LEGACY_FULL = 5;          // XP/Vista 全功能组：所有功能全开
+// 操作系统版本要求 - 配置哪个版本值就支持该版本及以上
+enum OsVersion {
+  OS_ANY = 0;           // 支持所有版本
+  OS_WIN_XP = 1;        // Windows XP及以上
+  OS_WIN7_SP1 = 2;      // Windows 7 SP1及以上
+  OS_WIN10 = 3;         // Windows 10及以上
 }
 
 // 客户端遥测指标
 // 用于收集客户端的健康状况和性能数据
 message TelemetryMetrics {
-  uint64 init_success = 1;      // 初始化成功次数
-  uint64 init_fail = 2;         // 初始化失败次数
-  uint64 veh_exceptions = 3;    // VEH相关异常次数
-  uint64 sensor_exceptions = 4; // 传感器执行异常次数
-  uint64 sensor_timeouts = 5;   // 传感器执行超时次数
-  uint64 cheats_detected = 6;   // 总计检出作弊/可疑行为次数
-  // 传感器性能窗口统计（2h/72h）
-  map<string, PerfWindows> sensor_perf = 10;
+  // === 统一传感器统计字段 ===
+  // 每个传感器的执行结果统计
+  map<string, SensorExecutionStats> sensor_execution_stats = 1;
 }
 
-// 单窗口统计
-message PerfStats {
-  uint32 avg_ms = 1;
-  uint32 p95_ms = 2;
-  uint32 p99_ms = 3;
+// 统一传感器执行统计信息
+message SensorExecutionStats {
+  // 成功统计
+  uint32 success_count = 1;           // 成功次数
+  uint64 total_success_time_ms = 2;   // 总成功执行时间(毫秒)
+  uint32 avg_success_time_ms = 3;     // 平均成功执行时间(毫秒)
+  uint32 max_success_time_ms = 4;     // 最大成功执行时间(毫秒)
+  uint32 min_success_time_ms = 5;     // 最小成功执行时间(毫秒)
+  
+  // 失败统计
+  uint32 failure_count = 6;           // 失败次数
+  uint64 total_failure_time_ms = 7;   // 总失败执行时间(毫秒)
+  uint32 avg_failure_time_ms = 8;     // 平均失败执行时间(毫秒)
+  uint32 max_failure_time_ms = 9;     // 最大失败执行时间(毫秒)
+  uint32 min_failure_time_ms = 10;    // 最小失败执行时间(毫秒)
+  
+  // 超时统计
+  uint32 timeout_count = 11;          // 超时次数
+  
+  // 失败原因统计
+  map<int32, uint32> failure_reasons = 12; // 失败原因enum -> 次数
 }
 
-// 两个时间窗口
-message PerfWindows {
-  PerfStats win_2h = 1;
-  PerfStats win_72h = 2;
-}
+// LightweightSensorStats已删除，统一使用SensorExecutionStats
 
 // 客户端动态配置
 // 由服务器下发，用于动态调整客户端的反作弊策略，而无需更新客户端。
@@ -189,49 +289,49 @@ message ClientConfig {
   optional int32 base_scan_interval_seconds = 1;
   optional int32 heavy_scan_interval_minutes = 2;
   optional int32 report_upload_interval_minutes = 3;
+  optional int32 sensor_stats_upload_interval_minutes = 4;  // 传感器统计上报间隔(分钟)
 
   // 黑名单列表
-  repeated string harmful_process_names = 4;
-  repeated string harmful_keywords = 5;
+  repeated string harmful_process_names = 5;
+  repeated string harmful_keywords = 6;
 
   // 白名单列表
-  repeated string whitelisted_veh_modules = 6;
-  repeated string whitelisted_process_paths = 7;
-  repeated string whitelisted_window_keywords = 8;
-  repeated string known_good_processes = 9; // 新增：已知安全的进程白名单
+  repeated string whitelisted_veh_modules = 7;
+  repeated string whitelisted_process_paths = 8;
+  repeated string whitelisted_window_keywords = 9;
+  repeated string known_good_processes = 10; // 新增：已知安全的进程白名单
 
   // --- 行为控制参数 ---
-  optional int32 suspicious_handle_ttl_minutes = 20;
-  optional int32 report_cooldown_minutes = 21;
-  optional int32 illegal_call_report_cooldown_minutes = 22;
-  optional int32 jitter_milliseconds = 23;
+  optional int32 report_cooldown_minutes = 11;
+  optional int32 jitter_milliseconds = 12;
 
   // --- 容量与预算控制 ---
-  optional int32 max_evidences_per_session = 30;
-  optional int32 max_illegal_sources = 31;
-  optional int32 light_scan_budget_ms = 32;
-  optional int32 heavy_scan_budget_ms = 33;
+  optional int32 max_evidences_per_session = 13;
 
   // --- 容量与缓存控制 ---
-  optional int32 process_cache_duration_minutes = 40;
-  optional int32 signature_cache_duration_minutes = 41;
+  optional int32 process_cache_duration_minutes = 14;
+  optional int32 signature_cache_duration_minutes = 15;
+  
+  // --- 签名验证节流控制 ---
+  optional int32 signature_verification_throttle_seconds = 16;  // 签名验证成功/失败后的节流时间(秒)
+  optional int32 signature_verification_failure_throttle_ms = 17;  // 签名验证失败后的节流时间(毫秒)
 
   // --- 安全与性能阈值 ---
-  optional int32 max_veh_handlers_to_scan = 60; // 单次扫描VEH处理器的最大数量
-  optional int32 max_handles_to_scan = 61; // 单次扫描系统句柄的最大数量
-
-  // 注意：config_version 和 min_os 字段已删除，改为基于 rollout_group_enum 推导最低OS版本
+  optional int32 max_veh_handlers_to_scan = 18; // 单次扫描VEH处理器的最大数量
+  optional int32 max_code_section_size = 19; // 最大代码节大小(字节)
+  optional int32 max_processes_to_scan = 20; // 最大进程扫描数量
+  optional int32 min_memory_region_size = 21; // 最小内存区域大小(字节)
+  optional int32 max_memory_region_size = 22; // 最大内存区域大小(字节)
   
-  // 新的灰度分组策略
-  optional RolloutGroup rollout_group_enum = 121;  // 基于OS版本+功能开关的灰度分组
+  // --- 性能调优参数 ---
+  optional int32 max_window_count = 23; // 最大窗口数量限制
+  optional int32 max_handle_scan_count = 24; // 最大句柄扫描数量
+  optional int32 initial_buffer_size_mb = 25; // 初始缓冲区大小(MB)
+  optional int32 max_buffer_size_mb = 26; // 最大缓冲区大小(MB)
 
-  // 生产环境配置参数（减少硬编码）
-  optional int32 veh_scan_timeout_ms = 130;           // VEH扫描超时时间
-  optional int32 iat_scan_timeout_ms = 131;           // IAT扫描超时时间
-  optional int32 memory_scan_chunk_size = 132;        // 内存扫描块大小
-  optional int32 cpu_yield_interval = 133;           // CPU让出间隔
-  optional int32 max_retry_attempts = 134;           // 最大重试次数
-  optional int32 backoff_base_ms = 135;              // 退避基础时间(毫秒)
-  optional int32 max_backoff_ms = 136;               // 最大退避时间(毫秒)
-  optional int32 performance_report_interval = 137;  // 性能报告间隔(次)
+  // --- 系统要求 ---
+  optional OsVersion min_os_version = 27;  // 最低OS版本要求
+
+  // --- 通用配置参数（所有Sensor共用） ---
+  optional int32 heavy_scan_budget_ms = 28;          // 重量级扫描预算时间(毫秒)  
 }

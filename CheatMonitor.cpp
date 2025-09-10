@@ -48,9 +48,140 @@
 #include <unordered_set>
 #include <vector>
 
-// 预声明以解决前置使用
-enum WindowsVersion;
-WindowsVersion GetWindowsVersion();
+namespace SystemUtils
+{
+// Windows版本枚举定义
+enum WindowsVersion
+{
+    Win_XP,
+    Win_Vista_Win7,
+    Win_8_Win81,
+    Win_10,
+    Win_11,
+    Win_Unknown
+};
+
+// 获取版本
+WindowsVersion GetWindowsVersion()
+{
+    // 使用 RtlGetVersion 获取准确的OS版本信息, 它不受应用程序兼容性助手(shim)的影响。
+    typedef NTSTATUS(WINAPI * RtlGetVersion_t)(LPOSVERSIONINFOEXW lpVersionInformation);
+    static RtlGetVersion_t pRtlGetVersion =
+            (RtlGetVersion_t)GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "RtlGetVersion");
+
+    OSVERSIONINFOEXW osInfo = {0};
+    osInfo.dwOSVersionInfoSize = sizeof(osInfo);
+
+    if (pRtlGetVersion)
+    {
+        pRtlGetVersion(&osInfo);
+    }
+    else
+    {
+        // 为无法使用 RtlGetVersion 的旧系统提供降级方案
+        if (!GetVersionExW((LPOSVERSIONINFOW)&osInfo))
+        {
+            return WindowsVersion::Win_Unknown;
+        }
+    }
+
+    // Windows XP (5.1) - 只有5.1是Windows XP，5.2是Windows Server 2003
+    if (osInfo.dwMajorVersion == 5 && osInfo.dwMinorVersion == 1)
+        return WindowsVersion::Win_XP;
+
+    // Windows Vista (6.0)
+    if (osInfo.dwMajorVersion == 6 && osInfo.dwMinorVersion == 0)
+        return WindowsVersion::Win_Vista_Win7;
+
+    // Windows 7 (6.1)
+    if (osInfo.dwMajorVersion == 6 && osInfo.dwMinorVersion == 1)
+        return WindowsVersion::Win_Vista_Win7;
+
+    // Windows 8 (6.2) 和 Windows 8.1 (6.3)
+    if (osInfo.dwMajorVersion == 6 && (osInfo.dwMinorVersion == 2 || osInfo.dwMinorVersion == 3))
+        return WindowsVersion::Win_8_Win81;
+
+    // Windows 10 (10.0, Build < 22000)
+    if (osInfo.dwMajorVersion == 10 && osInfo.dwBuildNumber < 22000)
+        return WindowsVersion::Win_10;
+
+    // Windows 11 (10.0, Build >= 22000)
+    if (osInfo.dwMajorVersion == 10 && osInfo.dwBuildNumber >= 22000)
+        return WindowsVersion::Win_11;
+
+    return WindowsVersion::Win_Unknown;
+}
+
+// 模式扫描（x86）
+PBYTE FindPattern(PBYTE base, SIZE_T size, const BYTE *pattern, SIZE_T patternSize, BYTE wildcard = 0x00)
+{
+    for (SIZE_T i = 0; i < size - patternSize; ++i)
+    {
+        bool found = true;
+        for (SIZE_T j = 0; j < patternSize; ++j)
+        {
+            if (pattern[j] != wildcard && base[i + j] != pattern[j])
+            {
+                found = false;
+                break;
+            }
+        }
+        if (found)
+            return base + i;
+    }
+    return nullptr;
+}
+
+// 辅助结构和函数，避免在SEH中使用C++对象
+struct CallerValidationResult
+{
+    bool success = false;
+    HMODULE hModule = nullptr;
+    bool inCodeSection = false;
+    bool hasModulePath = false;
+    wchar_t modulePath[MAX_PATH] = {0};
+};
+
+static CallerValidationResult CheckCallerAddressSafe(PVOID caller_address)
+{
+    CallerValidationResult result;
+    __try
+    {
+        HMODULE hModule = NULL;
+        if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                               (LPCWSTR)caller_address, &hModule) &&
+            hModule)
+        {
+            result.hModule = hModule;
+            result.success = true;
+
+            PVOID codeBase = nullptr;
+            DWORD codeSize = 0;
+            if (SystemUtils::GetModuleCodeSectionInfo(hModule, codeBase, codeSize))
+            {
+                uintptr_t addr = reinterpret_cast<uintptr_t>(caller_address);
+                uintptr_t start = reinterpret_cast<uintptr_t>(codeBase);
+                uintptr_t end = start + codeSize;
+
+                if (addr >= start && addr < end)
+                {
+                    result.inCodeSection = true;
+
+                    // 获取模块路径
+                    if (GetModuleFileNameW(hModule, result.modulePath, MAX_PATH) > 0)
+                    {
+                        result.hasModulePath = true;
+                    }
+                }
+            }
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        result.success = false;
+    }
+    return result;
+}
 
 // 路径规范化工具：转为规范绝对路径并统一为小写
 static std::wstring NormalizePathLowercase(const std::wstring &input)
@@ -71,32 +202,6 @@ static std::wstring NormalizePathLowercase(const std::wstring &input)
         return s;
     }
 }
-
-// 为兼容旧版Windows SDK (pre-Win8)，手动定义缺失的类型
-// 注释：现代Windows 10 SDK已包含这些定义，无需手动定义
-// #if !defined(NTDDI_WIN8) || (NTDDI_VERSION < NTDDI_WIN8)
-// typedef enum _PROCESS_MITIGATION_POLICY
-// {
-//     ProcessDEPPolicy = 0,
-//     ProcessChildProcessPolicy = 8,
-// } PROCESS_MITIGATION_POLICY;
-// 
-// typedef struct _PROCESS_MITIGATION_CHILD_PROCESS_POLICY
-// {
-//     DWORD NoChildProcessCreation : 1;
-//     DWORD AuditNoChildProcessCreation : 1;
-//     DWORD AllowSecureProcessCreation : 1;
-//     DWORD ReservedFlags : 29;
-// } PROCESS_MITIGATION_CHILD_PROCESS_POLICY, *PPROCESS_MITIGATION_CHILD_PROCESS_POLICY;
-// 
-// typedef struct _PROCESS_MITIGATION_DEP_POLICY
-// {
-//     DWORD Enable : 1;
-//     DWORD DisableAtlThunkEmulation : 1;
-//     DWORD ReservedFlags : 30;
-//     BOOLEAN Permanent;
-// } PROCESS_MITIGATION_DEP_POLICY, *PPROCESS_MITIGATION_DEP_POLICY;
-// #endif
 
 // 为 NtCreateThreadEx (在代码中用于 DetourNtCreateThread) 定义兼容性结构体,
 // 解决 PPS_ATTRIBUTE_LIST 未定义的问题。
@@ -170,30 +275,12 @@ static const auto g_pNtSetInformationThread = reinterpret_cast<PNtSetInformation
 static const auto g_pNtQueryInformationThread = reinterpret_cast<PNtQueryInformationThread>(
         GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtQueryInformationThread"));
 
-#ifndef STATUS_ACCESS_DENIED
-#define STATUS_ACCESS_DENIED ((NTSTATUS)0xC0000022L)
-#endif
-
-// 这个函数被设计为"不安全的"，因为它直接处理可能无效的句柄。
-// 它不使用任何需要对象展开的C++类，因此可以安全地使用 __try/__except。
-// 返回值: 如果句柄确实指向我们自己的进程，则返回true，否则返回false。
-
 // --- 为系统完整性检测定义必要的结构体 ---
 typedef struct _SYSTEM_CODE_INTEGRITY_INFORMATION
 {
     ULONG Length;
     ULONG CodeIntegrityOptions;
 } SYSTEM_CODE_INTEGRITY_INFORMATION, *PSYSTEM_CODE_INTEGRITY_INFORMATION;
-
-// --- 为VEH Hook检测定义未公开的结构体 ---
-// 这些结构基于逆向工程，可能在不同Windows版本间有差异。
-// __try/__except 块对于保证稳定性至关重要。
-
-// // typedef struct _LIST_ENTRY
-// // {
-// //     struct _LIST_ENTRY *Flink;
-// //     struct _LIST_ENTRY *Blink;
-// // } LIST_ENTRY, *PLIST_ENTRY;
 
 // PEB->VectoredExceptionHandlers 指向的结构体
 typedef struct _VECTORED_HANDLER_LIST
@@ -242,237 +329,6 @@ typedef struct _VECTORED_HANDLER_LIST_WIN8
     LIST_ENTRY ContinueList;
 } VECTORED_HANDLER_LIST_WIN8, *PVECTORED_HANDLER_LIST_WIN8;
 
-// 枚举版本
-enum WindowsVersion
-{
-    Win_XP,
-    Win_Vista_Win7,
-    Win_8_Win81,
-    Win_10,
-    Win_11,
-    Win_Unknown
-};
-
-// 简单的版本比较助手：判定当前版本是否至少为目标版本
-static inline bool IsOsAtLeast(WindowsVersion have, WindowsVersion need)
-{
-    auto rank = [](WindowsVersion v) -> int {
-        switch (v)
-        {
-            case Win_XP:
-                return 1;
-            case Win_Vista_Win7:
-                return 2;  // Vista/Win7 归为同档
-            case Win_8_Win81:
-                return 3;
-            case Win_10:
-                return 4;
-            case Win_11:
-                return 5;
-            default:
-                return 0;  // 未知视为最低
-        }
-    };
-    return rank(have) >= rank(need);
-}
-
-namespace Utils
-{
-
-// 为签名验证定义三态返回值
-enum class SignatureStatus
-{
-    TRUSTED,
-    UNTRUSTED,
-    FAILED_TO_VERIFY
-};
-
-std::string WideToString(const std::wstring &wstr)
-{
-    if (wstr.empty())
-        return std::string();
-    int size_needed = WideCharToMultiByte(CP_UTF8, 0, &wstr[0], (int)wstr.size(), NULL, 0, NULL, NULL);
-    if (size_needed == 0)
-    {
-        return std::string();
-    }
-    std::string strTo(size_needed, 0);
-    if (WideCharToMultiByte(CP_UTF8, 0, &wstr[0], (int)wstr.size(), &strTo[0], size_needed, NULL, NULL) == 0)
-    {
-        return std::string();
-    }
-    return strTo;
-}
-
-std::wstring StringToWide(const std::string &str)
-{
-    if (str.empty())
-        return std::wstring();
-    int size_needed = MultiByteToWideChar(CP_UTF8, 0, &str[0], (int)str.size(), NULL, 0);
-    if (size_needed == 0)
-    {
-        // Log("[AntiCheat] MultiByteToWideChar failed to get size");
-        return std::wstring();
-    }
-    std::wstring wstrTo(size_needed, 0);
-    if (MultiByteToWideChar(CP_UTF8, 0, &str[0], (int)str.size(), &wstrTo[0], size_needed) == 0)
-    {
-        // Log("[AntiCheat] MultiByteToWideChar failed");
-        return std::wstring();
-    }
-    return wstrTo;
-}
-
-// 使用单次遍历和哈希表来查找父进程，避免双重循环。
-bool GetParentProcessInfo(DWORD &parentPid, std::string &parentName)
-{
-    HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-    if (hSnapshot == INVALID_HANDLE_VALUE)
-    {
-        return false;
-    }
-
-    // 使用智能指针确保句柄总是被关闭
-    auto snapshot_closer = [](HANDLE h) { CloseHandle(h); };
-    std::unique_ptr<void, decltype(snapshot_closer)> snapshot_handle(hSnapshot, snapshot_closer);
-
-    PROCESSENTRY32W pe;
-    pe.dwSize = sizeof(PROCESSENTRY32W);
-    const DWORD currentPid = GetCurrentProcessId();
-    DWORD ppid = 0;
-    std::unordered_map<DWORD, std::wstring> processMap;
-
-    if (Process32FirstW(hSnapshot, &pe))
-    {
-        do
-        {
-            processMap[pe.th32ProcessID] = pe.szExeFile;
-            if (pe.th32ProcessID == currentPid)
-            {
-                ppid = pe.th32ParentProcessID;
-            }
-        } while (Process32NextW(hSnapshot, &pe));
-    }
-    else
-    {
-        return false;  // 遍历失败
-    }
-
-    if (ppid > 0)
-    {
-        auto it = processMap.find(ppid);
-        if (it != processMap.end())
-        {
-            parentPid = ppid;
-            parentName = WideToString(it->second);
-            return true;
-        }
-    }
-
-    return false;  // 未找到父进程
-}
-
-std::string GenerateUuid()
-{
-    GUID guid;
-    if (CoCreateGuid(&guid) == S_OK)
-    {
-        wchar_t uuid_w[40] = {0};
-        StringFromGUID2(guid, uuid_w, 40);
-        return WideToString(uuid_w);
-    }
-    else
-    {
-        // Log("[AntiCheat] GenerateUuid Error: CoCreateGuid failed.");
-    }
-    return "";
-}
-
-// 为兼容旧版Windows（Vista之前），提供一个QueryFullProcessImageNameW的安全替代方案。
-std::wstring GetProcessFullName(HANDLE hProcess)
-{
-    wchar_t processName[MAX_PATH] = {0};
-
-    // 优先使用 QueryFullProcessImageNameW (Vista+)
-    typedef BOOL(WINAPI * PQueryFullProcessImageNameW)(HANDLE, DWORD, LPWSTR, PDWORD);
-    static PQueryFullProcessImageNameW pQueryFullProcessImageNameW = (PQueryFullProcessImageNameW)GetProcAddress(
-            GetModuleHandleW(L"kernel32.dll"), "QueryFullProcessImageNameW");
-
-    if (pQueryFullProcessImageNameW)
-    {
-        DWORD size = MAX_PATH;
-        if (pQueryFullProcessImageNameW(hProcess, 0, processName, &size))
-        {
-            return processName;
-        }
-    }
-
-    // 降级方案：使用 GetModuleFileNameExW (XP+)
-    if (GetModuleFileNameExW(hProcess, NULL, processName, MAX_PATH))
-    {
-        return processName;
-    }
-
-    return L"";  // 获取失败
-}
-
-// 通用的文件签名验证辅助函数
-SignatureStatus VerifyFileSignature(const std::wstring &filePath, WindowsVersion winVer)
-{
-    WINTRUST_FILE_INFO fileInfo = {};
-    fileInfo.cbStruct = sizeof(WINTRUST_FILE_INFO);
-    fileInfo.pcwszFilePath = filePath.c_str();
-    fileInfo.hFile = NULL;
-    fileInfo.pgKnownSubject = NULL;
-
-    GUID guid = WINTRUST_ACTION_GENERIC_VERIFY_V2;
-
-    WINTRUST_DATA winTrustData = {};
-    winTrustData.cbStruct = sizeof(winTrustData);
-    winTrustData.dwUIChoice = WTD_UI_NONE;
-    winTrustData.fdwRevocationChecks = WTD_REVOKE_WHOLECHAIN | WTD_CACHE_ONLY_URL_RETRIEVAL;
-    winTrustData.dwUnionChoice = WTD_CHOICE_FILE;
-    winTrustData.pFile = &fileInfo;
-    winTrustData.dwStateAction = WTD_STATEACTION_VERIFY;
-
-    LONG result = WinVerifyTrust(NULL, &guid, &winTrustData);
-
-    winTrustData.dwStateAction = WTD_STATEACTION_CLOSE;
-    WinVerifyTrust(NULL, &guid, &winTrustData);
-
-    if (result == ERROR_SUCCESS)
-    {
-        return SignatureStatus::TRUSTED;
-    }
-
-    // [XP兼容性] 对XP系统，宽容处理可能因系统老旧导致的验证错误
-    if (winVer == Win_XP)
-    {
-        switch (result)
-        {
-            case TRUST_E_SYSTEM_ERROR:
-            case TRUST_E_PROVIDER_UNKNOWN:
-            case CERT_E_CHAINING:
-            case TRUST_E_BAD_DIGEST:                       // 在XP上，SHA-2签名可能导致错误的摘要
-                return SignatureStatus::FAILED_TO_VERIFY;  // 降级为"无法判断"而非"不信任"
-        }
-    }
-
-    // 对其他操作系统或未被XP兼容性规则覆盖的错误，进行标准判断
-    switch (result)
-    {
-        case TRUST_E_NOSIGNATURE:
-        case TRUST_E_BAD_DIGEST:
-            return SignatureStatus::UNTRUSTED;
-        default:
-            return SignatureStatus::FAILED_TO_VERIFY;
-    }
-}
-
-}  // namespace Utils
-
-namespace
-{
 // 检查VBS/HVCI是否启用（返回三态）：true/false/unknown
 std::optional<bool> IsVbsEnabled()
 {
@@ -578,21 +434,26 @@ bool IsKernelDebuggerPresent_KUserSharedData()
         return false;
     }
 }
-#pragma warning(push)
-bool GetCodeSectionInfo(HMODULE hModule, PVOID &outBase, DWORD &outSize)
+
+bool GetModuleCodeSectionInfo(HMODULE hModule, PVOID &outBase, DWORD &outSize)
 {
     if (!hModule)
         return false;
+
     const BYTE *baseAddress = reinterpret_cast<const BYTE *>(hModule);
     __try
     {
         const auto *pDosHeader = reinterpret_cast<const IMAGE_DOS_HEADER *>(baseAddress);
         if (pDosHeader->e_magic != IMAGE_DOS_SIGNATURE)
+        {
             return false;
+        }
 
         const auto *pNtHeaders = reinterpret_cast<const IMAGE_NT_HEADERS *>(baseAddress + pDosHeader->e_lfanew);
         if (pNtHeaders->Signature != IMAGE_NT_SIGNATURE)
+        {
             return false;
+        }
 
         PIMAGE_SECTION_HEADER pSectionHeader = IMAGE_FIRST_SECTION(pNtHeaders);
         for (int i = 0; i < pNtHeaders->FileHeader.NumberOfSections; i++, pSectionHeader++)
@@ -605,23 +466,21 @@ bool GetCodeSectionInfo(HMODULE hModule, PVOID &outBase, DWORD &outSize)
                 return true;
             }
         }
+
+        return false;  // 没找到代码节
     }
     __except (EXCEPTION_EXECUTE_HANDLER)
     {
-        // 记录异常代码，以帮助诊断根本原因，而不是静默失败
         DWORD exceptionCode = GetExceptionCode();
-        LOG_ERROR_F(AntiCheatLogger::LogCategory::SYSTEM,
-            "GetCodeSectionInfo SEH Exception: hModule=0x%p, code=0x%08X",
-            hModule, exceptionCode);
+        LOG_WARNING_F(AntiCheatLogger::LogCategory::SYSTEM,
+                      "GetModuleCodeSectionInfo SEH Exception: hModule=0x%p, code=0x%08X", hModule, exceptionCode);
         return false;
     }
-    return false;
 }
 
-// 辅助函数：计算内存块的哈希值 (使用FNV-1a算法)
-// 注意：FNV-1a
-// 是一种快速非密码学哈希。对于高安全要求，应考虑使用密码学安全哈希（如SHA-256）。
-std::vector<uint8_t> CalculateHash(const BYTE *data, size_t size)
+// 辅助函数：计算内存块的FNV-1a哈希值
+// 注意：FNV-1a是一种快速非密码学哈希。对于高安全要求，应考虑使用密码学安全哈希（如SHA-256）。
+std::vector<uint8_t> CalculateFnv1aHash(const BYTE *data, size_t size)
 {
     uint64_t hash = 14695981039346656037ULL;      // FNV_OFFSET_BASIS_64
     const uint64_t fnv_prime = 1099511628211ULL;  // FNV_PRIME_64
@@ -636,136 +495,207 @@ std::vector<uint8_t> CalculateHash(const BYTE *data, size_t size)
     return result;
 }
 
-#pragma warning(pop)  // 与上面的push配对
+}  // namespace SystemUtils
 
-// CRC32哈希算法实现
-// 一个性能不错的标准CRC32实现，用于替代memcmp
-uint32_t Crc32(const uint8_t *data, size_t length)
+namespace Utils
 {
-    if (!data || length == 0)
-        return 0;
 
-    uint32_t crc = 0xFFFFFFFF;
-    static uint32_t table[256];
-    static bool table_generated = false;
+// 为签名验证定义四态返回值
+enum class SignatureStatus
+{
+    UNKNOWN,          // 尚未验证
+    TRUSTED,          // 可信签名
+    UNTRUSTED,        // 不可信签名
+    FAILED_TO_VERIFY  // 验证失败
+};
 
-    // 首次调用时生成CRC32查找表
-    if (!table_generated)
+std::string WideToString(const std::wstring &wstr)
+{
+    if (wstr.empty())
+        return std::string();
+    int size_needed = WideCharToMultiByte(CP_UTF8, 0, &wstr[0], (int)wstr.size(), NULL, 0, NULL, NULL);
+    if (size_needed == 0)
     {
-        for (uint32_t i = 0; i < 256; i++)
+        return std::string();
+    }
+    std::string strTo(size_needed, 0);
+    if (WideCharToMultiByte(CP_UTF8, 0, &wstr[0], (int)wstr.size(), &strTo[0], size_needed, NULL, NULL) == 0)
+    {
+        return std::string();
+    }
+    return strTo;
+}
+
+std::wstring StringToWide(const std::string &str)
+{
+    if (str.empty())
+        return std::wstring();
+    int size_needed = MultiByteToWideChar(CP_UTF8, 0, &str[0], (int)str.size(), NULL, 0);
+    if (size_needed == 0)
+    {
+        // Log("[AntiCheat] MultiByteToWideChar failed to get size");
+        return std::wstring();
+    }
+    std::wstring wstrTo(size_needed, 0);
+    if (MultiByteToWideChar(CP_UTF8, 0, &str[0], (int)str.size(), &wstrTo[0], size_needed) == 0)
+    {
+        // Log("[AntiCheat] MultiByteToWideChar failed");
+        return std::wstring();
+    }
+    return wstrTo;
+}
+
+// 使用单次遍历和哈希表来查找父进程，避免双重循环。
+bool GetParentProcessInfo(DWORD &parentPid, std::string &parentName)
+{
+    HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (hSnapshot == INVALID_HANDLE_VALUE)
+    {
+        return false;
+    }
+
+    // 使用智能指针确保句柄总是被关闭
+    auto snapshot_closer = [](HANDLE h) { CloseHandle(h); };
+    std::unique_ptr<void, decltype(snapshot_closer)> snapshot_handle(hSnapshot, snapshot_closer);
+
+    PROCESSENTRY32W pe;
+    pe.dwSize = sizeof(PROCESSENTRY32W);
+    const DWORD currentPid = GetCurrentProcessId();
+    DWORD ppid = 0;
+    std::unordered_map<DWORD, std::wstring> processMap;
+
+    if (Process32FirstW(hSnapshot, &pe))
+    {
+        do
         {
-            uint32_t c = i;
-            for (int j = 0; j < 8; j++)
+            processMap[pe.th32ProcessID] = pe.szExeFile;
+            if (pe.th32ProcessID == currentPid)
             {
-                c = (c & 1) ? (0xEDB88320 ^ (c >> 1)) : (c >> 1);
+                ppid = pe.th32ParentProcessID;
             }
-            table[i] = c;
-        }
-        table_generated = true;
-    }
-
-    for (size_t i = 0; i < length; ++i)
-    {
-        crc = table[(crc ^ data[i]) & 0xFF] ^ (crc >> 8);
-    }
-
-    return crc ^ 0xFFFFFFFF;
-}
-
-}  // namespace
-
-// 生产环境辅助函数：哈希值转十六进制字符串
-static std::string HashToHexString(const std::vector<uint8_t> &hash)
-{
-    if (hash.empty())
-        return "empty";
-
-    std::stringstream ss;
-    ss << std::hex << std::setfill('0');
-    for (size_t i = 0; i < std::min(hash.size(), size_t(32)); ++i)
-    {  // 限制长度避免日志过长
-        ss << std::setw(2) << static_cast<unsigned>(hash[i]);
-    }
-    if (hash.size() > 32)
-    {
-        ss << "...";
-    }
-    return ss.str();
-}
-
-// ---- 新增: 路径规范化工具与限流工具 ----
-// 重复定义移除（顶部已有 NormalizePathLowercase 实现）
-
-// ---- 新增: 固定容量环形缓冲（线程外部需自持锁） ----
-// RingBuffer类已删除
-
-// ---- 新增: 可疑调用者地址解析（优先使用受控回溯） ----
-static PVOID ResolveSuspiciousCallerAddress(HMODULE hSelf)
-{
-    // 采集简短回溯，跳过属于自身模块的帧，返回第一个外部地址
-    using RtlCaptureStackBackTrace_t = USHORT(WINAPI *)(ULONG, ULONG, PVOID *, PULONG);
-    static RtlCaptureStackBackTrace_t pRtlCSBT =
-            (RtlCaptureStackBackTrace_t)GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "RtlCaptureStackBackTrace");
-
-    PVOID addrs[16] = {};
-    USHORT frames = 0;
-    if (pRtlCSBT)
-    {
-        frames = pRtlCSBT(1, 16, addrs, nullptr);
+        } while (Process32NextW(hSnapshot, &pe));
     }
     else
     {
-        // XP RTM 回退：无法回溯时，直接返回调用者地址
-        return _ReturnAddress();
+        return false;  // 遍历失败
     }
-    for (USHORT i = 0; i < frames; ++i)
+
+    if (ppid > 0)
     {
-        HMODULE m = NULL;
-        if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                               (LPCWSTR)addrs[i], &m) &&
-            m)
+        auto it = processMap.find(ppid);
+        if (it != processMap.end())
         {
-            if (m != hSelf)
-            {
-                return addrs[i];
-            }
+            parentPid = ppid;
+            parentName = Utils::WideToString(it->second);
+            return true;
         }
     }
-    // 回退：直接使用返回地址
-    return _ReturnAddress();
+
+    return false;  // 未找到父进程
 }
 
-// 输入事件检测相关代码已删除以解决性能问题
-
-// [新增] RAII封装Windows钩子
-class ScopedHook
+std::string GenerateUuid()
 {
-   public:
-    ScopedHook(int idHook, HOOKPROC lpfn)
+    GUID guid;
+    if (CoCreateGuid(&guid) == S_OK)
     {
-        m_hook = SetWindowsHookEx(idHook, lpfn, GetModuleHandle(NULL), 0);
+        wchar_t uuid_w[40] = {0};
+        StringFromGUID2(guid, uuid_w, 40);
+        return Utils::WideToString(uuid_w);
     }
-    ~ScopedHook()
+    else
     {
-        if (m_hook)
+        // Log("[AntiCheat] GenerateUuid Error: CoCreateGuid failed.");
+    }
+    return "";
+}
+
+// 为兼容旧版Windows（Vista之前），提供一个QueryFullProcessImageNameW的安全替代方案。
+std::wstring GetProcessFullName(HANDLE hProcess)
+{
+    wchar_t processName[MAX_PATH] = {0};
+
+    // 优先使用 QueryFullProcessImageNameW (Vista+)
+    typedef BOOL(WINAPI * PQueryFullProcessImageNameW)(HANDLE, DWORD, LPWSTR, PDWORD);
+    static PQueryFullProcessImageNameW pQueryFullProcessImageNameW = (PQueryFullProcessImageNameW)GetProcAddress(
+            GetModuleHandleW(L"kernel32.dll"), "QueryFullProcessImageNameW");
+
+    if (pQueryFullProcessImageNameW)
+    {
+        DWORD size = MAX_PATH;
+        if (pQueryFullProcessImageNameW(hProcess, 0, processName, &size))
         {
-            UnhookWindowsHookEx(m_hook);
+            return processName;
         }
     }
-    operator HHOOK() const
+
+    // 降级方案：使用 GetModuleFileNameExW (XP+)
+    if (GetModuleFileNameExW(hProcess, NULL, processName, MAX_PATH))
     {
-        return m_hook;
-    }
-    bool IsValid() const
-    {
-        return m_hook != NULL;
+        return processName;
     }
 
-   private:
-    HHOOK m_hook;
-    ScopedHook(const ScopedHook &) = delete;
-    ScopedHook &operator=(const ScopedHook &) = delete;
-};
+    return L"";  // 获取失败
+}
+
+// 通用的文件签名验证辅助函数
+SignatureStatus VerifyFileSignature(const std::wstring &filePath, SystemUtils::WindowsVersion winVer)
+{
+    WINTRUST_FILE_INFO fileInfo = {};
+    fileInfo.cbStruct = sizeof(WINTRUST_FILE_INFO);
+    fileInfo.pcwszFilePath = filePath.c_str();
+    fileInfo.hFile = NULL;
+    fileInfo.pgKnownSubject = NULL;
+
+    GUID guid = WINTRUST_ACTION_GENERIC_VERIFY_V2;
+
+    WINTRUST_DATA winTrustData = {};
+    winTrustData.cbStruct = sizeof(winTrustData);
+    winTrustData.dwUIChoice = WTD_UI_NONE;
+    winTrustData.fdwRevocationChecks = WTD_REVOKE_WHOLECHAIN | WTD_CACHE_ONLY_URL_RETRIEVAL;
+    winTrustData.dwUnionChoice = WTD_CHOICE_FILE;
+    winTrustData.pFile = &fileInfo;
+    winTrustData.dwStateAction = WTD_STATEACTION_VERIFY;
+
+    LONG result = WinVerifyTrust(NULL, &guid, &winTrustData);
+
+    winTrustData.dwStateAction = WTD_STATEACTION_CLOSE;
+    WinVerifyTrust(NULL, &guid, &winTrustData);
+
+    if (result == ERROR_SUCCESS)
+    {
+        return SignatureStatus::TRUSTED;
+    }
+
+    // [XP兼容性] 对XP系统，宽容处理可能因系统老旧导致的验证错误
+    if (winVer == SystemUtils::WindowsVersion::Win_XP)
+    {
+        switch (result)
+        {
+            case TRUST_E_SYSTEM_ERROR:
+            case TRUST_E_PROVIDER_UNKNOWN:
+            case CERT_E_CHAINING:
+            case TRUST_E_BAD_DIGEST:                       // 在XP上，SHA-2签名可能导致错误的摘要
+                return SignatureStatus::FAILED_TO_VERIFY;  // 降级为"无法判断"而非"不信任"
+        }
+    }
+
+    // 对其他操作系统或未被XP兼容性规则覆盖的错误，进行标准判断
+    switch (result)
+    {
+        case TRUST_E_NOSIGNATURE:
+        case TRUST_E_BAD_DIGEST:
+            return SignatureStatus::UNTRUSTED;
+        default:
+            return SignatureStatus::FAILED_TO_VERIFY;
+    }
+}
+
+// 前向声明
+class ISensor;
+class ScanContext;
+
+}  // namespace Utils
 
 // --- 核心架构组件 ---
 
@@ -780,365 +710,184 @@ enum class SensorWeight
     CRITICAL  // > 100ms: VehHook (需特殊处理)
 };
 
+// 传感器执行结果枚举
+enum class SensorExecutionResult
+{
+    SUCCESS = 0,  // 成功执行
+    TIMEOUT = 1,  // 执行超时
+    FAILURE = 2   // 执行失败
+};
+
 // ISensor: 所有检测传感器的抽象基类接口 (策略模式)
 class ISensor
 {
    public:
     virtual ~ISensor() = default;
     virtual const char *GetName() const = 0;     // 用于日志和调试
-    virtual SensorWeight GetWeight() const = 0;  // 新增：获取传感器权重分级
-    virtual void Execute(ScanContext &context) = 0;
-};
+    virtual SensorWeight GetWeight() const = 0;  // 获取传感器权重分级
+    virtual SensorExecutionResult Execute(ScanContext &context) = 0;
 
-// 运行时遥测计数器（线程安全）
-struct TelemetryCounters
-{
-    std::atomic<uint64_t> init_success{0};
-    std::atomic<uint64_t> init_fail{0};
-    std::atomic<uint64_t> veh_exceptions{0};
-    std::atomic<uint64_t> sensor_exceptions{0};
-    std::atomic<uint64_t> sensor_timeouts{0};
-    std::atomic<uint64_t> cheats_detected{0};
-};
+   protected:
+    // 统一的失败原因记录方法 - 基类实现
+    void RecordFailure(anti_cheat::SensorFailureReason reason)
+    {
+        m_lastFailureReason = reason;
+    }
 
-// 生产环境扩展监控指标（基于专家审查建议）
-struct ProductionMetrics
-{
-    std::atomic<uint64_t> false_positive_rate{0};     // 误报率（每万次检测中的误报数）
-    std::atomic<uint64_t> detection_latency_ms{0};    // 平均检测延迟（毫秒）
-    std::atomic<uint64_t> memory_usage_mb{0};         // 当前内存使用量（MB）
-    std::atomic<uint64_t> cpu_usage_percent{0};       // CPU使用率（百分比）
-    std::atomic<uint64_t> sensor_execution_count{0};  // 传感器总执行次数
-    std::atomic<uint64_t> config_update_count{0};     // 配置更新次数
-    std::atomic<uint64_t> emergency_shutdowns{0};     // 紧急关闭次数
+    // 获取最后一次失败原因 - 基类实现
+    anti_cheat::SensorFailureReason GetLastFailureReason() const
+    {
+        return m_lastFailureReason;
+    }
+
+    // 统一的失败原因成员变量 - 所有传感器共享
+    anti_cheat::SensorFailureReason m_lastFailureReason = anti_cheat::UNKNOWN_FAILURE;
+
+    // 统一的OS版本检查接口
+    bool IsOsSupported(ScanContext &context) const
+    {
+        return context.IsCurrentOsSupported();
+    }
+
+   private:
 };
 
 struct CheatMonitor::Pimpl
 {
     Pimpl();  // 新增构造函数
 
-    WindowsVersion m_windowsVersion;  // [新增] 缓存检测到的Windows版本
+    SystemUtils::WindowsVersion m_windowsVersion;  // 缓存检测到的Windows版本
 
+    // === 系统状态变量 (atomic，无需mutex保护) ===
     std::atomic<bool> m_isSystemActive = false;
     std::atomic<bool> m_isSessionActive = false;
-    std::atomic<bool> m_hasServerConfig = false;  // 新增：用于标记是否已收到服务器配置
-    std::thread m_monitorThread;
-    std::atomic<bool> m_isShuttingDown = false;  // 新增：安全关闭标志
-    // 用于智能关联父进程缺失事件的状态
-    std::atomic<bool> m_parentWasMissingAtStartup = false;
-    std::condition_variable m_cv;
-    std::mutex m_cvMutex;
-    std::mutex m_signatureCacheMutex;  // 保护 m_moduleSignatureCache 的并发访问
-    std::mutex m_modulePathsMutex;     // 保护 m_legitimateModulePaths 的并发访问
+    std::atomic<bool> m_hasServerConfig = false;  // 用于标记是否已收到服务器配置
+    std::atomic<bool> m_processBaselineEstablished = false;
 
+    // === 线程和同步 ===
+    std::thread m_monitorThread;
+
+    // === 模块路径管理 (受m_modulePathsMutex保护) ===
+    std::mutex m_modulePathsMutex;
+    std::unordered_set<std::wstring> m_legitimateModulePaths;  // 使用哈希集合以实现O(1)复杂度的快速查找
+
+    // === 会话状态管理 (受m_sessionMutex保护) ===
     std::mutex m_sessionMutex;
     uint32_t m_currentUserId = 0;
     std::string m_currentUserName;
-
     std::set<std::pair<anti_cheat::CheatCategory, std::string>> m_uniqueEvidence;
     std::vector<anti_cheat::Evidence> m_evidences;
-
-    std::atomic<bool> m_processBaselineEstablished = false;
-
-    // 使用 std::set 以获得更快的查找速度 (O(logN)) 并自动处理重复项
-    std::set<DWORD> m_knownThreadIds;
-    std::set<HMODULE> m_knownModules;
-    //  硬件信息采集器（解耦出传感器体系，仅在上报时附带）
-    std::unique_ptr<anti_cheat::HardwareInfoCollector> m_hwCollector;
-
-    std::unordered_set<std::wstring> m_legitimateModulePaths;  // 使用哈希集合以实现O(1)复杂度的快速查找
-    std::unordered_map<uintptr_t, std::chrono::steady_clock::time_point>
-            m_reportedIllegalCallSources;  // 用于记录已上报的非法调用来源，并实现5分钟上报冷却
-    //  记录每个用户、每种作弊类型的最近上报时间，防止重复上报
+    bool m_evidenceOverflowed = false;  // 限流与容量控制
+    // 记录每个用户、每种作弊类型的最近上报时间，防止重复上报
     std::map<std::pair<uint32_t, anti_cheat::CheatCategory>, std::chrono::steady_clock::time_point> m_lastReported;
-    // 用于句柄代理攻击关联分析的状态容器
-    std::unordered_map<DWORD, std::chrono::steady_clock::time_point> m_suspiciousHandleHolders;
-    // [新增] 环境扫描缓存，用于记录已发现的有害进程 {PID -> 创建时间}
-    std::map<DWORD, FILETIME> m_knownHarmfulProcesses;
 
-    // --- 限流与容量控制 ---
-    bool m_evidenceOverflowed = false;
+    // === 统一传感器统计缓存 (受m_sensorStatsMutex保护) ===
+    std::mutex m_sensorStatsMutex;
+    // key: sensor name; value: SensorExecutionStats
+    std::unordered_map<std::string, anti_cheat::SensorExecutionStats> m_sensorExecutionStats;
 
-    // --- 传感器调度：时间预算与轮转索引 ---
-    size_t m_lightSensorIndex = 0;
-    size_t m_heavySensorIndex = 0;
-
-    HWND m_hGameWindow = NULL;  // 游戏主窗口句柄
-
-    std::random_device m_rd;  // 随机数种子
-
-    // 遥测计数器
-    TelemetryCounters m_metrics;
-    ProductionMetrics m_prodMetrics;  // 新增：生产环境扩展指标
-
-    // 模块签名验证缓存
+    // === 模块签名验证缓存 (无需mutex保护，串行访问) ===
     enum class SignatureVerdict
     {
         UNKNOWN,
         SIGNED_AND_TRUSTED,
         UNSIGNED_OR_UNTRUSTED,
         VERIFICATION_FAILED
-
     };
     std::unordered_map<std::wstring, std::pair<SignatureVerdict, std::chrono::steady_clock::time_point>>
             m_moduleSignatureCache;
 
-    // 进程签名与可信度判定缓存（用于句柄扫描等重用结果）
-    enum class ProcessVerdict
-    {
-        UNKNOWN,
-        SIGNED_AND_TRUSTED,
-        UNSIGNED_OR_UNTRUSTED,
-        VERIFICATION_FAILED
-    };
-    // key: PID -> (verdict, cached_at)
-    std::unordered_map<DWORD, std::pair<ProcessVerdict, std::chrono::steady_clock::time_point>> m_processVerdictCache;
-    // 服务器传感器门控开关（由OnConfigUpdated集中设置）
-    bool m_enableVehScan = false;
-    bool m_enableHandleScan = false;
-    // 签名验证节流：避免频繁对同一路径做昂贵验证
+    // === 签名验证节流 (无需mutex保护，串行访问) ===
     std::unordered_map<std::wstring, std::chrono::steady_clock::time_point> m_sigThrottleUntil;
 
-    // 存储关键模块代码节的基线哈希值
+    // === 基线哈希值 (初始化后只读，无需mutex保护) ===
     std::unordered_map<std::wstring, std::vector<uint8_t>> m_moduleBaselineHashes;
-
-    // 自身模块完整性基线
     HMODULE m_hSelfModule = NULL;
     std::vector<uint8_t> m_selfModuleBaselineHash;
-
-    // IAT Hook检测基线：为每个导入的DLL存储一个独立的哈希值
     std::unordered_map<std::string, std::vector<uint8_t>> m_iatBaselineHashes;
     uintptr_t m_vehListAddress = 0;  // 存储VEH链表(LdrpVectorHandlerList)的绝对地址
 
-    // 传感器集合
-    std::vector<std::unique_ptr<ISensor>> m_lightweight_sensors;
-    std::vector<std::unique_ptr<ISensor>> m_heavyweight_sensors;
+    // === 基线数据 (受m_baselineMutex保护) ===
+    std::mutex m_baselineMutex;
+    std::set<DWORD> m_knownThreadIds;  // 使用 std::set 以获得更快的查找速度 (O(logN)) 并自动处理重复项
+    std::set<HMODULE> m_knownModules;
 
-    // ---- Telemetry (t9): per-sensor runtime tracking (rolling 2h and 72h) ----
-    // key: sensor name; value: deque of (timestamp, duration_ms)
-    std::unordered_map<std::string, std::deque<std::pair<std::chrono::steady_clock::time_point, int>>>
-            m_sensorDurations2h;
-    std::unordered_map<std::string, std::deque<std::pair<std::chrono::steady_clock::time_point, int>>>
-            m_sensorDurations72h;
+    std::unique_ptr<anti_cheat::HardwareInfoCollector>
+            m_hwCollector;  // 硬件信息采集器（解耦出传感器体系，仅在上报时附带）
 
-    // 控制性能遥测上报频率（避免每次都发送）：每N次报告发送一次，并带抖动
-    int m_reportUploadCount = 0;
-    int m_perfEveryNReports = 6;                              // 默认每6次报告发送一次性能遥测
-    std::uniform_int_distribution<int> m_perfJitter{0, 100};  // 百分比抖动
-
-    // [新增] 传感器退避与失败计数（会话级）
-    std::unordered_map<std::string, std::chrono::steady_clock::time_point> m_sensorBackoffUntil;
-    std::unordered_map<std::string, int> m_sensorFailureCounts;
-
-    // 服务器下发的传感器开关（按平台门控后）
-
-    // 随机数引擎：用于抖动与采样
+    // === 其他状态变量 (无需mutex保护) ===
+    HWND m_hGameWindow = NULL;  // 游戏主窗口句柄
+    std::random_device m_rd;    // 随机数种子
     std::mt19937 m_rng{std::random_device{}()};
 
-    void RecordSensorRuntime(const char *name, int duration_ms)
+    // === 传感器调度索引 (无需mutex保护，单线程访问) ===
+    // 传感器统计上报间隔现在统一使用配置的report_upload_interval_minutes
+    size_t m_lightSensorIndex = 0;
+    size_t m_heavySensorIndex = 0;
+    std::vector<std::unique_ptr<ISensor>> m_lightweightSensors;
+    std::vector<std::unique_ptr<ISensor>> m_heavyweightSensors;
+
+    // 执行状态枚举
+    enum class ExecutionStatus : int
     {
-        const auto now = std::chrono::steady_clock::now();
-        auto &q2h = m_sensorDurations2h[name];
-        auto &q72h = m_sensorDurations72h[name];
-        q2h.emplace_back(now, duration_ms);
-        q72h.emplace_back(now, duration_ms);
-        // purge old
-        const auto cutoff2h = now - std::chrono::hours(2);
-        while (!q2h.empty() && q2h.front().first < cutoff2h)
-            q2h.pop_front();
-        const auto cutoff72h = now - std::chrono::hours(72);
-        while (!q72h.empty() && q72h.front().first < cutoff72h)
-            q72h.pop_front();
-    }
+        SUCCESS = 0,   // 成功执行
+        FAILURE = 1,   // 执行失败
+        TIMEOUT = 2,   // 执行超时
+        EXCEPTION = 3  // 执行异常
+    };
 
-    static int PercentileFromDeque(const std::deque<std::pair<std::chrono::steady_clock::time_point, int>> &dq,
-                                   double pct)
-    {
-        if (dq.empty())
-            return 0;
-        std::vector<int> vals;
-        vals.reserve(dq.size());
-        for (const auto &p : dq)
-            vals.push_back(p.second);
-        std::sort(vals.begin(), vals.end());
-        size_t idx =
-                (size_t)std::clamp<size_t>((size_t)std::llround((pct / 100.0) * (vals.size() - 1)), 0, vals.size() - 1);
-        return vals[idx];
-    }
+    void InitializeSystem();
+    void InitializeProcessBaseline();
 
-
-
-    void LogPerfTelemetry()
-    {
-        // Lightweight logging to help soak tests; can be upgraded to structured upload later
-        LOG_INFO(AntiCheatLogger::LogCategory::PERFORMANCE, "Sensor runtime stats (rolling)");
-        for (const auto &kv : m_sensorDurations2h)
-        {
-            const std::string &name = kv.first;
-            const auto &q2h = kv.second;
-            const auto &q72h = m_sensorDurations72h[name];
-            long long sum2h = 0;
-            for (const auto &p : q2h)
-                sum2h += p.second;
-            const int avg2h = q2h.empty() ? 0 : (int)(sum2h / (long long)q2h.size());
-            const int p95_2h = PercentileFromDeque(q2h, 95.0);
-            const int p99_2h = PercentileFromDeque(q2h, 99.0);
-
-            long long sum72h = 0;
-            for (const auto &p : q72h)
-                sum72h += p.second;
-            const int avg72h = q72h.empty() ? 0 : (int)(sum72h / (long long)q72h.size());
-            const int p95_72h = PercentileFromDeque(q72h, 95.0);
-            const int p99_72h = PercentileFromDeque(q72h, 99.0);
-
-            LOG_INFO_F(AntiCheatLogger::LogCategory::PERFORMANCE,
-                       "Sensor %s: 2h(avg=%d, p95=%d, p99=%d) 72h(avg=%d, p95=%d, p99=%d)", name.c_str(), avg2h, p95_2h,
-                       p99_2h, avg72h, p95_72h, p99_72h);
-        }
-    }
-
+    void ResetSessionState();
     void OnConfigUpdated();
 
     // Main loop and state management
     void MonitorLoop();
-    void ExecuteLightweightSensorSafe(ISensor* sensor, const char* name);
-    bool ExecuteHeavyweightSensorSafe(ISensor* sensor, const char* name);
-    
-    // OS版本检查helper方法
-    bool IsCurrentOsSupported() const;
-    
+
+    // 辅助方法声明
+    const std::chrono::milliseconds GetLightScanInterval() const;
+    const std::chrono::milliseconds GetHeavyScanInterval() const;
+    void ExecuteLightweightSensors();
+    void ExecuteHeavyweightSensors();
+    void ExecuteAndMonitorSensor(ISensor *sensor, const char *name, bool isHeavyweight);
+    void AddRandomJitter();
+
     // 新的分类上报方法
     void UploadHardwareReport();
     void UploadEvidenceReport();
-    void UploadTelemetryReport();
-    void SendReport(const anti_cheat::Report& report);
-    
-    void FillPerfTelemetry(anti_cheat::TelemetryMetrics &tm, bool include_perf_windows);
-    void InitializeSystem();
-    void InitializeProcessBaseline();
-    void ResetSessionState();
+    void UploadTelemetryMetricsReport(const anti_cheat::TelemetryMetrics &metrics);
+    void SendReport(const anti_cheat::Report &report);
+    // 统一传感器统计记录方法
+    void RecordSensorExecutionStats(const char *name, int duration_ms, SensorExecutionResult result,
+                                    anti_cheat::SensorFailureReason failureReason = anti_cheat::UNKNOWN_FAILURE);
+    // 统一传感器统计批量上报方法
+    void UploadSensorExecutionStatsReport();
+
     void AddEvidence(anti_cheat::CheatCategory category, const std::string &description);
-    void AddEvidenceInternal(anti_cheat::CheatCategory category,
-                             const std::string &description);  // 不加锁的内部版本
-    void HardenProcessAndThreads();                            //  进程与线程加固
-    bool HasEvidenceOfType(anti_cheat::CheatCategory category);
 
-    // 传感器异常处理方法
-    void HandleSensorException(const char *name, const std::string &exception_what);
-    void HandleSensorTimeout(const char *name);
-    void ResetSensorFailure(const char *name);
+    // OS版本检查helper方法
+    bool IsCurrentOsSupported() const;
 
-    // --- Sensor Functions ---
-    void CheckParentProcessAtStartup();
-    void Sensor_DetectVirtualMachine();
-    // 硬件信息采集已解耦，不再作为 Sensor_*
-
-    void DoCheckIatHooks(ScanContext &context, const BYTE *baseAddress, const IMAGE_IMPORT_DESCRIPTOR *pImportDesc);
-    void DoCheckIatHooksWithTimeout(ScanContext &context, const BYTE *baseAddress, const IMAGE_IMPORT_DESCRIPTOR *pImportDesc, 
-                                    const std::chrono::steady_clock::time_point &startTime, int budget_ms);
-    void VerifyModuleSignature(HMODULE hModule);
-
-    // Helper to check if an address belongs to a whitelisted module
-    // Helper to check if an address belongs to a whitelisted module
-    bool IsAddressInLegitimateModule(PVOID address, std::wstring &outModulePath);
-
-    // 扩展监控辅助函数
-    bool IsPathInWhitelist(const std::wstring &modulePath);
     // 使用"诱饵处理函数"技术动态查找VEH链表的地址
     uintptr_t FindVehListAddress();
 
+    void HardenProcessAndThreads();  //  进程与线程加固
+    void CheckParentProcessAtStartup();
+
+    void DetectVirtualMachine();
     // VM detection helpers
     void DetectVmByCpuid();
     void DetectVmByRegistry();
     void DetectVmByMacAddress();
 
-    // 钩子相关代码已删除
-    static LPVOID WINAPI DetourVirtualAlloc(LPVOID lpAddress, SIZE_T dwSize, DWORD flAllocationType, DWORD flProtect);
-    static LPVOID WINAPI DetourVirtualAllocEx(HANDLE hProcess, LPVOID lpAddress, SIZE_T dwSize, DWORD flAllocationType,
-                                              DWORD flProtect);
-    static BOOL WINAPI DetourVirtualProtect(LPVOID lpAddress, SIZE_T dwSize, DWORD flNewProtect, PDWORD lpflOldProtect);
-    static NTSTATUS WINAPI DetourNtAllocateVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress, ULONG ZeroBits,
-                                                         PSIZE_T RegionSize, ULONG AllocationType, ULONG Protect);
+    void VerifyModuleSignature(HMODULE hModule);
 
-    // 扩展API钩子函数声明
-    static LPVOID WINAPI DetourHeapAlloc(HANDLE hHeap, DWORD dwFlags, SIZE_T dwBytes);
-    static LPVOID WINAPI DetourMapViewOfFile(HANDLE hFileMappingObject, DWORD dwDesiredAccess, DWORD dwFileOffsetHigh,
-                                             DWORD dwFileOffsetLow, SIZE_T dwNumberOfBytesToMap);
-    static HMODULE WINAPI DetourLoadLibraryW(LPCWSTR lpLibFileName);
-    static HMODULE WINAPI DetourLoadLibraryA(LPCSTR lpLibFileName);
-    static BOOL WINAPI DetourWriteProcessMemory(HANDLE hProcess, LPVOID lpBaseAddress, LPCVOID lpBuffer, SIZE_T nSize,
-                                                SIZE_T *lpNumberOfBytesWritten);
-    static NTSTATUS WINAPI DetourNtWriteVirtualMemory(HANDLE ProcessHandle, PVOID BaseAddress, PVOID Buffer,
-                                                      SIZE_T BufferSize, PSIZE_T NumberOfBytesWritten);
-    static NTSTATUS WINAPI DetourNtCreateThread(PHANDLE ThreadHandle, ACCESS_MASK DesiredAccess,
-                                                POBJECT_ATTRIBUTES ObjectAttributes, HANDLE ProcessHandle,
-                                                PVOID StartRoutine, PVOID Argument, ULONG CreateFlags, PSIZE_T ZeroBits,
-                                                PSIZE_T StackSize, PSIZE_T MaximumStackSize,
-                                                PPS_ATTRIBUTE_LIST AttributeList);
-
-    // Shellcode检测：安装和卸载API钩子
-    void InstallVirtualAllocHook();
-    void UninstallVirtualAllocHook();
-
-    void InstallExtendedApiHooks();
-    void UninstallExtendedApiHooks();
-
-    // VirtualAlloc Hook状态管理
-    bool m_isVirtualAllocHooked = false;
-    bool m_isExtendedApiHooked = false;
-    // IAT hook: 保存被修改的IAT条目指针，便于恢复
-    struct IatHookEntry
-    {
-        void **pIatEntry = nullptr;  // 指向IAT中函数指针的指针
-        void *pTrampoline = nullptr;
-        std::string apiName;
-    };
-    std::vector<IatHookEntry> m_iatHooks;
-
-    std::mutex m_hookMutex;  // 用于保护 hook 安装/卸载的互斥锁
+    // Helper to check if an address belongs to a whitelisted module
+    bool IsAddressInLegitimateModule(PVOID address, std::wstring &outModulePath);
+    // 只检查地址是否在合法模块中，不返回模块路径
+    bool IsAddressInLegitimateModule(PVOID address);
 };
-
-// CheatMonitor::Pimpl成员函数实现
-void CheatMonitor::Pimpl::FillPerfTelemetry(anti_cheat::TelemetryMetrics &tm, bool include_perf_windows)
-{
-    if (!include_perf_windows)
-        return;
-
-    // 为每个传感器计算2h/72h窗口统计并写入protobuf map
-    for (const auto &kv : m_sensorDurations2h)
-    {
-        const std::string &name = kv.first;
-        const auto &q2h = kv.second;
-        const auto &q72h = m_sensorDurations72h[name];
-
-        long long sum2h = 0;
-        for (const auto &p : q2h)
-            sum2h += p.second;
-        const uint32_t avg2h = q2h.empty() ? 0u : (uint32_t)(sum2h / (long long)q2h.size());
-        const uint32_t p95_2h = (uint32_t)PercentileFromDeque(q2h, 95.0);
-        const uint32_t p99_2h = (uint32_t)PercentileFromDeque(q2h, 99.0);
-
-        long long sum72h = 0;
-        for (const auto &p : q72h)
-            sum72h += p.second;
-        const uint32_t avg72h = q72h.empty() ? 0u : (uint32_t)(sum72h / (long long)q72h.size());
-        const uint32_t p95_72h = (uint32_t)PercentileFromDeque(q72h, 95.0);
-        const uint32_t p99_72h = (uint32_t)PercentileFromDeque(q72h, 99.0);
-
-        anti_cheat::PerfWindows pw;
-        anti_cheat::PerfStats *s2 = pw.mutable_win_2h();
-        s2->set_avg_ms(avg2h);
-        s2->set_p95_ms(p95_2h);
-        s2->set_p99_ms(p99_2h);
-
-        anti_cheat::PerfStats *s72 = pw.mutable_win_72h();
-        s72->set_avg_ms(avg72h);
-        s72->set_p95_ms(p95_72h);
-        s72->set_p99_ms(p99_72h);
-
-        (*tm.mutable_sensor_perf())[name] = pw;
-    }
-}
 
 // ScanContext: 为传感器提供所需依赖的上下文对象
 // 这是"依赖倒置"原则的体现，传感器不直接依赖Pimpl，而是依赖这个抽象的上下文
@@ -1180,37 +929,6 @@ class ScanContext
     {
         return CheatConfigManager::GetInstance().GetWhitelistedVEHModules();
     }
-    // 为 SuspiciousLaunchSensor 提供上下文访问
-    bool GetParentWasMissingAtStartup() const
-    {
-        return m_pimpl->m_parentWasMissingAtStartup.load();
-    }
-    void ClearParentWasMissingFlag()
-    {
-        m_pimpl->m_parentWasMissingAtStartup = false;
-    }
-    void HandleSensorException(const char *name, const std::string &exception_what)
-    {
-        m_pimpl->HandleSensorException(name, exception_what);
-    }
-
-    void HandleSensorTimeout(const char *name)
-    {
-        m_pimpl->HandleSensorTimeout(name);
-    }
-
-    void ResetSensorFailure(const char *name)
-    {
-        m_pimpl->ResetSensorFailure(name);
-    }
-    bool HasEvidenceOfType(anti_cheat::CheatCategory category) const
-    {
-        return m_pimpl->HasEvidenceOfType(category);
-    }
-    HWND GetGameWindow() const
-    {
-        return m_pimpl->m_hGameWindow;
-    }
     const std::unordered_map<std::string, std::vector<uint8_t>> &GetIatBaselineHashes() const
     {
         return m_pimpl->m_iatBaselineHashes;
@@ -1219,26 +937,25 @@ class ScanContext
     {
         return m_pimpl->m_moduleBaselineHashes;
     }
-    uintptr_t GetVehListAddress() const
+    const uintptr_t GetVehListAddress() const
     {
         return m_pimpl->m_vehListAddress;
     }
 
-    WindowsVersion GetWindowsVersion() const  // [新增] 为传感器提供OS版本信息
+    SystemUtils::WindowsVersion GetWindowsVersion() const  // 为传感器提供OS版本信息
     {
         return m_pimpl->m_windowsVersion;
     }
-    
-    bool IsCurrentOsSupported() const  // [新增] 检查当前OS是否满足配置要求
+
+    bool IsCurrentOsSupported() const  // 检查当前OS是否满足配置要求
     {
         return m_pimpl->IsCurrentOsSupported();
     }
-    
+
     // 提供对Pimpl方法的访问
-    void DoCheckIatHooksWithTimeout(const BYTE *baseAddress, const IMAGE_IMPORT_DESCRIPTOR *pImportDesc, 
-                                   std::chrono::steady_clock::time_point startTime, int budget_ms)
+    void CheckIatHooks(const BYTE *baseAddress, const IMAGE_IMPORT_DESCRIPTOR *pImportDesc)
     {
-        m_pimpl->DoCheckIatHooksWithTimeout(*this, baseAddress, pImportDesc, startTime, budget_ms);
+        m_pimpl->CheckIatHooks(*this, baseAddress, pImportDesc);
     }
 
     bool IsAddressInLegitimateModule(PVOID address, std::wstring &outModulePath)
@@ -1246,31 +963,25 @@ class ScanContext
         return m_pimpl->IsAddressInLegitimateModule(address, outModulePath);
     }
 
-    // --- 提供对缓存的访问 ---
-    std::unordered_map<DWORD, std::pair<CheatMonitor::Pimpl::ProcessVerdict, std::chrono::steady_clock::time_point>> &
-    GetProcessVerdictCache()
+    bool IsAddressInLegitimateModule(PVOID address)
     {
-        return m_pimpl->m_processVerdictCache;
+        return m_pimpl->IsAddressInLegitimateModule(address);
     }
 
-    std::map<DWORD, FILETIME> &GetKnownHarmfulProcesses()  // 新增：为环境传感器提供缓存访问
+    void UploadTelemetryMetricsReport(const anti_cheat::TelemetryMetrics &metrics)
     {
-        return m_pimpl->m_knownHarmfulProcesses;
-    }
-
-    // 为句柄关联传感器提供共享数据访问
-    std::unordered_map<DWORD, std::chrono::steady_clock::time_point> &GetSuspiciousHandleHolders()
-    {
-        return m_pimpl->m_suspiciousHandleHolders;
+        m_pimpl->UploadTelemetryMetricsReport(metrics);
     }
 
     // --- 提供对已知状态的访问 ---
-    std::set<DWORD> &GetKnownThreadIds()
+    std::set<DWORD> GetKnownThreadIds() const
     {
+        std::lock_guard<std::mutex> lock(m_pimpl->m_baselineMutex);
         return m_pimpl->m_knownThreadIds;
     }
-    std::set<HMODULE> &GetKnownModules()
+    std::set<HMODULE> GetKnownModules() const
     {
+        std::lock_guard<std::mutex> lock(m_pimpl->m_baselineMutex);
         return m_pimpl->m_knownModules;
     }
     void VerifyModuleSignature(HMODULE hModule)
@@ -1279,22 +990,204 @@ class ScanContext
     }
 
     // 为自我完整性检查提供基线访问
-    HMODULE GetSelfModuleHandle() const
+    const HMODULE GetSelfModuleHandle() const
     {
         return m_pimpl->m_hSelfModule;
     }
-    const std::vector<uint8_t> &GetSelfModuleBaselineHash() const
+};
+
+// ---- 公共扫描器类 ----
+// 用于统一内存、模块、线程扫描逻辑，减少代码重复
+class MemoryScanner
+{
+   public:
+    // 内存区域扫描回调函数类型
+    using MemoryRegionCallback = std::function<void(const MEMORY_BASIC_INFORMATION &)>;
+
+    // 扫描所有内存区域
+    static void ScanMemoryRegions(MemoryRegionCallback callback)
     {
-        return m_pimpl->m_selfModuleBaselineHash;
+        LPBYTE address = nullptr;
+        MEMORY_BASIC_INFORMATION mbi;
+
+        // 生产环境优化：32位系统地址空间保护
+        const uintptr_t maxAddress = sizeof(void *) == 4 ? 0x7FFFFFFF : 0x7FFFFFFFFFFF;
+
+        while (VirtualQuery(address, &mbi, sizeof(mbi)))
+        {
+            // 调用回调函数处理内存区域
+            callback(mbi);
+
+            address = reinterpret_cast<LPBYTE>(mbi.BaseAddress) + mbi.RegionSize;
+
+            // 生产环境优化：地址溢出保护
+            if (address < reinterpret_cast<LPBYTE>(mbi.BaseAddress) ||
+                reinterpret_cast<uintptr_t>(address) > maxAddress)
+            {
+                break;
+            }
+        }
+    }
+
+    // 扫描私有可执行内存区域
+    static void ScanPrivateExecutableMemory(MemoryRegionCallback callback)
+    {
+        ScanMemoryRegions([&callback](const MEMORY_BASIC_INFORMATION &mbi) {
+            if (mbi.State == MEM_COMMIT && mbi.Type == MEM_PRIVATE &&
+                (mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)))
+            {
+                callback(mbi);
+            }
+        });
+    }
+
+    // 扫描可执行内存区域
+    static void ScanExecutableMemory(MemoryRegionCallback callback)
+    {
+        ScanMemoryRegions([&callback](const MEMORY_BASIC_INFORMATION &mbi) {
+            if (mbi.State == MEM_COMMIT &&
+                (mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)))
+            {
+                callback(mbi);
+            }
+        });
     }
 };
 
-// InputAnalysis命名空间已删除以解决性能问题
+class ModuleScanner
+{
+   public:
+    // 模块扫描回调函数类型
+    using ModuleCallback = std::function<void(HMODULE)>;
 
-// --- 将所有传感器实现移入独立的类中 ---
+    // 枚举所有模块
+    static void EnumerateModules(ModuleCallback callback)
+    {
+        std::vector<HMODULE> hMods(1024);  // 使用合理的默认值
+        DWORD cbNeeded = 0;
+
+        if (!EnumProcessModules(GetCurrentProcess(), hMods.data(), hMods.size() * sizeof(HMODULE), &cbNeeded))
+        {
+            DWORD error = GetLastError();
+            LOG_ERROR_F(AntiCheatLogger::LogCategory::SENSOR, "ModuleScanner: EnumProcessModules失败，错误码: 0x%08X",
+                        error);
+            return;
+        }
+
+        size_t moduleCount_actual = cbNeeded / sizeof(HMODULE);
+
+        // 处理第一批模块
+        for (size_t i = 0; i < std::min(moduleCount_actual, hMods.size()); ++i)
+        {
+            callback(hMods[i]);
+        }
+
+        // 如果还有更多模块，继续枚举
+        while (moduleCount_actual > hMods.size())
+        {
+            if (!EnumProcessModules(GetCurrentProcess(), hMods.data(), hMods.size() * sizeof(HMODULE), &cbNeeded))
+            {
+                break;
+            }
+
+            moduleCount_actual = cbNeeded / sizeof(HMODULE);
+            size_t startIndex = hMods.size();
+
+            for (size_t i = 0; i < std::min(moduleCount_actual - startIndex, hMods.size()); ++i)
+            {
+                callback(hMods[i]);
+            }
+        }
+    }
+
+    // 获取所有模块句柄
+    static std::vector<HMODULE> GetAllModules()
+    {
+        std::vector<HMODULE> modules;
+        modules.reserve(1000);  // 预分配合理大小
+
+        EnumerateModules([&modules](HMODULE hModule) { modules.push_back(hModule); });
+
+        return modules;
+    }
+};
+
+class ThreadScanner
+{
+   public:
+    // 线程扫描回调函数类型
+    using ThreadCallback = std::function<void(DWORD)>;
+
+    // 枚举所有线程
+    static void EnumerateThreads(ThreadCallback callback, DWORD targetProcessId = 0)
+    {
+        if (targetProcessId == 0)
+            targetProcessId = GetCurrentProcessId();
+
+        HANDLE hThreadSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+        if (hThreadSnapshot == INVALID_HANDLE_VALUE)
+        {
+            DWORD error = GetLastError();
+            LOG_ERROR_F(AntiCheatLogger::LogCategory::SENSOR,
+                        "ThreadScanner: CreateToolhelp32Snapshot失败，错误码: 0x%08X", error);
+            return;
+        }
+
+        auto snapshot_closer = [](HANDLE h) { CloseHandle(h); };
+        std::unique_ptr<void, decltype(snapshot_closer)> snapshot_handle(hThreadSnapshot, snapshot_closer);
+
+        THREADENTRY32 te;
+        te.dwSize = sizeof(te);
+
+        if (Thread32First(hThreadSnapshot, &te))
+        {
+            do
+            {
+                if (te.th32OwnerProcessID == targetProcessId)
+                {
+                    callback(te.th32ThreadID);
+                }
+            } while (Thread32Next(hThreadSnapshot, &te));
+        }
+    }
+
+    // 获取所有线程ID
+    static std::vector<DWORD> GetAllThreads(DWORD targetProcessId = 0)
+    {
+        std::vector<DWORD> threads;
+        threads.reserve(100);  // 预分配合理大小
+
+        EnumerateThreads([&threads](DWORD threadId) { threads.push_back(threadId); }, targetProcessId);
+
+        return threads;
+    }
+
+    // 获取线程起始地址
+    static PVOID GetThreadStartAddress(DWORD threadId)
+    {
+        HANDLE hThread = OpenThread(THREAD_QUERY_INFORMATION, FALSE, threadId);
+        if (!hThread)
+            return nullptr;
+
+        auto thread_closer = [](HANDLE h) { CloseHandle(h); };
+        std::unique_ptr<void, decltype(thread_closer)> thread_handle(hThread, thread_closer);
+
+        PVOID startAddress = nullptr;
+        if (g_pNtQueryInformationThread &&
+            NT_SUCCESS(g_pNtQueryInformationThread(hThread,
+                                                   (THREADINFOCLASS)9,  // ThreadQuerySetWin32StartAddress
+                                                   &startAddress, sizeof(startAddress), nullptr)))
+        {
+            return startAddress;
+        }
+
+        return nullptr;
+    }
+};
+
+// --- 传感器实现按重要程度从低到高排列 ---
 namespace Sensors
 {
-// --- 轻量级传感器 ---
 
 class AdvancedAntiDebugSensor : public ISensor
 {
@@ -1307,88 +1200,59 @@ class AdvancedAntiDebugSensor : public ISensor
     {
         return SensorWeight::LIGHT;  // < 1ms: 轻量级反调试检测
     }
-    void Execute(ScanContext &context) override
+    SensorExecutionResult Execute(ScanContext &context) override
     {
-        // 生产环境优化：添加超时控制和异常处理
-        const auto startTime = std::chrono::steady_clock::now();
-        const int budget_ms = CheatConfigManager::GetInstance().GetLightScanBudgetMs();
+        // 重置失败原因
+        m_lastFailureReason = anti_cheat::UNKNOWN_FAILURE;
 
-        try
+        // 策略1：配置版本门控 - 检查当前OS是否满足配置的最低要求
+        if (!IsOsSupported(context))
         {
-            // 策略1：配置版本门控 - 检查当前OS是否满足配置的最低要求
-            if (!context.IsCurrentOsSupported())
-            {
-                LOG_DEBUG(AntiCheatLogger::LogCategory::SENSOR, "高级反调试检测已禁用：当前OS版本低于配置最低要求");
-                return;
-            }
-            
-            // 反调试检测数组 - 按检测速度排序，优先执行快速检测
-            std::array<std::pair<std::string, std::function<void()>>, 6> checks = {
-                    {{"RemoteDebugger",
-                      [&]() {
-                          CheckRemoteDebugger(context);
-                      }},
-                     {"PEB_BeingDebugged",
-                      [&]() {
-                          CheckPEBBeingDebugged(context);
-                      }},
-                     {"CloseHandle",
-                      [&]() {
-                          CheckCloseHandleDebugger(context);
-                      }},
-                     {"DebugRegisters",
-                      [&]() {
-                          CheckDebugRegisters(context);
-                      }},
-                     {"KernelDebugger_NtQuery",
-                      [&]() {
-                          if (IsVbsEnabled())
-                              return;
-                          CheckKernelDebuggerNtQuery(context);
-                      }},
-                     {"KernelDebugger_KUSER", [&]() {
-                          if (IsVbsEnabled())
-                              return;
-                          CheckKernelDebuggerKUSER(context);
-                      }}}};
-
-            // 执行检测，每两个检测后检查超时
-            for (size_t i = 0; i < checks.size(); ++i)
-            {
-                checks[i].second();
-
-                // 每2个检测后检查超时
-                if ((i & 1) == 1)
-                {
-                    auto now = std::chrono::steady_clock::now();
-                    if (std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count() > budget_ms)
-                    {
-                        LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR,
-                                      "AdvancedAntiDebugSensor超时，已完成%zu/%zu个检测", i + 1, checks.size());
-                        context.HandleSensorTimeout(GetName());
-                        return;
-                    }
-                }
-            }
-
-            context.ResetSensorFailure(GetName());
+            LOG_DEBUG(AntiCheatLogger::LogCategory::SENSOR, "高级反调试检测已禁用：当前OS版本低于配置最低要求");
+            RecordFailure(anti_cheat::ANTI_DEBUG_OS_VERSION_UNSUPPORTED);
+            return SensorExecutionResult::FAILURE;
         }
-        catch (const std::exception &e)
+
+        // 反调试检测数组 - 按检测速度排序，优先执行快速检测
+        std::array<std::pair<std::string, std::function<void()>>, 6> checks = {
+                {{"RemoteDebugger", [&]() { CheckRemoteDebugger(context); }},
+                 {"PEB_BeingDebugged", [&]() { CheckPEBBeingDebugged(context); }},
+                 {"CloseHandle", [&]() { CheckCloseHandleDebugger(context); }},
+                 {"DebugRegisters", [&]() { CheckDebugRegisters(context); }},
+                 {"KernelDebugger_NtQuery",
+                  [&]() {
+                      if (SystemUtils::IsVbsEnabled())
+                          return;  // 修复：void函数不能返回值
+                      CheckKernelDebuggerNtQuery(context);
+                  }},
+                 {"KernelDebugger_KUSER", [&]() {
+                      if (SystemUtils::IsVbsEnabled())
+                          return;  // 修复：void函数不能返回值
+                      CheckKernelDebuggerKUSER(context);
+                  }}}};
+
+        // 执行检测，每两个检测后检查超时
+        for (size_t i = 0; i < checks.size(); ++i)
         {
-            context.HandleSensorException(GetName(), e.what());
+            checks[i].second();
         }
-        catch (...)
+
+        // 统一的执行结果判断逻辑
+        // 成功条件：没有失败原因记录
+        if (m_lastFailureReason != anti_cheat::UNKNOWN_FAILURE)
         {
-            context.HandleSensorException(GetName(), "Unknown exception in AdvancedAntiDebugSensor");
+            return SensorExecutionResult::FAILURE;
         }
+
+        return SensorExecutionResult::SUCCESS;
     }
 
-private:
+   private:
     // 使用简单的结构体来传递检测结果，避免C++对象展开冲突
     struct DebugDetectionResult
     {
         bool detected;
-        const char* description;
+        const char *description;
         DWORD exceptionCode;
     };
 
@@ -1396,18 +1260,17 @@ private:
     static DebugDetectionResult CheckRemoteDebugger_Internal()
     {
         DebugDetectionResult result = {false, nullptr, 0};
-                          __try
-                          {
-                              BOOL isDebuggerPresent = FALSE;
-                              if (CheckRemoteDebuggerPresent(GetCurrentProcess(), &isDebuggerPresent) &&
-                                  isDebuggerPresent)
-                              {
+        __try
+        {
+            BOOL isDebuggerPresent = FALSE;
+            if (CheckRemoteDebuggerPresent(GetCurrentProcess(), &isDebuggerPresent) && isDebuggerPresent)
+            {
                 result.detected = true;
                 result.description = "CheckRemoteDebuggerPresent() API返回true";
-                              }
-                          }
-                          __except (EXCEPTION_EXECUTE_HANDLER)
-                          {
+            }
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
             result.exceptionCode = GetExceptionCode();
         }
         return result;
@@ -1416,21 +1279,21 @@ private:
     static DebugDetectionResult CheckPEBBeingDebugged_Internal()
     {
         DebugDetectionResult result = {false, nullptr, 0};
-                          __try
-                          {
+        __try
+        {
 #ifdef _WIN64
-                              auto pPeb = (PPEB)__readgsqword(0x60);
+            auto pPeb = (PPEB)__readgsqword(0x60);
 #else
-                        auto pPeb = (PPEB)__readfsdword(0x30);
+            auto pPeb = (PPEB)__readfsdword(0x30);
 #endif
-                              if (pPeb && IsValidPointer(pPeb, sizeof(PEB)) && pPeb->BeingDebugged)
-                              {
+            if (pPeb && SystemUtils::IsValidPointer(pPeb, sizeof(PEB)) && pPeb->BeingDebugged)
+            {
                 result.detected = true;
                 result.description = "PEB->BeingDebugged 标志位为true";
-                              }
-                          }
-                          __except (EXCEPTION_EXECUTE_HANDLER)
-                          {
+            }
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
             result.exceptionCode = GetExceptionCode();
         }
         return result;
@@ -1439,12 +1302,12 @@ private:
     static DebugDetectionResult CheckCloseHandleDebugger_Internal()
     {
         DebugDetectionResult result = {false, nullptr, 0};
-                          __try
-                          {
-                              CheckCloseHandleException();
-                          }
-                          __except (EXCEPTION_EXECUTE_HANDLER)
-                          {
+        __try
+        {
+            SystemUtils::CheckCloseHandleException();
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
             result.exceptionCode = GetExceptionCode();
         }
         return result;
@@ -1453,21 +1316,21 @@ private:
     static DebugDetectionResult CheckDebugRegisters_Internal()
     {
         DebugDetectionResult result = {false, nullptr, 0};
-                          __try
-                          {
-                              CONTEXT ctx = {};
-                              ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
-                              if (GetThreadContext(GetCurrentThread(), &ctx))
-                              {
-                                  if (ctx.Dr0 != 0 || ctx.Dr1 != 0 || ctx.Dr2 != 0 || ctx.Dr3 != 0)
-                                  {
+        __try
+        {
+            CONTEXT ctx = {};
+            ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+            if (GetThreadContext(GetCurrentThread(), &ctx))
+            {
+                if (ctx.Dr0 != 0 || ctx.Dr1 != 0 || ctx.Dr2 != 0 || ctx.Dr3 != 0)
+                {
                     result.detected = true;
                     result.description = "检测到硬件断点 (Debug Registers)";
-                                  }
-                              }
-                          }
-                          __except (EXCEPTION_EXECUTE_HANDLER)
-                          {
+                }
+            }
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
             result.exceptionCode = GetExceptionCode();
         }
         return result;
@@ -1476,22 +1339,21 @@ private:
     static DebugDetectionResult CheckKernelDebuggerNtQuery_Internal()
     {
         DebugDetectionResult result = {false, nullptr, 0};
-                          __try
-                          {
-                              SYSTEM_KERNEL_DEBUGGER_INFORMATION info;
-                              if (g_pNtQuerySystemInformation &&
-                                  NT_SUCCESS(g_pNtQuerySystemInformation(SystemKernelDebuggerInformation, &info,
-                                                                         sizeof(info), NULL)))
-                              {
-                                  if (info.KernelDebuggerEnabled && !info.KernelDebuggerNotPresent)
-                                  {
+        __try
+        {
+            SYSTEM_KERNEL_DEBUGGER_INFORMATION info;
+            if (g_pNtQuerySystemInformation &&
+                NT_SUCCESS(g_pNtQuerySystemInformation(SystemKernelDebuggerInformation, &info, sizeof(info), NULL)))
+            {
+                if (info.KernelDebuggerEnabled && !info.KernelDebuggerNotPresent)
+                {
                     result.detected = true;
                     result.description = "检测到内核调试器 (NtQuerySystemInformation)";
-                                  }
-                              }
-                          }
-                          __except (EXCEPTION_EXECUTE_HANDLER)
-                          {
+                }
+            }
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
             result.exceptionCode = GetExceptionCode();
         }
         return result;
@@ -1500,16 +1362,16 @@ private:
     static DebugDetectionResult CheckKernelDebuggerKUSER_Internal()
     {
         DebugDetectionResult result = {false, nullptr, 0};
-                          __try
-                          {
-                              if (IsKernelDebuggerPresent_KUserSharedData())
-                              {
+        __try
+        {
+            if (SystemUtils::IsKernelDebuggerPresent_KUserSharedData())
+            {
                 result.detected = true;
                 result.description = "检测到内核调试器 (KUSER_SHARED_DATA)";
-                              }
-                          }
-                          __except (EXCEPTION_EXECUTE_HANDLER)
-                          {
+            }
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
             result.exceptionCode = GetExceptionCode();
         }
         return result;
@@ -1588,177 +1450,35 @@ private:
         {
             LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR, "KUSER调试器检测异常: 0x%08X", result.exceptionCode);
         }
+
+        return SensorExecutionResult::SUCCESS;
     }
 };
 
-class MemoryScanSensor : public ISensor
+class SystemCodeIntegritySensor : public ISensor
 {
    public:
     const char *GetName() const override
     {
-        return "MemoryScanSensor";
+        return "SystemCodeIntegritySensor";
     }
     SensorWeight GetWeight() const override
     {
-        return SensorWeight::HEAVY;  // 10-100ms: 内存扫描
+        return SensorWeight::LIGHT;  // < 1ms: 系统代码完整性检测
     }
-
-    void Execute(ScanContext &context) override
+    SensorExecutionResult Execute(ScanContext &context) override
     {
-        const auto startTime = std::chrono::steady_clock::now();
-        const int budget_ms = CheatConfigManager::GetInstance().GetHeavyScanBudgetMs();
+        // 重置失败原因
+        m_lastFailureReason = anti_cheat::UNKNOWN_FAILURE;
 
-        try
-        {
-            // 策略1：配置版本门控 - 检查当前OS是否满足配置的最低要求
-            if (!context.IsCurrentOsSupported())
-            {
-                LOG_DEBUG(AntiCheatLogger::LogCategory::SENSOR, "内存扫描检测已禁用：当前OS版本低于配置最低要求");
-                return;
-            }
-            
-            const auto &baselineHashes = context.GetModuleBaselineHashes();
-            std::vector<HMODULE> hMods(1024);
-            DWORD cbNeeded = 0;
-
-            if (!EnumProcessModules(GetCurrentProcess(), hMods.data(), hMods.size() * sizeof(HMODULE), &cbNeeded))
-            {
-                return;
-            }
-
-            if (hMods.size() * sizeof(HMODULE) < cbNeeded)
-            {
-                hMods.resize(cbNeeded / sizeof(HMODULE));
-                if (!EnumProcessModules(GetCurrentProcess(), hMods.data(), hMods.size() * sizeof(HMODULE), &cbNeeded))
-                {
-                    return;
-                }
-            }
-
-            for (unsigned int i = 0; i < (cbNeeded / sizeof(HMODULE)); ++i)
-            {
-                if ((i & 15) == 0)
-                {
-                    auto now = std::chrono::steady_clock::now();
-                    if (std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count() > budget_ms)
-                    {
-                        context.HandleSensorTimeout(GetName());
-                        return;
-                    }
-                }
-                ProcessModule(hMods[i], context, baselineHashes);
-            }
-            context.ResetSensorFailure(GetName());
-        }
-        catch (const std::exception &e)
-        {
-            context.HandleSensorException(GetName(), e.what());
-        }
-        catch (...)
-        {
-            context.HandleSensorException(GetName(), "Unknown exception");
-        }
-    }
-
-   private:
-    // 处理单个模块的逻辑
-    void ProcessModule(HMODULE hModule, ScanContext &context,
-                       const std::unordered_map<std::wstring, std::vector<uint8_t>> &baselineHashes)
-    {
-        if (hModule == context.GetSelfModuleHandle())
-        {
-            return;
-        }
-        __try
-        {
-            if (!hModule)
-            {
-                return;  // 空句柄，直接返回
-            }
-
-            // 获取模块路径
-            wchar_t modulePath_w[MAX_PATH] = {0};
-            if (GetModuleFileNameW(hModule, modulePath_w, MAX_PATH) == 0)
-            {
-                return;  // 获取路径失败，直接返回
-            }
-
-            // 获取代码节信息
-            PVOID codeBase = nullptr;
-            DWORD codeSize = 0;
-            if (!GetCodeSectionInfo(hModule, codeBase, codeSize))
-            {
-                return;  // 获取代码节信息失败
-            }
-
-            // 将复杂逻辑移到外部处理
-            ProcessModuleData(modulePath_w, codeBase, codeSize, context, baselineHashes);
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER)
-        {
-            // 捕获模块卸载或其他异常，安全忽略
-            return;
-        }
-    }
-
-    // 处理模块路径和哈希的逻辑
-    void ProcessModuleData(const wchar_t *modulePath_w, PVOID codeBase, DWORD codeSize, ScanContext &context,
-                           const std::unordered_map<std::wstring, std::vector<uint8_t>> &baselineHashes)
-    {
-        std::wstring modulePath(modulePath_w);
-        std::vector<uint8_t> currentHash = CalculateHash(static_cast<BYTE *>(codeBase), codeSize);
-        auto it = baselineHashes.find(modulePath);
-
-        if (it == baselineHashes.end())
-        {
-            // LEARNING MODE: 仅记录一次基线
-            static std::set<std::wstring> learned_modules;
-            if (learned_modules.find(modulePath) == learned_modules.end())
-            {
-                std::string hash_str;
-                char buf[17];  // 用于 "0x" + 8*2 十六进制字符 + 空字符
-                for (uint8_t byte : currentHash)
-                {
-                    sprintf_s(buf, sizeof(buf), "%02x", byte);
-                    hash_str += buf;
-                }
-                context.AddEvidence(anti_cheat::INTEGRITY_BASELINE_LEARNED,
-                                    "学习基线: " + Utils::WideToString(modulePath) + " | Hash: " + hash_str);
-                learned_modules.insert(modulePath);
-            }
-        }
-        else
-        {
-            // DETECTION MODE
-            if (currentHash != it->second)
-            {
-                context.AddEvidence(anti_cheat::INTEGRITY_MEMORY_PATCH,
-                                    "检测到内存代码节被篡改: " + Utils::WideToString(modulePath));
-            }
-        }
-    }
-};
-
-class SystemIntegritySensor : public ISensor
-{
-   public:
-    const char *GetName() const override
-    {
-        return "SystemIntegritySensor";
-    }
-    SensorWeight GetWeight() const override
-    {
-        return SensorWeight::LIGHT;  // < 1ms: 系统完整性检测
-    }
-    void Execute(ScanContext &context) override
-    {
         // 策略1：配置版本门控 - 检查当前OS是否满足配置的最低要求
-        if (!context.IsCurrentOsSupported())
+        if (!IsOsSupported(context))
         {
-            LOG_DEBUG(AntiCheatLogger::LogCategory::SENSOR, "系统完整性检测已禁用：当前OS版本低于配置最低要求");
-            return;
+            LOG_DEBUG(AntiCheatLogger::LogCategory::SENSOR, "系统代码完整性检测已禁用：当前OS版本低于配置最低要求");
+            RecordFailure(anti_cheat::SYSTEM_CODE_INTEGRITY_OS_VERSION_UNSUPPORTED);
+            return SensorExecutionResult::FAILURE;
         }
-        
+
         SYSTEM_CODE_INTEGRITY_INFORMATION sci = {sizeof(sci), 0};
         if (g_pNtQuerySystemInformation &&
             NT_SUCCESS(g_pNtQuerySystemInformation(SystemCodeIntegrityInformation, &sci, sizeof(sci), nullptr)))
@@ -1774,298 +1494,220 @@ class SystemIntegritySensor : public ISensor
                                     "系统开启了内核调试模式 (Kernel Debugging Enabled)");
             }
         }
+        else
+        {
+            // NtQuerySystemInformation失败，记录失败原因
+            LOG_WARNING(AntiCheatLogger::LogCategory::SENSOR,
+                        "SystemCodeIntegritySensor: NtQuerySystemInformation失败");
+            RecordFailure(anti_cheat::SYSTEM_CODE_INTEGRITY_QUERY_FAILED);
+            return SensorExecutionResult::FAILURE;
+        }
+
+        // 统一的执行结果判断逻辑
+        // 成功条件：没有失败原因记录
+        if (m_lastFailureReason != anti_cheat::UNKNOWN_FAILURE)
+        {
+            return SensorExecutionResult::FAILURE;
+        }
+
+        return SensorExecutionResult::SUCCESS;
     }
 };
 
-class SelfIntegritySensor : public ISensor
+class ProcessAndWindowMonitorSensor : public ISensor
 {
    public:
     const char *GetName() const override
     {
-        return "SelfIntegritySensor";
+        return "ProcessAndWindowMonitorSensor";
     }
     SensorWeight GetWeight() const override
     {
-        return SensorWeight::MEDIUM;  // 1-10ms: 自身完整性检测
+        return SensorWeight::MEDIUM;  // 1-10ms: 进程和窗口监控
     }
-    void Execute(ScanContext &context) override
+    SensorExecutionResult Execute(ScanContext &context) override
     {
-        // 生产环境优化：添加重试机制和更严格的验证
-        const auto startTime = std::chrono::steady_clock::now();
-        const int budget_ms = CheatConfigManager::GetInstance().GetLightScanBudgetMs();
+        // 重置失败原因
+        m_lastFailureReason = anti_cheat::UNKNOWN_FAILURE;
 
-        try
-        {
-            // 策略1：配置版本门控 - 检查当前OS是否满足配置的最低要求
-            if (!context.IsCurrentOsSupported())
+        // 获取配置参数
+        const int maxProcessesToScan = CheatConfigManager::GetInstance().GetMaxProcessesToScan();
+        auto knownGoodProcesses = CheatConfigManager::GetInstance().GetKnownGoodProcesses();
+
+        // 1. 首先，一次性遍历所有窗口，构建一个 PID -> WindowTitles 的映射
+        std::unordered_map<DWORD, std::vector<std::wstring>> windowTitlesByPid;
+        int windowCount = 0;
+        auto enumProc = [](HWND hWnd, LPARAM lParam) -> BOOL {
+            auto *pData = reinterpret_cast<std::pair<std::unordered_map<DWORD, std::vector<std::wstring>> *, int *> *>(
+                    lParam);
+            auto *pMap = pData->first;
+            auto *pCount = pData->second;
+
+            if (!IsWindowVisible(hWnd))
+                return TRUE;
+
+            if (*pCount >= CheatConfigManager::GetInstance()
+                                   .GetMaxWindowCount())  // 窗口数量限制：正常系统通常不超过配置的最大窗口数量
+                return FALSE;                             // 达到最大窗口数量限制
+
+            DWORD processId = 0;
+            if (!GetWindowThreadProcessId(hWnd, &processId))
             {
-                LOG_DEBUG(AntiCheatLogger::LogCategory::SENSOR, "自身完整性检测已禁用：当前OS版本低于配置最低要求");
-                return;
+                // GetWindowThreadProcessId失败，记录失败原因
+                RecordFailure(anti_cheat::PROCESS_WINDOW_GET_WINDOW_THREAD_FAILED);
+                return TRUE;  // 继续处理下一个窗口
             }
-            
-            HMODULE hSelfModule = context.GetSelfModuleHandle();
-            const auto &baselineHash = context.GetSelfModuleBaselineHash();
-
-            if (!hSelfModule || baselineHash.empty())
+            if (processId > 0)
             {
-                LOG_WARNING(AntiCheatLogger::LogCategory::SENSOR, "SelfIntegritySensor: 缺少基线数据，跳过检测");
-                return;
-            }
-
-            // 生产环境优化：多重验证机制，降低误报率
-            const int maxRetries = 2;
-            bool hashMismatchConfirmed = false;
-
-            for (int attempt = 0; attempt < maxRetries && !hashMismatchConfirmed; ++attempt)
-            {
-                // 检查超时
-                auto now = std::chrono::steady_clock::now();
-                if (std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count() > budget_ms)
+                wchar_t buffer[256];
+                if (GetWindowTextLengthW(hWnd) > 0)
                 {
-                    LOG_WARNING(AntiCheatLogger::LogCategory::SENSOR, "SelfIntegritySensor超时");
-                    context.HandleSensorTimeout(GetName());
-                    return;
+                    if (GetWindowTextW(hWnd, buffer, ARRAYSIZE(buffer)) > 0)
+                    {
+                        (*pMap)[processId].push_back(buffer);
+                        (*pCount)++;
+                    }
+                    else
+                    {
+                        // GetWindowTextW失败，记录失败原因
+                        RecordFailure(anti_cheat::PROCESS_WINDOW_GET_WINDOW_TEXT_FAILED);
+                    }
                 }
+            }
+            return TRUE;
+        };
+        std::pair<std::unordered_map<DWORD, std::vector<std::wstring>> *, int *> enumData = {&windowTitlesByPid,
+                                                                                             &windowCount};
+        if (!EnumWindows(enumProc, reinterpret_cast<LPARAM>(&enumData)))
+        {
+            LOG_WARNING(AntiCheatLogger::LogCategory::SENSOR, "ProcessAndWindowMonitorSensor: EnumWindows失败");
+            RecordFailure(anti_cheat::PROCESS_WINDOW_ENUM_WINDOWS_FAILED);
+            return SensorExecutionResult::FAILURE;
+        }
 
-                auto result = CheckSelfIntegrityInternal(hSelfModule, baselineHash, attempt, maxRetries);
-                if (result.shouldContinue)
+        // 2. 然后，遍历进程列表，进行检查
+        using UniqueSnapshotHandle = std::unique_ptr<void, decltype(&::CloseHandle)>;
+        UniqueSnapshotHandle hSnapshot(CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0), &::CloseHandle);
+        if (hSnapshot.get() == INVALID_HANDLE_VALUE)
+        {
+            LOG_ERROR(AntiCheatLogger::LogCategory::SENSOR, "ProcessAndWindowMonitorSensor: 无法创建进程快照");
+            RecordFailure(anti_cheat::PROCESS_ENUM_FAILED);
+            return SensorExecutionResult::FAILURE;
+        }
+
+        PROCESSENTRY32W pe;
+        pe.dwSize = sizeof(pe);
+        if (Process32FirstW(hSnapshot.get(), &pe))
+        {
+            int processCount = 0;
+            do
+            {
+                if (processCount >= maxProcessesToScan)
+                {
+                    LOG_WARNING(AntiCheatLogger::LogCategory::SENSOR,
+                                "ProcessAndWindowMonitorSensor: 达到最大进程扫描数量限制(%d)，可能存在恶意进程干扰",
+                                maxProcessesToScan);
+                    break;
+                }
+                processCount++;
+                std::wstring processName = pe.szExeFile;
+                std::transform(processName.begin(), processName.end(), processName.begin(), ::towlower);
+
+                // 新增优化：首先通过进程名快速过滤已知的安全进程。
+                if (knownGoodProcesses.count(processName) > 0)
                 {
                     continue;
                 }
-                if (result.shouldBreak)
+
+                // 检查点 1: 廉价的进程名黑名单检查
+                for (const auto &harmful : context.GetHarmfulProcessNames())
                 {
-                    break;
-                }
-                if (result.hashMismatchConfirmed)
-                {
-                    hashMismatchConfirmed = true;
-                    context.AddEvidence(anti_cheat::INTEGRITY_SELF_TAMPERING,
-                                        "检测到反作弊模块自身被篡改（二次确认）");
-                }
-                if (result.exceptionDetected && attempt == maxRetries - 1)
-                {
-                    context.AddEvidence(anti_cheat::INTEGRITY_SELF_TAMPERING,
-                                        "自身完整性检测过程中发生异常，疑似遭受攻击");
-                }
-            }
-
-            context.ResetSensorFailure(GetName());
-        }
-        catch (const std::exception &e)
-        {
-            context.HandleSensorException(GetName(), e.what());
-        }
-        catch (...)
-        {
-            context.HandleSensorException(GetName(), "Unknown exception in SelfIntegritySensor");
-        }
-    }
-
-private:
-    struct IntegrityCheckResult
-    {
-        bool shouldContinue = false;
-        bool shouldBreak = false;
-        bool hashMismatchConfirmed = false;
-        bool exceptionDetected = false;
-        DWORD exceptionCode = 0;
-    };
-
-    // C风格的结构来避免C++对象展开冲突
-    struct CStyleIntegrityData
-    {
-        HMODULE hSelfModule;
-        const uint8_t* baselineHash;
-        size_t baselineHashSize;
-        int attempt;
-        int maxRetries;
-    };
-
-    static IntegrityCheckResult CheckSelfIntegrityInternal_Safe(const CStyleIntegrityData* data)
-    {
-        IntegrityCheckResult result;
-                __try
-                {
-                    PVOID codeBase = nullptr;
-                    DWORD codeSize = 0;
-
-            if (!GetCodeSectionInfo(data->hSelfModule, codeBase, codeSize))
+                    if (processName.find(harmful) != std::wstring::npos)
                     {
-                        LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR,
-                              "SelfIntegritySensor: 获取代码段信息失败，尝试%d/%d", data->attempt + 1, data->maxRetries);
-                result.shouldContinue = true;
-                return result;
+                        context.AddEvidence(anti_cheat::ENVIRONMENT_HARMFUL_PROCESS,
+                                            "有害进程(文件名): " + Utils::WideToString(pe.szExeFile));
+                        goto next_process_loop;  // 发现有害进程，直接跳到下一个进程的检查
                     }
-
-                    if (!codeBase || codeSize == 0)
-                    {
-                        LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR,
-                                      "SelfIntegritySensor: 无效的代码段信息 (base=%p, size=%lu)", codeBase, codeSize);
-                result.shouldContinue = true;
-                return result;
-                    }
-
-                    // 验证内存区域可读性
-                    MEMORY_BASIC_INFORMATION mbi = {};
-                    if (VirtualQuery(codeBase, &mbi, sizeof(mbi)) != sizeof(mbi))
-                    {
-                        LOG_WARNING(AntiCheatLogger::LogCategory::SENSOR, "SelfIntegritySensor: VirtualQuery失败");
-                result.shouldContinue = true;
-                return result;
-                    }
-
-                    if (!(mbi.Protect & (PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE)))
-                    {
-                        LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR,
-                                      "SelfIntegritySensor: 代码段保护属性异常 (0x%08X)", mbi.Protect);
-                result.shouldContinue = true;
-                return result;
-            }
-
-            // 简化的哈希计算和比较，避免使用C++容器
-            // 使用简单的CRC32计算
-            uint32_t currentHash = 0xFFFFFFFF;
-            const uint8_t* dataPtr = static_cast<const uint8_t*>(codeBase);
-            
-            // 简单的CRC32计算（内联，避免调用可能使用C++对象的函数）
-            for (DWORD i = 0; i < codeSize; ++i)
-            {
-                currentHash ^= dataPtr[i];
-                for (int j = 0; j < 8; ++j)
-                {
-                    if (currentHash & 1)
-                        currentHash = (currentHash >> 1) ^ 0xEDB88320;
-                    else
-                        currentHash >>= 1;
                 }
-            }
-            currentHash ^= 0xFFFFFFFF;
 
-            // 简单的比较（假设baseline也是uint32_t格式）
-            uint32_t baselineHash = 0;
-            if (data->baselineHashSize >= sizeof(uint32_t))
-            {
-                memcpy(&baselineHash, data->baselineHash, sizeof(uint32_t));
-            }
-
-                    if (currentHash != baselineHash)
+                // 检查点 2: 昂贵的进程路径白名单检查 (仅在需要时执行)
+                HANDLE hProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pe.th32ProcessID);
+                if (hProcess)
+                {
+                    std::wstring fullProcessPath = Utils::GetProcessFullName(hProcess);
+                    CloseHandle(hProcess);
+                    if (!fullProcessPath.empty())
                     {
-                // 第一次不匹配时，短暂延迟后重试
-                if (data->attempt == 0)
+                        std::transform(fullProcessPath.begin(), fullProcessPath.end(), fullProcessPath.begin(),
+                                       ::towlower);
+                        if (context.GetWhitelistedProcessPaths().count(fullProcessPath) > 0)
                         {
-                            LOG_INFO_F(AntiCheatLogger::LogCategory::SENSOR,
-                               "SelfIntegritySensor: 首次哈希不匹配，准备重试 (0x%08X vs 0x%08X)",
-                               currentHash, baselineHash);
-                            Sleep(50);  // 短暂延迟
-                    result.shouldContinue = true;
-                    return result;
+                            continue;  // 进程在路径白名单中，安全，继续检查下一个进程
+                        }
+                    }
+                    else
+                    {
+                        // 获取进程路径失败，记录失败原因
+                        RecordFailure(anti_cheat::PROCESS_WINDOW_GET_PROCESS_PATH_FAILED);
+                    }
+                }
+                else
+                {
+                    // OpenProcess失败，记录失败原因
+                    RecordFailure(anti_cheat::PROCESS_WINDOW_OPEN_PROCESS_FAILED);
+                }
+
+                // 检查点 3: 窗口标题黑名单检查
+                if (auto it = windowTitlesByPid.find(pe.th32ProcessID); it != windowTitlesByPid.end())
+                {
+                    for (const auto &title : it->second)
+                    {
+                        std::wstring lowerTitle = title;
+                        std::transform(lowerTitle.begin(), lowerTitle.end(), lowerTitle.begin(), ::towlower);
+
+                        // 检查窗口标题是否在白名单中
+                        bool isWhitelistedWindow = false;
+                        for (const auto &whitelistedKeyword : context.GetWhitelistedWindowKeywords())
+                        {
+                            if (lowerTitle.find(whitelistedKeyword) != std::wstring::npos)
+                            {
+                                isWhitelistedWindow = true;
+                                break;
+                            }
+                        }
+                        if (isWhitelistedWindow)
+                        {
+                            continue;  // 窗口标题在白名单中，检查下一个窗口标题
                         }
 
-                        // 二次确认篡改
-                result.hashMismatchConfirmed = true;
-                LOG_ERROR_F(AntiCheatLogger::LogCategory::SECURITY, "检测到自身完整性被破坏 - 基线: 0x%08X, 当前: 0x%08X", 
-                           baselineHash, currentHash);
-                    }
-                    else
-                    {
-                        // 哈希匹配，完整性正常
-                        LOG_INFO(AntiCheatLogger::LogCategory::SENSOR, "SelfIntegritySensor: 完整性检查通过");
-                result.shouldBreak = true;
+                        // 检查窗口标题是否包含有害关键词
+                        for (const auto &keyword : context.GetHarmfulKeywords())
+                        {
+                            if (lowerTitle.find(keyword) != std::wstring::npos)
+                            {
+                                context.AddEvidence(anti_cheat::ENVIRONMENT_HARMFUL_PROCESS,
+                                                    "有害进程(窗口标题): " + Utils::WideToString(title));
+                                goto next_process_loop;  // 跳出内外两层循环，检查下一个进程
+                            }
+                        }
                     }
                 }
-                __except (EXCEPTION_EXECUTE_HANDLER)
-                {
-            result.exceptionDetected = true;
-            result.exceptionCode = GetExceptionCode();
-            LOG_ERROR_F(AntiCheatLogger::LogCategory::SENSOR, "SelfIntegritySensor异常: 0x%08X, 尝试%d/%d", 
-                       result.exceptionCode, data->attempt + 1, data->maxRetries);
-        }
-        return result;
-    }
 
-    static IntegrityCheckResult CheckSelfIntegrityInternal(HMODULE hSelfModule, const std::vector<uint8_t>& baselineHash, int attempt, int maxRetries)
-    {
-        CStyleIntegrityData data;
-        data.hSelfModule = hSelfModule;
-        data.baselineHash = baselineHash.data();
-        data.baselineHashSize = baselineHash.size();
-        data.attempt = attempt;
-        data.maxRetries = maxRetries;
-        return CheckSelfIntegrityInternal_Safe(&data);
+            next_process_loop:;
+
+            } while (Process32NextW(hSnapshot.get(), &pe));
+        }
+
+        // 统一的执行结果判断逻辑
+        // 成功条件：没有失败原因记录
+        if (m_lastFailureReason != anti_cheat::UNKNOWN_FAILURE)
+        {
+            return SensorExecutionResult::FAILURE;
+        }
+
+        return SensorExecutionResult::SUCCESS;
     }
 };
-
-// 生产环境辅助函数：哈希值转十六进制字符串
-
-// 生产环境优化：带超时控制的IAT钩子检查
-static void CheckIatHooksSafeWithTimeout(ScanContext &context, const BYTE *baseAddress,
-                                         std::chrono::steady_clock::time_point startTime, int budget_ms)
-{
-    // 验证 baseAddress 是否有效
-    if (!baseAddress || !IsValidPointer(baseAddress, sizeof(IMAGE_DOS_HEADER)))
-    {
-        context.AddEvidence(anti_cheat::RUNTIME_ERROR, "IAT Hook检测失败：无效的基地址或不可读内存。");
-        return;
-    }
-
-    const IMAGE_DOS_HEADER *pDosHeader = reinterpret_cast<const IMAGE_DOS_HEADER *>(baseAddress);
-    if (pDosHeader->e_magic != IMAGE_DOS_SIGNATURE)
-    {
-        context.AddEvidence(anti_cheat::RUNTIME_ERROR, "IAT Hook检测失败：无效的 DOS 签名。");
-        return;
-    }
-
-    // 计算 NT 头地址并验证
-    const BYTE *ntHeaderAddress = baseAddress + pDosHeader->e_lfanew;
-    if (!IsValidPointer(ntHeaderAddress, sizeof(IMAGE_NT_HEADERS)))
-    {
-        context.AddEvidence(anti_cheat::RUNTIME_ERROR, "IAT Hook检测失败：NT 头地址无效或不可读。");
-        return;
-    }
-
-    const IMAGE_NT_HEADERS *pNtHeaders = reinterpret_cast<const IMAGE_NT_HEADERS *>(ntHeaderAddress);
-    if (pNtHeaders->Signature != IMAGE_NT_SIGNATURE)
-    {
-        context.AddEvidence(anti_cheat::RUNTIME_ERROR, "IAT Hook检测失败：无效的 NT 签名。");
-        return;
-    }
-
-    // 检查导入表目录
-    IMAGE_DATA_DIRECTORY importDirectory = pNtHeaders->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
-    if (importDirectory.VirtualAddress == 0 || importDirectory.Size == 0)
-    {
-        return;  // 没有导入表，正常情况，直接返回
-    }
-
-    // 计算导入表描述符地址并验证
-    const BYTE *importDescAddress = baseAddress + importDirectory.VirtualAddress;
-    if (!IsValidPointer(importDescAddress, sizeof(IMAGE_IMPORT_DESCRIPTOR)))
-    {
-        context.AddEvidence(anti_cheat::RUNTIME_ERROR, "IAT Hook检测失败：导入表地址无效或不可读。");
-        return;
-    }
-
-    // 生产环境优化：添加超时检查
-    auto now = std::chrono::steady_clock::now();
-    if (std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count() > budget_ms)
-    {
-        context.HandleSensorTimeout("IatHookSensor");
-        return;
-    }
-
-    const IMAGE_IMPORT_DESCRIPTOR *pImportDesc = reinterpret_cast<const IMAGE_IMPORT_DESCRIPTOR *>(importDescAddress);
-    context.DoCheckIatHooksWithTimeout(baseAddress, pImportDesc, startTime, budget_ms);
-}
-
-
-// 辅助函数，安全地执行 IAT 钩子检查，避免 SEH 和 C2712 错误
-static void CheckIatHooksSafe(ScanContext &context, const BYTE *baseAddress)
-{
-    const auto startTime = std::chrono::steady_clock::now();
-    const int budget_ms = 5000;  // 默认5秒预算
-    CheckIatHooksSafeWithTimeout(context, baseAddress, startTime, budget_ms);
-}
-
 
 class IatHookSensor : public ISensor
 {
@@ -2078,567 +1720,439 @@ class IatHookSensor : public ISensor
     {
         return SensorWeight::MEDIUM;  // 1-10ms: IAT Hook检测
     }
-    void Execute(ScanContext &context) override
+    SensorExecutionResult Execute(ScanContext &context) override
     {
-        // 生产环境优化：添加超时控制、异常处理和重试机制
-        const auto startTime = std::chrono::steady_clock::now();
-        const int budget_ms = CheatConfigManager::GetInstance().GetLightScanBudgetMs();
+        // 重置失败原因
+        m_lastFailureReason = anti_cheat::UNKNOWN_FAILURE;
 
-        try
+        // 策略1：配置版本门控 - 检查当前OS是否满足配置的最低要求
+        if (!IsOsSupported(context))
         {
-            // 策略1：配置版本门控 - 检查当前OS是否满足配置的最低要求
-            if (!context.IsCurrentOsSupported())
-            {
-                LOG_DEBUG(AntiCheatLogger::LogCategory::SENSOR, "IAT Hook检测已禁用：当前OS版本低于配置最低要求");
-                return;
-            }
-            
-            const HMODULE hSelf = GetModuleHandle(NULL);
-            if (!hSelf)
-            {
-                LOG_WARNING(AntiCheatLogger::LogCategory::SENSOR, "IatHookSensor: 无法获取自身模块句柄");
-                return;
-            }
-
-            // 生产环境优化：验证模块有效性
-            MEMORY_BASIC_INFORMATION mbi = {};
-            if (VirtualQuery(hSelf, &mbi, sizeof(mbi)) != sizeof(mbi))
-            {
-                LOG_WARNING(AntiCheatLogger::LogCategory::SENSOR, "IatHookSensor: 模块内存查询失败");
-                return;
-            }
-
-            if (mbi.State != MEM_COMMIT || !(mbi.Protect & PAGE_EXECUTE_READ))
-            {
-                LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR,
-                              "IatHookSensor: 模块内存状态异常 (State=0x%08X, Protect=0x%08X)", mbi.State, mbi.Protect);
-                return;
-            }
-
-            // 执行IAT钩子检测
-            auto iatResult = CheckIatHooksSafe(context, hSelf, startTime, budget_ms);
-            if (iatResult.success)
-            {
-                context.ResetSensorFailure(GetName());
-            }
-            else if (iatResult.exceptionCode != 0)
-            {
-                LOG_ERROR_F(AntiCheatLogger::LogCategory::SENSOR, "IatHookSensor执行异常: 0x%08X", iatResult.exceptionCode);
-
-                // 异常可能表明IAT被篡改或模块被攻击
-                if (iatResult.exceptionCode == EXCEPTION_ACCESS_VIOLATION)
-                {
-                    context.AddEvidence(anti_cheat::INTEGRITY_API_HOOK, "IAT钩子检测过程中发生访问违例，疑似IAT被篡改");
-                }
-                else
-                {
-                    context.HandleSensorException(GetName(), "IAT检测过程中发生异常");
-                }
-            }
+            LOG_DEBUG(AntiCheatLogger::LogCategory::SENSOR, "IAT Hook检测已禁用：当前OS版本低于配置最低要求");
+            RecordFailure(anti_cheat::IAT_OS_VERSION_UNSUPPORTED);
+            return SensorExecutionResult::FAILURE;
         }
-        catch (const std::exception &e)
+
+        const HMODULE hSelf = GetModuleHandle(NULL);
+        if (!hSelf)
         {
-            context.HandleSensorException(GetName(), e.what());
+            LOG_WARNING(AntiCheatLogger::LogCategory::SENSOR, "IatHookSensor: 无法获取自身模块句柄");
+            RecordFailure(anti_cheat::IAT_GET_MODULE_HANDLE_FAILED);
+            return SensorExecutionResult::FAILURE;
         }
-        catch (...)
+
+        // 生产环境优化：验证模块有效性
+        MEMORY_BASIC_INFORMATION mbi = {};
+        if (VirtualQuery(hSelf, &mbi, sizeof(mbi)) != sizeof(mbi))
         {
-            context.HandleSensorException(GetName(), "Unknown exception in IatHookSensor");
+            LOG_WARNING(AntiCheatLogger::LogCategory::SENSOR, "IatHookSensor: 模块内存查询失败");
+            RecordFailure(anti_cheat::IAT_VIRTUAL_QUERY_FAILED);
+            return SensorExecutionResult::FAILURE;
         }
+
+        if (mbi.State != MEM_COMMIT || !(mbi.Protect & PAGE_EXECUTE_READ))
+        {
+            LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR,
+                          "IatHookSensor: 模块内存状态异常 (State=0x%08X, Protect=0x%08X)", mbi.State, mbi.Protect);
+            RecordFailure(anti_cheat::IAT_MEMORY_STATE_ABNORMAL);
+            return SensorExecutionResult::FAILURE;
+        }
+
+        // 执行IAT钩子检测
+        bool checkResult = PerformIatIntegrityCheck(context, hSelf);
+        if (!checkResult)
+        {
+            // 失败原因已经在PerformIatIntegrityCheck中设置
+            return SensorExecutionResult::FAILURE;
+        }
+
+        return SensorExecutionResult::SUCCESS;
     }
 
-private:
-    struct IatCheckResult
+   private:
+    // 执行IAT完整性检查
+    bool PerformIatIntegrityCheck(ScanContext &context, HMODULE hSelf)
     {
-        bool success = false;
-        DWORD exceptionCode = 0;
-    };
+        const BYTE *baseAddress = reinterpret_cast<const BYTE *>(hSelf);
 
-    // C风格参数结构，避免C++对象展开冲突
-    struct IatCheckParams
-    {
-        const BYTE* baseAddress;
-        std::chrono::steady_clock::time_point::rep startTimeRep;
-        int budget_ms;
-    };
+        // 1. 验证PE文件结构
+        if (!ValidatePeStructure(baseAddress, context))
+        {
+            return false;
+        }
 
-    static IatCheckResult CheckIatHooksSafe_Internal(const IatCheckParams& params)
-    {
-        IatCheckResult result;
-        __try
+        // 2. 检查导入表完整性
+        if (!CheckImportTableIntegrity(context, baseAddress))
         {
-            // 重新构造时间点
-            std::chrono::steady_clock::time_point startTime(std::chrono::steady_clock::duration(params.startTimeRep));
-            
-            // 这里我们简化实现，只做基本的异常捕获
-            // 实际的检测逻辑在非SEH环境中完成
-            result.success = true;
+            return false;
         }
-        __except (EXCEPTION_EXECUTE_HANDLER)
-        {
-            result.exceptionCode = GetExceptionCode();
-        }
-        return result;
+
+        return true;
     }
 
-    static IatCheckResult CheckIatHooksSafe(ScanContext& context, HMODULE hSelf, std::chrono::steady_clock::time_point startTime, int budget_ms)
+    // 验证PE文件基本结构
+    bool ValidatePeStructure(const BYTE *baseAddress, ScanContext &context)
     {
-        // 先尝试正常调用
-        try
+        // 验证DOS头
+        if (!baseAddress || !SystemUtils::IsValidPointer(baseAddress, sizeof(IMAGE_DOS_HEADER)))
         {
-            CheckIatHooksSafeWithTimeout(context, reinterpret_cast<const BYTE *>(hSelf), startTime, budget_ms);
-            IatCheckResult result;
-            result.success = true;
-            return result;
+            LOG_ERROR(AntiCheatLogger::LogCategory::SENSOR, "IAT检测失败：无效的基地址");
+            RecordFailure(anti_cheat::IAT_BASE_ADDRESS_INVALID);
+            return false;
         }
-        catch (...)
+
+        const IMAGE_DOS_HEADER *pDosHeader = reinterpret_cast<const IMAGE_DOS_HEADER *>(baseAddress);
+        if (pDosHeader->e_magic != IMAGE_DOS_SIGNATURE)
         {
-            // 如果有异常，使用SEH方式
-            IatCheckParams params;
-            params.baseAddress = reinterpret_cast<const BYTE *>(hSelf);
-            params.startTimeRep = startTime.time_since_epoch().count();
-            params.budget_ms = budget_ms;
-            return CheckIatHooksSafe_Internal(params);
+            LOG_ERROR(AntiCheatLogger::LogCategory::SENSOR, "IAT检测失败：无效的DOS签名");
+            RecordFailure(anti_cheat::IAT_DOS_SIGNATURE_INVALID);
+            return false;
         }
+
+        // 验证NT头
+        const BYTE *ntHeaderAddress = baseAddress + pDosHeader->e_lfanew;
+        if (!SystemUtils::IsValidPointer(ntHeaderAddress, sizeof(IMAGE_NT_HEADERS)))
+        {
+            LOG_ERROR(AntiCheatLogger::LogCategory::SENSOR, "IAT检测失败：NT头地址无效");
+            RecordFailure(anti_cheat::IAT_NT_HEADER_INVALID);
+            return false;
+        }
+
+        const IMAGE_NT_HEADERS *pNtHeaders = reinterpret_cast<const IMAGE_NT_HEADERS *>(ntHeaderAddress);
+        if (pNtHeaders->Signature != IMAGE_NT_SIGNATURE)
+        {
+            LOG_ERROR(AntiCheatLogger::LogCategory::SENSOR, "IAT检测失败：无效的NT签名");
+            RecordFailure(anti_cheat::IAT_NT_SIGNATURE_INVALID);
+            return false;
+        }
+
+        return true;
+    }
+
+    // 检查导入表完整性
+    bool CheckImportTableIntegrity(ScanContext &context, const BYTE *baseAddress)
+    {
+        const IMAGE_NT_HEADERS *pNtHeaders = reinterpret_cast<const IMAGE_NT_HEADERS *>(
+                baseAddress + reinterpret_cast<const IMAGE_DOS_HEADER *>(baseAddress)->e_lfanew);
+
+        // 获取导入表目录
+        IMAGE_DATA_DIRECTORY importDirectory = pNtHeaders->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
+        if (importDirectory.VirtualAddress == 0 || importDirectory.Size == 0)
+        {
+            // 对于反作弊程序，没有导入表是异常情况，因为需要调用大量系统API
+            LOG_ERROR(AntiCheatLogger::LogCategory::SENSOR, "IAT检测失败：反作弊程序缺少导入表，可能被篡改");
+            RecordFailure(anti_cheat::IAT_IMPORT_TABLE_ACCESS_FAILED);
+            return false;
+        }
+
+        // 验证导入表地址
+        const BYTE *importDescAddress = baseAddress + importDirectory.VirtualAddress;
+        if (!SystemUtils::IsValidPointer(importDescAddress, sizeof(IMAGE_IMPORT_DESCRIPTOR)))
+        {
+            LOG_ERROR(AntiCheatLogger::LogCategory::SENSOR, "IAT检测失败：导入表地址无效");
+            RecordFailure(anti_cheat::IAT_IMPORT_TABLE_ACCESS_FAILED);
+            return false;
+        }
+
+        // 执行IAT钩子检测
+        const IMAGE_IMPORT_DESCRIPTOR *pImportDesc =
+                reinterpret_cast<const IMAGE_IMPORT_DESCRIPTOR *>(importDescAddress);
+        context.CheckIatHooks(baseAddress, pImportDesc);
+
+        return true;
     }
 };
 
-// 前置声明：供 VEH 传感器调用的处理函数（已在本文件稍后定义）
-void ProcessHandler(ScanContext &context, const VECTORED_HANDLER_ENTRY *pHandlerEntry, int index);
-
-// 轻量级 VEH Hook 传感器（真实实现）：枚举 VEH 处理器并进行安全性检查
-// C风格的结构来避免C++对象引用
-struct VehTraverseResult
-{
-    bool success;
-    PVOID handlers[2048];  // 固定大小数组
-    int handlerCount;
-    DWORD exceptionCode;
-};
-
-// Helper function to be placed in the anonymous namespace - Internal SEH version
-static VehTraverseResult TraverseVehList_Safe_Internal(LIST_ENTRY *pHead, int budget_ms)
-{
-    VehTraverseResult result = {false, {0}, 0, 0};
-    __try
-    {
-        const auto startTime = std::chrono::steady_clock::now();
-        LIST_ENTRY *pNode = pHead->Flink;
-        int index = 0;
-        int safetyCounter = 0;
-        const int kMaxNodes = 2048;
-
-        while (pNode && pNode != pHead && safetyCounter++ < kMaxNodes && result.handlerCount < 2048)
-        {
-            if ((index & 15) == 0)
-            {
-                auto now = std::chrono::steady_clock::now();
-                if (std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count() > budget_ms)
-                {
-                    return result;  // Timeout
-                }
-            }
-
-            if (!IsValidPointer(pNode, sizeof(LIST_ENTRY)))
-                break;
-
-            auto *pEntry = CONTAINING_RECORD(pNode, VECTORED_HANDLER_ENTRY, List);
-            if (!IsValidPointer(pEntry, sizeof(VECTORED_HANDLER_ENTRY)))
-                break;
-
-            result.handlers[result.handlerCount++] = pEntry->Handler;
-            ++index;
-
-            LIST_ENTRY *pNext = pNode->Flink;
-            if (!IsValidPointer(pNext, sizeof(LIST_ENTRY)))
-                break;
-            pNode = pNext;
-        }
-        result.success = true;
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER)
-    {
-        result.success = false;
-        result.exceptionCode = GetExceptionCode();
-    }
-    return result;
-}
-
-// 包装函数，转换到C++接口
-static bool TraverseVehList_Safe(LIST_ENTRY *pHead, int budget_ms, std::vector<PVOID> &out_handlers)
-{
-    auto result = TraverseVehList_Safe_Internal(pHead, budget_ms);
-    if (result.success)
-    {
-        out_handlers.clear();
-        for (int i = 0; i < result.handlerCount; ++i)
-        {
-            out_handlers.push_back(result.handlers[i]);
-        }
-    }
-    return result.success;
-}
-
-class VehHookSensor : public ISensor
+class ModuleIntegritySensor : public ISensor
 {
    public:
     const char *GetName() const override
     {
-        return "VehHookSensor";
+        return "ModuleIntegritySensor";
     }
     SensorWeight GetWeight() const override
     {
-        return SensorWeight::CRITICAL;  // > 100ms: VEH检测需特殊处理
+        return SensorWeight::HEAVY;  // 10-100ms: 模块代码完整性检测
     }
-    void Execute(ScanContext &context) override
+
+    SensorExecutionResult Execute(ScanContext &context) override
     {
-        // 生产环境优化：多重保守策略，确保最大兼容性和稳定性
-        try
+        // 重置失败原因
+        m_lastFailureReason = anti_cheat::UNKNOWN_FAILURE;
+
+        // 策略1：配置版本门控 - 检查当前OS版本是否满足配置的最低要求
+        if (!IsOsSupported(context))
         {
-            auto winVer = context.GetWindowsVersion();
+            LOG_DEBUG(AntiCheatLogger::LogCategory::SENSOR, "模块代码完整性检测已禁用：当前OS版本低于配置最低要求");
+            RecordFailure(anti_cheat::MODULE_INTEGRITY_OS_VERSION_UNSUPPORTED);
+            return SensorExecutionResult::FAILURE;
+        }
 
-            // 策略1：版本检查 - 只在已知稳定的版本上运行
-            if (winVer == Win_Unknown)
+        const auto &baselineHashes = context.GetModuleBaselineHashes();
+
+        // 2. 内存使用限制：代码节大小限制
+        // ModuleIntegritySensor专注于检测所有模块的代码完整性，但限制单个代码节大小
+        const size_t MAX_CODE_SECTION_SIZE = CheatConfigManager::GetInstance().GetMaxCodeSectionSize();
+        const int budget_ms = CheatConfigManager::GetInstance().GetHeavyScanBudgetMs();
+        const auto startTime = std::chrono::steady_clock::now();
+
+        // 3. 使用公共扫描器枚举模块
+        int moduleCount = 0;
+        bool timeoutOccurred = false;
+        ModuleScanner::EnumerateModules([&](HMODULE hModule) {
+            // 优化：每10个模块检查一次超时，因为模块完整性检查较重
+            if (moduleCount % 10 == 0)
             {
-                LOG_WARNING(AntiCheatLogger::LogCategory::SENSOR, "VEH检测在未知Windows版本上禁用以确保稳定性");
-                return;
-            }
-            
-            // 策略1.5：配置版本门控 - 检查当前OS是否满足配置的最低要求
-            if (!context.IsCurrentOsSupported())
-            {
-                LOG_DEBUG(AntiCheatLogger::LogCategory::SENSOR, "VEH检测已禁用：当前OS版本低于配置最低要求");
-                return;
-            }
-
-            // 策略2：配置检查 - 服务端可以动态禁用
-            if (!CheatConfigManager::GetInstance().IsVehScanEnabled())
-            {
-                LOG_INFO(AntiCheatLogger::LogCategory::SENSOR, "VEH检测已被配置禁用");
-                return;
-            }
-
-            const uintptr_t base = context.GetVehListAddress();
-            if (base == 0)
-            {
-                LOG_WARNING(AntiCheatLogger::LogCategory::SENSOR, "VEH链表地址获取失败，跳过检测");
-                return;
-            }
-
-            // 策略3：内存验证 - 确保VEH链表基地址有效
-            MEMORY_BASIC_INFORMATION baseMbi = {};
-            if (VirtualQuery((PVOID)base, &baseMbi, sizeof(baseMbi)) != sizeof(baseMbi))
-            {
-                LOG_WARNING(AntiCheatLogger::LogCategory::SENSOR, "VEH链表基地址内存查询失败");
-                return;
-            }
-
-            if (baseMbi.State != MEM_COMMIT)
-            {
-                LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR, "VEH链表基地址内存状态异常: 0x%08X", baseMbi.State);
-                return;
-            }
-
-            const int budget_ms = CheatConfigManager::GetInstance().GetHeavyScanBudgetMs();
-            const auto startTime = std::chrono::steady_clock::now();
-
-            LIST_ENTRY *pHead = nullptr;
-
-            // 策略4：结构体访问保护
-            auto accessResult = AccessVehStructSafe(base, winVer);
-            if (!accessResult.success)
-            {
-                LOG_ERROR_F(AntiCheatLogger::LogCategory::SENSOR, "VEH结构体访问异常: 0x%08X", accessResult.exceptionCode);
-                return;
-            }
-            pHead = accessResult.pHead;
-
-            if (!pHead || !IsValidPointer(pHead, sizeof(LIST_ENTRY)))
-            {
-                LOG_WARNING(AntiCheatLogger::LogCategory::SENSOR, "VEH链表头指针无效");
-                return;
-            }
-
-            // 策略5：保守的处理器枚举
-            std::vector<PVOID> handlers;
-            bool traverseSuccess = false;
-
-            auto traverseResult = TraverseVehListSafe(pHead, budget_ms);
-            if (!traverseResult.success)
-            {
-                LOG_ERROR_F(AntiCheatLogger::LogCategory::SENSOR, "VEH链表遍历异常: 0x%08X", traverseResult.exceptionCode);
-
-                // 遍历异常可能表明VEH链表被恶意修改
-                context.AddEvidence(anti_cheat::RUNTIME_ERROR, "VEH链表遍历异常，疑似VEH链表被篡改");
-                return;
-            }
-            
-            traverseSuccess = true;
-            for (int i = 0; i < traverseResult.handlerCount; ++i)
-            {
-                handlers.push_back(traverseResult.handlers[i]);
-            }
-
-            if (traverseSuccess && !handlers.empty())
-            {
-                // 策略6：限制检查数量和频率
-                const size_t maxHandlers = (size_t)CheatConfigManager::GetInstance().GetMaxVehHandlersToScan();
-                const size_t checkCount = std::min(handlers.size(), maxHandlers);
-
-                LOG_INFO_F(AntiCheatLogger::LogCategory::SENSOR, "VEH检测: 发现%zu个处理器，检查前%zu个",
-                           handlers.size(), checkCount);
-
-                if (handlers.size() > maxHandlers)
+                auto now = std::chrono::steady_clock::now();
+                if (std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count() > budget_ms)
                 {
-                    LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR,
-                                  "VEH处理器数量(%zu)超过限制(%zu)，仅检查前%zu个", handlers.size(), maxHandlers,
-                                  checkCount);
+                    LOG_WARNING(AntiCheatLogger::LogCategory::SENSOR, "ModuleIntegritySensor超时");
+                    RecordFailure(anti_cheat::MODULE_SCAN_TIMEOUT);
+                    timeoutOccurred = true;
+                    return;
+                }
+            }
+            moduleCount++;
+
+            ProcessModuleCodeIntegrity(hModule, context, baselineHashes, MAX_CODE_SECTION_SIZE);
+        });
+
+        // 如果发生超时，直接返回失败
+        if (timeoutOccurred)
+        {
+            return SensorExecutionResult::FAILURE;
+        }
+
+        // 检查模块枚举是否成功
+        if (moduleCount == 0)
+        {
+            // 检查是否是系统级失败（EnumProcessModules失败）
+            std::vector<HMODULE> hMods(1);
+            DWORD cbNeeded = 0;
+            if (!EnumProcessModules(GetCurrentProcess(), hMods.data(), hMods.size() * sizeof(HMODULE), &cbNeeded))
+            {
+                LOG_WARNING(AntiCheatLogger::LogCategory::SENSOR, "ModuleIntegritySensor: 模块枚举失败");
+                RecordFailure(anti_cheat::MODULE_INTEGRITY_ENUM_MODULES_FAILED);
+                return SensorExecutionResult::FAILURE;
+            }
+            // 如果没有模块但枚举成功，这是正常情况（系统可能没有加载任何模块）
+        }
+
+        // 统一的执行结果判断逻辑
+        // 成功条件：没有失败原因记录（包括超时）
+        if (m_lastFailureReason != anti_cheat::UNKNOWN_FAILURE)
+        {
+            return SensorExecutionResult::FAILURE;
+        }
+
+        return SensorExecutionResult::SUCCESS;
+    }
+
+   private:
+    // 处理单个模块的逻辑
+    void ProcessModuleCodeIntegrity(HMODULE hModule, ScanContext &context,
+                                    const std::unordered_map<std::wstring, std::vector<uint8_t>> &baselineHashes,
+                                    size_t maxCodeSectionSize)
+    {
+        // 注意：不再跳过自身模块，让ModuleCodeIntegritySensor也检测自身完整性
+        __try
+        {
+            if (!hModule)
+            {
+                LOG_DEBUG(AntiCheatLogger::LogCategory::SENSOR, "ModuleIntegritySensor: 跳过空模块句柄");
+                return;  // 空句柄，直接返回
+            }
+
+            // 获取模块路径
+            wchar_t modulePath_w[MAX_PATH] = {0};
+            if (GetModuleFileNameW(hModule, modulePath_w, MAX_PATH) == 0)
+            {
+                RecordFailure(anti_cheat::MODULE_INTEGRITY_GET_MODULE_PATH_FAILED);
+                LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR,
+                              "ModuleIntegritySensor: 获取模块路径失败, hModule=0x%p, 错误=0x%08X", hModule,
+                              GetLastError());
+                return;  // 获取路径失败，直接返回
+            }
+
+            // 获取代码节信息
+            PVOID codeBase = nullptr;
+            DWORD codeSize = 0;
+            if (!SystemUtils::GetModuleCodeSectionInfo(hModule, codeBase, codeSize))
+            {
+                RecordFailure(anti_cheat::MODULE_INTEGRITY_GET_CODE_SECTION_FAILED);
+                LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR,
+                              "ModuleIntegritySensor: 获取代码节信息失败, 模块=%s, hModule=0x%p",
+                              Utils::WideToString(modulePath_w).c_str(), hModule);
+                return;
+            }
+
+            // 检查代码节大小是否超过限制
+            if (codeSize > maxCodeSectionSize)
+            {
+                LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR,
+                              "ModuleIntegritySensor: 代码节过大，跳过模块: %s (大小: %lu > %zu MB)",
+                              Utils::WideToString(modulePath_w).c_str(), codeSize / (1024 * 1024),
+                              maxCodeSectionSize / (1024 * 1024));
+                return;
+            }
+
+            // 将复杂逻辑移到外部处理
+            ValidateModuleCodeIntegrity(modulePath_w, hModule, codeBase, codeSize, context, baselineHashes);
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            DWORD exceptionCode = GetExceptionCode();
+            LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR,
+                          "ModuleIntegritySensor: 处理模块时发生异常, hModule=0x%p, 异常代码=0x%08X", hModule,
+                          exceptionCode);
+            RecordFailure(anti_cheat::MODULE_INTEGRITY_MEMORY_ACCESS_EXCEPTION);
+            return;
+        }
+    }
+
+    // 处理模块代码完整性验证的逻辑
+    void ValidateModuleCodeIntegrity(const wchar_t *modulePath_w, HMODULE hModule, PVOID codeBase, DWORD codeSize,
+                                     ScanContext &context,
+                                     const std::unordered_map<std::wstring, std::vector<uint8_t>> &baselineHashes)
+    {
+        std::wstring modulePath(modulePath_w);
+        std::vector<uint8_t> currentHash = SystemUtils::CalculateFnv1aHash(static_cast<BYTE *>(codeBase), codeSize);
+
+        // 检查是否为自身模块
+        HMODULE selfModule = context.GetSelfModuleHandle();
+        if (!selfModule)
+        {
+            LOG_WARNING(AntiCheatLogger::LogCategory::SENSOR, "ModuleIntegritySensor: 无法获取自身模块句柄");
+            RecordFailure(anti_cheat::MODULE_INTEGRITY_GET_SELF_MODULE_FAILED);
+            return;
+        }
+        bool isSelfModule = (hModule == selfModule);
+
+        auto it = baselineHashes.find(modulePath);
+
+        if (it == baselineHashes.end())
+        {
+            // LEARNING MODE: 仅记录一次基线
+            static std::set<std::wstring> learned_modules;
+            if (learned_modules.find(modulePath) == learned_modules.end())
+            {
+                std::string hash_str;
+                char buf[17];  // 用于 "0x" + 8*2 十六进制字符 + 空字符
+                for (uint8_t byte : currentHash)
+                {
+                    sprintf_s(buf, sizeof(buf), "%02x", byte);
+                    hash_str += buf;
+                }
+                // 基线学习是正常行为，记录到日志中，不产生证据
+                LOG_INFO_F(AntiCheatLogger::LogCategory::SENSOR,
+                           "ModuleIntegritySensor: 学习新模块基线: %s | Hash: %s | 代码节大小: %lu bytes",
+                           Utils::WideToString(modulePath).c_str(), hash_str.c_str(), codeSize);
+                learned_modules.insert(modulePath);
+            }
+        }
+        else
+        {
+            // DETECTION MODE
+            if (currentHash != it->second)
+            {
+                // 生成哈希值字符串用于日志
+                std::string currentHash_str, baselineHash_str;
+                char buf[17];
+                for (uint8_t byte : currentHash)
+                {
+                    sprintf_s(buf, sizeof(buf), "%02x", byte);
+                    currentHash_str += buf;
+                }
+                for (uint8_t byte : it->second)
+                {
+                    sprintf_s(buf, sizeof(buf), "%02x", byte);
+                    baselineHash_str += buf;
                 }
 
-                // 策略7：分批处理，定期检查超时
-                for (size_t i = 0; i < checkCount; ++i)
+                if (isSelfModule)
                 {
-                    // 每4个处理器检查一次超时
-                    if ((i & 3) == 0)
-                    {
-                        auto now = std::chrono::steady_clock::now();
-                        if (std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count() > budget_ms)
-                        {
-                            LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR, "VEH检测超时，已检查%zu/%zu个处理器", i,
-                                          checkCount);
-                            context.HandleSensorTimeout(GetName());
-                            return;
-                        }
-                    }
-
-                    auto processResult = ProcessHandlerSafe(handlers[i], (int)i);
-                    if (!processResult.success)
-                    {
-                        LOG_ERROR_F(AntiCheatLogger::LogCategory::SENSOR, "VEH处理器#%zu检测异常: 0x%08X", i,
-                                    processResult.exceptionCode);
-                        // 继续检查其他处理器
-                    }
-                    else
-                    {
-                        ProcessHandler(context, reinterpret_cast<const VECTORED_HANDLER_ENTRY*>(handlers[i]), (int)i);
-                    }
-                }
-
-                context.ResetSensorFailure(GetName());
-            }
-            else
-            {
-                if (!traverseSuccess)
-                {
-                    LOG_WARNING(AntiCheatLogger::LogCategory::SENSOR, "VEH链表遍历失败或超时");
-                    context.HandleSensorTimeout(GetName());
+                    // 自身模块被篡改，使用专门的证据类型
+                    LOG_ERROR_F(AntiCheatLogger::LogCategory::SENSOR,
+                                "ModuleIntegritySensor: 检测到反作弊模块自身被篡改: %s | 当前Hash: %s | 基线Hash: %s | "
+                                "代码节大小: %lu bytes",
+                                Utils::WideToString(modulePath).c_str(), currentHash_str.c_str(),
+                                baselineHash_str.c_str(), codeSize);
+                    context.AddEvidence(anti_cheat::INTEGRITY_SELF_TAMPERING,
+                                        "检测到反作弊模块自身被篡改: " + Utils::WideToString(modulePath));
                 }
                 else
                 {
-                    LOG_INFO(AntiCheatLogger::LogCategory::SENSOR, "VEH检测: 未发现处理器");
+                    // 其他模块被篡改
+                    LOG_ERROR_F(AntiCheatLogger::LogCategory::SENSOR,
+                                "ModuleIntegritySensor: 检测到模块代码节被篡改: %s | 当前Hash: %s | 基线Hash: %s | "
+                                "代码节大小: %lu bytes",
+                                Utils::WideToString(modulePath).c_str(), currentHash_str.c_str(),
+                                baselineHash_str.c_str(), codeSize);
+                    context.AddEvidence(anti_cheat::INTEGRITY_MEMORY_PATCH,
+                                        "检测到内存代码节被篡改: " + Utils::WideToString(modulePath));
                 }
             }
         }
-        catch (const std::exception &e)
-        {
-            context.HandleSensorException(GetName(), e.what());
-        }
-        catch (...)
-        {
-            context.HandleSensorException(GetName(), "Unknown exception in VehHookSensor");
-        }
-    }
-
-private:
-    struct VehAccessResult
-    {
-        bool success = false;
-        LIST_ENTRY* pHead = nullptr;
-        DWORD exceptionCode = 0;
-    };
-
-    static VehAccessResult AccessVehStructSafe(uintptr_t base, WindowsVersion winVer)
-    {
-        VehAccessResult result;
-        __try
-        {
-            switch (winVer)
-            {
-                case Win_XP: {
-                    auto *pList = reinterpret_cast<VECTORED_HANDLER_LIST_XP *>(base);
-                    if (IsValidPointer(pList, sizeof(VECTORED_HANDLER_LIST_XP)))
-                    {
-                        result.pHead = &pList->List;
-                    }
-                    break;
-                }
-                case Win_Vista_Win7: {
-                    auto *pList = reinterpret_cast<VECTORED_HANDLER_LIST_VISTA *>(base);
-                    if (IsValidPointer(pList, sizeof(VECTORED_HANDLER_LIST_VISTA)))
-                    {
-                        result.pHead = &pList->ExceptionList;
-                    }
-                    break;
-                }
-                case Win_8_Win81:
-                case Win_10:
-                case Win_11:
-                default: {
-                    auto *pList = reinterpret_cast<VECTORED_HANDLER_LIST_WIN8 *>(base);
-                    if (IsValidPointer(pList, sizeof(VECTORED_HANDLER_LIST_WIN8)))
-                    {
-                        result.pHead = &pList->ExceptionList;
-                    }
-                    break;
-                }
-            }
-            result.success = true;
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER)
-        {
-            result.exceptionCode = GetExceptionCode();
-        }
-        return result;
-    }
-
-    static VehTraverseResult TraverseVehListSafe(LIST_ENTRY *pHead, int budget_ms)
-    {
-        VehTraverseResult result = {false, {0}, 0, 0};
-        __try
-        {
-            result = TraverseVehList_Safe_Internal(pHead, budget_ms);
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER)
-        {
-            result.success = false;
-            // Note: We can't directly get exception code in this context due to C++ object unwinding
-            // The exception will be handled at a higher level
-        }
-        return result;
-    }
-
-    struct ProcessHandlerResult
-    {
-        bool success = true;
-        DWORD exceptionCode = 0;
-    };
-
-    static ProcessHandlerResult ProcessHandlerSafe(PVOID handlerPtr, int index)
-    {
-        ProcessHandlerResult result;
-        __try
-        {
-            // 基本的验证，不调用复杂的C++函数
-            if (!handlerPtr)
-            {
-                result.success = false;
-                return result;
-            }
-            
-            // 检查内存是否可读
-            MEMORY_BASIC_INFORMATION mbi = {};
-            if (VirtualQuery(handlerPtr, &mbi, sizeof(mbi)) == 0)
-            {
-                result.success = false;
-                return result;
-            }
-            
-            result.success = true;
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER)
-        {
-            result.success = false;
-            result.exceptionCode = GetExceptionCode();
-        }
-        return result;
     }
 };
-
-void ProcessHandler(ScanContext &context, PVOID handlerAddress, int index)
-{
-    if (!handlerAddress)
-        return;
-
-    std::wstring modulePath;
-    if (context.IsAddressInLegitimateModule(handlerAddress, modulePath))
-    {
-        // 地址在已知模块中，进一步验证其是否在代码节内
-        // 先检查页面保护，避免读取无效/非执行内存导致访问冲突
-        MEMORY_BASIC_INFORMATION mbi = {};
-        if (VirtualQuery(handlerAddress, &mbi, sizeof(mbi)) == 0)
-        {
-            return;  // 无法查询，保守退出
-        }
-        const DWORD prot = mbi.Protect & 0xFF;
-        const bool isExec = (prot == PAGE_EXECUTE) || (prot == PAGE_EXECUTE_READ) || (prot == PAGE_EXECUTE_READWRITE) ||
-                            (prot == PAGE_EXECUTE_WRITECOPY);
-        if (!isExec)
-        {
-            // 非可执行页面中的处理函数极不正常，作为可疑迹象上报
-            context.AddEvidence(anti_cheat::INTEGRITY_API_HOOK, "VEH 处理函数位于非可执行页面，疑似劫持或保护绕过。");
-            return;
-        }
-
-        HMODULE hModule = NULL;
-        if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                               (LPCWSTR)handlerAddress, &hModule) &&
-            hModule)
-        {
-            PVOID codeBase = nullptr;
-            DWORD codeSize = 0;
-            if (GetCodeSectionInfo(hModule, codeBase, codeSize))
-            {
-                uintptr_t addr = reinterpret_cast<uintptr_t>(handlerAddress);
-                uintptr_t start = reinterpret_cast<uintptr_t>(codeBase);
-                if (addr >= start && addr < (start + codeSize))
-                {
-                    return;  // 在合法模块的合法代码节内，安全
-                }
-            }
-        }
-        // 不在代码节内，或无法获取信息，视为劫持
-        std::wostringstream woss;
-        woss << L"检测到VEH处理器被劫持到模块的非代码区. 模块: " << (modulePath.empty() ? L"未知" : modulePath)
-             << L", 地址: 0x" << std::hex << handlerAddress;
-        context.AddEvidence(anti_cheat::INTEGRITY_API_HOOK, Utils::WideToString(woss.str()));
-    }
-    else
-    {
-        // 地址不在任何已知模块中，或在未签名的模块中
-        auto whitelistedVEHModules = context.GetWhitelistedVEHModules();
-        bool isWhitelisted = false;
-        if (!modulePath.empty() && whitelistedVEHModules)
-        {
-            std::wstring lowerModulePath = modulePath;
-            std::transform(lowerModulePath.begin(), lowerModulePath.end(), lowerModulePath.begin(), ::towlower);
-            if (whitelistedVEHModules->count(lowerModulePath) > 0)
-            {
-                isWhitelisted = true;
-            }
-        }
-
-        if (!isWhitelisted)
-        {
-            std::wostringstream woss;
-            if (!modulePath.empty())
-            {
-                woss << L"检测到可疑的VEH Hook (Handler #" << index << L"). 来源: " << modulePath << L", 地址: 0x"
-                     << std::hex << handlerAddress;
-            }
-            else
-            {
-                woss << L"检测到来自Shellcode的VEH Hook (Handler #" << index << L"). 地址: 0x" << std::hex
-                     << handlerAddress;
-            }
-            context.AddEvidence(anti_cheat::INTEGRITY_API_HOOK, Utils::WideToString(woss.str()));
-        }
-    }
-}
-
-// --- 重量级传感器 ---
 
 class ProcessHandleSensor : public ISensor
 {
    public:
+    // 预分配缓冲区管理（C风格，兼容SEH）
+    struct HandleBufferManager
+    {
+        BYTE *buffer;
+        size_t size;
+        static constexpr size_t INITIAL_SIZE =
+                CheatConfigManager::GetInstance().GetInitialBufferSizeMb() * 1024 * 1024;  // 配置化初始大小(MB)
+        static constexpr size_t MAX_SIZE =
+                CheatConfigManager::GetInstance().GetMaxBufferSizeMb() * 1024 * 1024;  // 配置化最大大小(MB)
+
+        HandleBufferManager() : buffer(nullptr), size(0)
+        {
+            buffer = new BYTE[INITIAL_SIZE];
+            size = INITIAL_SIZE;
+        }
+
+        ~HandleBufferManager()
+        {
+            if (buffer)
+            {
+                delete[] buffer;
+                buffer = nullptr;
+            }
+        }
+
+        bool Resize(size_t newSize)
+        {
+            if (newSize > MAX_SIZE)
+                return false;
+
+            BYTE *newBuffer = new (std::nothrow) BYTE[newSize];
+            if (!newBuffer)
+                return false;
+
+            if (buffer)
+            {
+                delete[] buffer;
+            }
+            buffer = newBuffer;
+            size = newSize;
+            return true;
+        }
+
+        void Reset()
+        {
+            if (buffer)
+            {
+                delete[] buffer;
+                buffer = new BYTE[INITIAL_SIZE];
+                size = INITIAL_SIZE;
+            }
+        }
+    };
+
     const char *GetName() const override
     {
         return "ProcessHandleSensor";
@@ -2648,184 +2162,325 @@ class ProcessHandleSensor : public ISensor
         return SensorWeight::HEAVY;  // 10-100ms: 进程句柄扫描
     }
 
-    void Execute(ScanContext &context) override
+    // 获取进程创建时间标识（用于缓存验证）
+    static uint32_t GetProcessCreationTime(DWORD pid)
     {
-        const auto startTime = std::chrono::steady_clock::now();
-        const int budget_ms = CheatConfigManager::GetInstance().GetHeavyScanBudgetMs();
+        // 使用更轻量的方式：检查进程是否仍然存在
+        HANDLE hProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+        if (!hProcess)
+            return 0;  // 进程不存在
 
-        try
+        // 只获取创建时间，避免昂贵的GetProcessTimes调用
+        FILETIME createTime, exitTime, kernelTime, userTime;
+        uint32_t creationTime = 0;
+        if (GetProcessTimes(hProcess, &createTime, &exitTime, &kernelTime, &userTime))
         {
-            // 策略1：配置版本门控 - 检查当前OS是否满足配置的最低要求
-            if (!context.IsCurrentOsSupported())
+            // 使用创建时间的低32位作为标识
+            creationTime = createTime.dwLowDateTime;
+        }
+        else
+        {
+            // GetProcessTimes失败，记录失败原因
+            LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR,
+                          "ProcessHandleSensor: GetProcessTimes失败 PID %lu，错误: 0x%08X", pid, GetLastError());
+            // 注意：这里不调用RecordFailure，因为这是静态方法，无法访问实例
+        }
+
+        CloseHandle(hProcess);
+        return creationTime;
+    }
+
+    SensorExecutionResult Execute(ScanContext &context) override
+    {
+        // 重置失败原因
+        m_lastFailureReason = anti_cheat::UNKNOWN_FAILURE;
+
+        // 1. 配置版本门控
+        if (!IsOsSupported(context))
+        {
+            LOG_DEBUG(AntiCheatLogger::LogCategory::SENSOR, "进程句柄检测已禁用：当前OS版本低于配置最低要求");
+            RecordFailure(anti_cheat::PROCESS_HANDLE_OS_VERSION_UNSUPPORTED);
+            return SensorExecutionResult::FAILURE;
+        }
+
+        // 获取超时预算
+        const int budget_ms = CheatConfigManager::GetInstance().GetHeavyScanBudgetMs();
+        const auto startTime = std::chrono::steady_clock::now();
+
+        // 4. API可用性检查
+        if (!g_pNtQuerySystemInformation)
+        {
+            LOG_ERROR(AntiCheatLogger::LogCategory::SENSOR, "ProcessHandleSensor: NtQuerySystemInformation API不可用");
+            RecordFailure(anti_cheat::PROCESS_HANDLE_QUERY_SYSTEM_INFO_FAILED);
+            return SensorExecutionResult::FAILURE;
+        }
+
+        // 5. 性能上限配置 - ProcessHandleSensor需要扫描所有系统句柄
+        // 但设置合理上限以避免系统性能问题
+        const ULONG kMaxHandlesToScan =
+                CheatConfigManager::GetInstance().GetMaxHandleScanCount();  // 配置化句柄上限，平衡检测覆盖率和性能
+
+        // 6. 内存管理优化：使用预分配缓冲区
+        HandleBufferManager bufferManager;
+        NTSTATUS status;
+        int retries = 0;
+
+        do
+        {
+            status = g_pNtQuerySystemInformation(SystemHandleInformation, bufferManager.buffer,
+                                                 static_cast<ULONG>(bufferManager.size), nullptr);
+
+            if (status == STATUS_INFO_LENGTH_MISMATCH)
             {
-                LOG_DEBUG(AntiCheatLogger::LogCategory::SENSOR, "进程句柄检测已禁用：当前OS版本低于配置最低要求");
-                return;
+                size_t newSize = bufferManager.size * 2;
+                if (!bufferManager.Resize(newSize))
+                {
+                    LOG_ERROR_F(AntiCheatLogger::LogCategory::SENSOR,
+                                "ProcessHandleSensor: 缓冲区大小超过限制 (%zu bytes)，跳过扫描", newSize);
+                    RecordFailure(anti_cheat::PROCESS_HANDLE_BUFFER_SIZE_EXCEEDED);
+                    return SensorExecutionResult::FAILURE;
+                }
             }
-            
-            // 生产环境优化：降低最大句柄扫描数量，提高响应性
-            const ULONG kMaxHandlesToScan = std::min(30000UL, static_cast<ULONG>(CheatConfigManager::GetInstance().GetMaxHandlesToScan()));
-            const auto &knownGoodProcesses = CheatConfigManager::GetInstance().GetKnownGoodProcesses();
 
-            if (!g_pNtQuerySystemInformation)
-                return;
-
-            ULONG bufferSize = 0x10000;
-            std::vector<BYTE> handleInfoBuffer(bufferSize);
-            NTSTATUS status;
-
-            int retries = 0;
-            do
+            retries++;
+            if (retries > 3)
             {
-                status = g_pNtQuerySystemInformation(SystemHandleInformation, handleInfoBuffer.data(), bufferSize,
-                                                     nullptr);
-                if (status == STATUS_INFO_LENGTH_MISMATCH)
-                {
-                    bufferSize *= 2;
-                    // 生产环境优化：降低内存上限，避免内存压力
-                    if (bufferSize > 0x2000000)  // 32MB 的上限（原64MB）
-                    {
-                        context.AddEvidence(anti_cheat::RUNTIME_ERROR, "句柄信息缓冲区超过内存限制，跳过扫描。");
-                        return;
-                    }
-                    handleInfoBuffer.resize(bufferSize);
-                }
-                retries++;
-                if (retries > 3)  // 增加重试次数保护
-                {
-                    context.AddEvidence(anti_cheat::RUNTIME_ERROR, "获取句柄信息重试过多，跳过扫描。");
-                    return;
-                }
-            } while (status == STATUS_INFO_LENGTH_MISMATCH);
-
-            if (!NT_SUCCESS(status))
-                return;
-
-            const DWORD ownPid = GetCurrentProcessId();
-            const auto *pHandleInfo = reinterpret_cast<const SYSTEM_HANDLE_INFORMATION *>(handleInfoBuffer.data());
-
-            if (pHandleInfo->NumberOfHandles > kMaxHandlesToScan)
-            {
-                context.AddEvidence(anti_cheat::RUNTIME_ERROR, "系统句柄数量异常巨大，跳过本次扫描。");
-                LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR,
-                              "ProcessHandleSensor: System handle count (%lu) exceeds scan limit (%lu). Skipping scan.",
-                              pHandleInfo->NumberOfHandles, kMaxHandlesToScan);
-                return;
+                LOG_ERROR_F(AntiCheatLogger::LogCategory::SENSOR,
+                            "ProcessHandleSensor: 获取句柄信息重试过多 (%d次)，跳过扫描", retries);
+                RecordFailure(anti_cheat::PROCESS_HANDLE_RETRY_EXCEEDED);
+                return SensorExecutionResult::FAILURE;
             }
-            const auto now = std::chrono::steady_clock::now();
-            std::unordered_set<DWORD> processedPidsThisScan;
+        } while (status == STATUS_INFO_LENGTH_MISMATCH);
 
-            for (ULONG i = 0; i < pHandleInfo->NumberOfHandles; ++i)
+        if (!NT_SUCCESS(status))
+        {
+            LOG_ERROR_F(AntiCheatLogger::LogCategory::SENSOR,
+                        "ProcessHandleSensor: NtQuerySystemInformation失败，状态码: 0x%08X", status);
+            RecordFailure(anti_cheat::PROCESS_HANDLE_QUERY_SYSTEM_INFO_FAILED);
+            return SensorExecutionResult::FAILURE;
+        }
+
+        // 7. 句柄数量上限检查
+        const auto *pHandleInfo = reinterpret_cast<const SYSTEM_HANDLE_INFORMATION *>(bufferManager.buffer);
+        if (pHandleInfo->NumberOfHandles > kMaxHandlesToScan)
+        {
+            LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR,
+                          "ProcessHandleSensor: 系统句柄数量超过上限 (%lu > %lu)，跳过扫描以确保系统性能",
+                          pHandleInfo->NumberOfHandles, kMaxHandlesToScan);
+            RecordFailure(anti_cheat::PROCESS_HANDLE_HANDLE_COUNT_EXCEEDED);
+            return SensorExecutionResult::FAILURE;
+        }
+
+        // 8. 主扫描循环
+        const DWORD ownPid = GetCurrentProcessId();
+        if (ownPid == 0)
+        {
+            LOG_ERROR(AntiCheatLogger::LogCategory::SENSOR, "ProcessHandleSensor: GetCurrentProcessId失败");
+            RecordFailure(anti_cheat::PROCESS_HANDLE_GET_PROCESS_ID_FAILED);
+            return SensorExecutionResult::FAILURE;
+        }
+
+        const auto now = std::chrono::steady_clock::now();
+        std::unordered_set<DWORD> processedPidsThisScan;
+        ULONG handlesProcessed = 0;
+
+        // 智能缓存：使用路径作为键（移到SEH块外）
+        struct PathCacheEntry
+        {
+            CheatMonitor::Pimpl::ProcessVerdict verdict;
+            std::chrono::steady_clock::time_point cached_at;
+            uint32_t process_creation_time;  // 修复：字段名更准确
+            std::wstring process_name;
+            Utils::SignatureStatus signature_status;
+        };
+        std::unordered_map<std::wstring, PathCacheEntry> pathCache;
+
+        for (ULONG i = 0; i < pHandleInfo->NumberOfHandles; ++i)
+        {
+            // 优化：每50个句柄检查一次超时，因为句柄数量巨大
+            if (i % 50 == 0)
             {
-                // 生产环境优化：更频繁的超时检查和CPU让出
-                if ((i & 63) == 0)  // 每64次检查（原127次），提高响应性
-                {
-                    auto now = std::chrono::steady_clock::now();
-                    if (std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count() > budget_ms)
-                    {
-                        context.HandleSensorTimeout(GetName());
-                        return;
-                    }
+                auto currentTime = std::chrono::steady_clock::now();
+                auto elapsed_ms =
+                        std::chrono::duration_cast<std::chrono::milliseconds>(currentTime - startTime).count();
 
-                    // 生产环境优化：分批处理，让出CPU时间片
-                    if ((i & 511) == 0 && i > 0)  // 每512次让出CPU
-                    {
-                        Sleep(1);
-                    }
+                if (elapsed_ms > budget_ms)
+                {
+                    LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR,
+                                  "ProcessHandleSensor: 扫描超时，已处理 %lu/%lu 个句柄，耗时%ldms", handlesProcessed,
+                                  pHandleInfo->NumberOfHandles, elapsed_ms);
+                    RecordFailure(anti_cheat::PROCESS_HANDLE_SCAN_TIMEOUT);
+                    return SensorExecutionResult::FAILURE;
                 }
+            }
 
-                const auto &handle = pHandleInfo->Handles[i];
+            const auto &handle = pHandleInfo->Handles[i];
 
-                if (handle.UniqueProcessId == ownPid || processedPidsThisScan.count(handle.UniqueProcessId) > 0 ||
-                    !(handle.GrantedAccess &
-                      (PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_VM_OPERATION | PROCESS_ALL_ACCESS)))
+            // 快速过滤
+            if (handle.UniqueProcessId == ownPid || processedPidsThisScan.count(handle.UniqueProcessId) > 0 ||
+                !(handle.GrantedAccess &
+                  (PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_VM_OPERATION | PROCESS_ALL_ACCESS)))
+            {
+                continue;
+            }
+
+            // 句柄指向性验证
+            if (!IsHandlePointingToUs_Safe(handle, ownPid))
+            {
+                continue;
+            }
+
+            processedPidsThisScan.insert(handle.UniqueProcessId);
+            handlesProcessed++;
+
+            // 进程路径获取（优化：避免重复获取）
+            std::wstring ownerProcessPath;
+            std::wstring lowerProcessName;
+            Utils::SignatureStatus signatureStatus = Utils::SignatureStatus::UNKNOWN;
+
+            using UniqueHandle = std::unique_ptr<void, decltype(&::CloseHandle)>;
+            UniqueHandle hOwnerProcess(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, handle.UniqueProcessId),
+                                       &::CloseHandle);
+
+            if (!hOwnerProcess.get())
+            {
+                LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR,
+                            "ProcessHandleSensor: 无法打开进程 PID %lu，错误: 0x%08X", handle.UniqueProcessId,
+                            GetLastError());
+                // 统计OpenProcess失败
+                RecordFailure(anti_cheat::PROCESS_HANDLE_OPEN_PROCESS_FAILED);
+                // 无法打开进程，跳过
+                continue;
+            }
+
+            // 获取进程路径
+            ownerProcessPath = Utils::GetProcessFullName(hOwnerProcess.get());
+            if (ownerProcessPath.empty())
+            {
+                LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR, "ProcessHandleSensor: 无法获取进程路径 PID %lu",
+                              handle.UniqueProcessId);
+                // 无法获取进程路径本身就是可疑行为，作为证据上报
+                context.AddEvidence(anti_cheat::INTEGRITY_SUSPICIOUS_HANDLE,
+                                    "一个无法识别路径的进程持有我们进程的句柄 (PID: " +
+                                            std::to_string(handle.UniqueProcessId) + ")");
+                continue;
+            }
+
+            // 智能缓存：使用路径作为键
+            auto pathCacheIt = pathCache.find(ownerProcessPath);
+            if (pathCacheIt != pathCache.end())
+            {
+                // 检查缓存是否过期
+                auto cacheAge = now - pathCacheIt->second.cached_at;
+                auto cacheDuration =
+                        std::chrono::minutes(CheatConfigManager::GetInstance().GetProcessCacheDurationMinutes());
+
+                if (cacheAge < cacheDuration)
                 {
-                    continue;
-                }
-
-                auto &cache = context.GetProcessVerdictCache();
-                auto cacheIt = cache.find(handle.UniqueProcessId);
-                if (cacheIt != cache.end())
-                {
-                    if (now < cacheIt->second.second +
-                                      std::chrono::minutes(
-                                              CheatConfigManager::GetInstance().GetProcessCacheDurationMinutes()))
+                    // 检查进程状态是否变化
+                    uint32_t currentCreationTime = GetProcessCreationTime(handle.UniqueProcessId);
+                    if (currentCreationTime == 0)
                     {
-                        if (cacheIt->second.first == CheatMonitor::Pimpl::ProcessVerdict::SIGNED_AND_TRUSTED)
-                            continue;
+                        // GetProcessCreationTime失败，记录失败原因
+                        RecordFailure(anti_cheat::PROCESS_HANDLE_GET_PROCESS_TIMES_FAILED);
+                        // 缓存失效，重新验证
+                        pathCache.erase(pathCacheIt);
+                        // 继续处理，不中断扫描
+                    }
+                    else if (currentCreationTime == pathCacheIt->second.process_creation_time)
+                    {
+                        // 使用缓存结果
+                        signatureStatus = pathCacheIt->second.signature_status;
+                        lowerProcessName = pathCacheIt->second.process_name;
                     }
                     else
                     {
-                        cache.erase(cacheIt);
+                        // 进程状态已变，重新验证
+                        pathCache.erase(pathCacheIt);
                     }
-                }
-
-                if (!IsHandlePointingToUs_Safe(handle, ownPid))
-                {
-                    continue;
-                }
-
-                processedPidsThisScan.insert(handle.UniqueProcessId);
-
-                using UniqueHandle = std::unique_ptr<void, decltype(&::CloseHandle)>;
-                UniqueHandle hOwnerProcess(
-                        OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, handle.UniqueProcessId), &::CloseHandle);
-
-                if (!hOwnerProcess.get())
-                {
-                    continue;
-                }
-
-                std::wstring ownerProcessPath = Utils::GetProcessFullName(hOwnerProcess.get());
-                if (ownerProcessPath.empty())
-                {
-                    context.AddEvidence(anti_cheat::INTEGRITY_SUSPICIOUS_HANDLE,
-                                        "一个无法识别路径的进程持有我们进程的句柄 (PID: " +
-                                                std::to_string(handle.UniqueProcessId) + ")");
-                    continue;
-                }
-
-                std::wstring lowerProcessName = std::filesystem::path(ownerProcessPath).filename().wstring();
-                std::transform(lowerProcessName.begin(), lowerProcessName.end(), lowerProcessName.begin(), ::towlower);
-
-                auto &suspiciousHandleHolders = context.GetSuspiciousHandleHolders();
-                CheatMonitor::Pimpl::ProcessVerdict currentVerdict;
-                Utils::SignatureStatus signatureStatus =
-                        Utils::VerifyFileSignature(ownerProcessPath, context.GetWindowsVersion());
-
-                if (knownGoodProcesses->count(lowerProcessName) > 0 &&
-                    signatureStatus == Utils::SignatureStatus::TRUSTED)
-                {
-                    suspiciousHandleHolders[handle.UniqueProcessId] = now;
-                    currentVerdict = CheatMonitor::Pimpl::ProcessVerdict::SIGNED_AND_TRUSTED;
-                }
-                else if (signatureStatus == Utils::SignatureStatus::UNTRUSTED)
-                {
-                    currentVerdict = CheatMonitor::Pimpl::ProcessVerdict::UNSIGNED_OR_UNTRUSTED;
                 }
                 else
                 {
-                    continue;
-                }
-
-                cache[handle.UniqueProcessId] = {currentVerdict, now};
-
-                if (currentVerdict == CheatMonitor::Pimpl::ProcessVerdict::UNSIGNED_OR_UNTRUSTED)
-                {
-                    context.AddEvidence(anti_cheat::INTEGRITY_SUSPICIOUS_HANDLE,
-                                        "可疑进程持有我们进程的句柄: " + Utils::WideToString(ownerProcessPath) +
-                                                " (PID: " + std::to_string(handle.UniqueProcessId) + ")");
+                    // 缓存过期，清理
+                    pathCache.erase(pathCacheIt);
                 }
             }
-            context.ResetSensorFailure(GetName());
+
+            // 如果缓存未命中，进行完整验证
+            if (signatureStatus == Utils::SignatureStatus::UNKNOWN)
+            {
+                lowerProcessName = std::filesystem::path(ownerProcessPath).filename().wstring();
+                std::transform(lowerProcessName.begin(), lowerProcessName.end(), lowerProcessName.begin(), ::towlower);
+
+                // 签名验证
+                signatureStatus = Utils::VerifyFileSignature(ownerProcessPath, context.GetWindowsVersion());
+
+                // 更新智能缓存
+                PathCacheEntry cacheEntry;
+                cacheEntry.verdict = (signatureStatus == Utils::SignatureStatus::TRUSTED)
+                                             ? CheatMonitor::Pimpl::ProcessVerdict::SIGNED_AND_TRUSTED
+                                             : CheatMonitor::Pimpl::ProcessVerdict::UNSIGNED_OR_UNTRUSTED;
+                cacheEntry.cached_at = now;
+                uint32_t creationTime = GetProcessCreationTime(handle.UniqueProcessId);
+                if (creationTime == 0)
+                {
+                    // GetProcessCreationTime失败，记录失败原因
+                    RecordFailure(anti_cheat::PROCESS_HANDLE_GET_PROCESS_TIMES_FAILED);
+                    creationTime = 0;  // 使用0作为默认值
+                    // 继续处理，不中断扫描
+                }
+                cacheEntry.process_creation_time = creationTime;
+                cacheEntry.process_name = lowerProcessName;
+                cacheEntry.signature_status = signatureStatus;
+
+                pathCache[ownerProcessPath] = cacheEntry;
+            }
+
+            // 判断结果
+            const auto &knownGoodProcesses = CheatConfigManager::GetInstance().GetKnownGoodProcesses();
+            CheatMonitor::Pimpl::ProcessVerdict currentVerdict;
+
+            // 白名单进程：必须同时满足白名单和可信签名（防止伪造进程名）
+            if (knownGoodProcesses->count(lowerProcessName) > 0 && signatureStatus == Utils::SignatureStatus::TRUSTED)
+            {
+                currentVerdict = CheatMonitor::Pimpl::ProcessVerdict::SIGNED_AND_TRUSTED;
+                // 记录到已知良好句柄持有者
+                auto &knownGoodHandleHolders = context.GetKnownGoodHandleHolders();
+                knownGoodHandleHolders[handle.UniqueProcessId] = now;
+            }
+            // 可信签名但不在白名单：可能是新安装的合法软件
+            else if (signatureStatus == Utils::SignatureStatus::TRUSTED)
+            {
+                currentVerdict = CheatMonitor::Pimpl::ProcessVerdict::SIGNED_AND_TRUSTED;
+            }
+            // 其他情况：不可信或签名验证失败，视为可疑
+            else
+            {
+                currentVerdict = CheatMonitor::Pimpl::ProcessVerdict::UNSIGNED_OR_UNTRUSTED;
+                m_suspiciousHandlers++;
+
+                // 生成证据
+                context.AddEvidence(anti_cheat::INTEGRITY_SUSPICIOUS_HANDLE,
+                                    "可疑进程持有我们进程的句柄: " + Utils::WideToString(ownerProcessPath) +
+                                            " (PID: " + std::to_string(handle.UniqueProcessId) + ")");
+            }
         }
-        catch (const std::exception &e)
+
+        // 9. 记录单次扫描性能指标
+        auto endTime = std::chrono::steady_clock::now();
+        auto scanDuration = std::chrono::duration_cast<std::chrono::milliseconds>(endTime - startTime).count();
+
+        LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR, "ProcessHandleSensor: 扫描完成，处理 %lu 个句柄，耗时 %lldms",
+                    handlesProcessed, scanDuration);
+
+        // 根据统计数据判断执行结果
+        // 注意：如果检测到作弊（AddEvidence），即使有系统级失败也应该返回SUCCESS
+        if (m_lastFailureReason != anti_cheat::UNKNOWN_FAILURE)
         {
-            context.HandleSensorException(GetName(), e.what());
+            return SensorExecutionResult::FAILURE;
         }
-        catch (...)
-        {
-            context.HandleSensorException(GetName(), "Unknown exception");
-        }
+
+        return SensorExecutionResult::SUCCESS;
     }
 
    private:
@@ -2836,6 +2491,10 @@ class ProcessHandleSensor : public ISensor
             HANDLE hOwnerProcess = OpenProcess(PROCESS_DUP_HANDLE, FALSE, handle.UniqueProcessId);
             if (!hOwnerProcess)
             {
+                LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR,
+                            "ProcessHandleSensor: 无法打开进程进行句柄验证 PID %lu，错误: 0x%08X",
+                            handle.UniqueProcessId, GetLastError());
+                // 无法打开进程，跳过
                 return false;
             }
 
@@ -2847,10 +2506,24 @@ class ProcessHandleSensor : public ISensor
 
             if (!success || hDup == nullptr)
             {
+                LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR,
+                            "ProcessHandleSensor: DuplicateHandle失败 PID %lu，句柄值 0x%p，错误: 0x%08X",
+                            handle.UniqueProcessId, (PVOID)handle.HandleValue, GetLastError());
+                // DuplicateHandle失败
                 return false;
             }
 
-            bool pointsToUs = (GetProcessId(hDup) == ownPid);
+            DWORD dupPid = GetProcessId(hDup);
+            if (dupPid == 0)
+            {
+                LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR,
+                              "ProcessHandleSensor: GetProcessId失败，句柄值 0x%p，错误: 0x%08X",
+                              (PVOID)handle.HandleValue, GetLastError());
+                CloseHandle(hDup);
+                return false;
+            }
+
+            bool pointsToUs = (dupPid == ownPid);
 
             CloseHandle(hDup);
 
@@ -2858,838 +2531,478 @@ class ProcessHandleSensor : public ISensor
         }
         __except (EXCEPTION_EXECUTE_HANDLER)
         {
+            LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR, "ProcessHandleSensor: 句柄验证过程中发生异常 PID %lu",
+                          handle.UniqueProcessId);
             return false;
         }
     }
 };
 
-class HandleCorrelationSensor : public ISensor
+class ThreadAndModuleActivitySensor : public ISensor
 {
    public:
     const char *GetName() const override
     {
-        return "HandleCorrelationSensor";
+        return "ThreadAndModuleActivitySensor";
     }
     SensorWeight GetWeight() const override
     {
-        return SensorWeight::HEAVY;  // 10-100ms: 句柄关联分析
+        return SensorWeight::HEAVY;  // 10-100ms: 线程和模块活动监控
     }
 
-    void Execute(ScanContext &context) override
+    SensorExecutionResult Execute(ScanContext &context) override
     {
-        try
+        // 重置失败原因
+        m_lastFailureReason = anti_cheat::UNKNOWN_FAILURE;
+
+        // 策略1：配置版本门控 - 检查当前OS版本是否满足配置的最低要求
+        if (!IsOsSupported(context))
         {
-            auto &suspiciousHandleHolders = context.GetSuspiciousHandleHolders();
-            if (suspiciousHandleHolders.empty())
-            {
-                return;
-            }
-
-            const auto now = std::chrono::steady_clock::now();
-            std::vector<DWORD> pidsToErase;
-            bool highRiskEvidenceFound = false;
-
-            // 1. 清理过期的可疑句柄持有者
-            for (auto it = suspiciousHandleHolders.begin(); it != suspiciousHandleHolders.end();)
-            {
-                if (now - it->second >
-                    std::chrono::minutes(CheatConfigManager::GetInstance().GetSuspiciousHandleTTLMinutes()))
-                {
-                    it = suspiciousHandleHolders.erase(it);
-                }
-                else
-                {
-                    ++it;
-                }
-            }
-
-            // 2. 如果清理后 map 仍然不为空，检查是否存在其他高风险证据
-            if (!suspiciousHandleHolders.empty())
-            {
-                if (context.HasEvidenceOfType(anti_cheat::INTEGRITY_MEMORY_PATCH) ||
-                    context.HasEvidenceOfType(anti_cheat::RUNTIME_MODULE_NEW_UNKNOWN) ||
-                    context.HasEvidenceOfType(anti_cheat::INTEGRITY_API_HOOK))
-                {  // 优化
-                    highRiskEvidenceFound = true;
-                }
-            }
-
-            // 3. 如果两个条件都满足，则上报复合证据
-            if (highRiskEvidenceFound)
-            {
-                for (const auto &pair : suspiciousHandleHolders)
-                {
-                    const DWORD pid = pair.first;
-                    context.AddEvidence(anti_cheat::ENVIRONMENT_HANDLE_PROXY_DETECTED,
-                                        "检测到句柄代理攻击：白名单进程(PID: " + std::to_string(pid) +
-                                                ")持有句柄，同时检测到高风险活动(内存篡改或输入异常)。");
-                    // 标记该PID以便上报后移除，避免重复
-                    pidsToErase.push_back(pid);
-                }
-            }
-
-            // 4. 从 m_suspiciousHandleHolders 中移除已上报的PID
-            for (DWORD pid : pidsToErase)
-            {
-                suspiciousHandleHolders.erase(pid);
-            }
-            context.ResetSensorFailure(GetName());
+            LOG_DEBUG(AntiCheatLogger::LogCategory::SENSOR, "线程和模块活动监控检测已禁用：当前OS版本低于配置最低要求");
+            RecordFailure(anti_cheat::THREAD_MODULE_OS_VERSION_UNSUPPORTED);
+            return SensorExecutionResult::FAILURE;
         }
-        catch (const std::exception &e)
+
+        // 获取超时预算
+        const int budget_ms = CheatConfigManager::GetInstance().GetHeavyScanBudgetMs();
+        const auto startTime = std::chrono::steady_clock::now();
+
+        // 1. 检查系统API可用性（这是系统级别的检查）
+        if (!g_pNtQueryInformationThread)
         {
-            context.HandleSensorException(GetName(), e.what());
+            LOG_WARNING(AntiCheatLogger::LogCategory::SENSOR, "ThreadAndModuleActivitySensor: 系统API不可用");
+            RecordFailure(anti_cheat::THREAD_MODULE_SYSTEM_API_FAILED);
+            return SensorExecutionResult::FAILURE;
         }
-        catch (...)
+
+        // 2. 扫描线程（新活动检测 + 完整性检测）
+        if (!ScanThreadsWithTimeout(context, budget_ms, startTime))
         {
-            context.HandleSensorException(GetName(), "Unknown exception");
+            // 失败原因已经在ScanThreadsWithTimeout中记录
+            return SensorExecutionResult::FAILURE;
         }
-    }
-};
 
-class NewActivitySensor : public ISensor
-{
-   public:
-    const char *GetName() const override
-    {
-        return "NewActivitySensor";
-    }
-    SensorWeight GetWeight() const override
-    {
-        return SensorWeight::HEAVY;  // 10-100ms: 新活动检测
-    }
-
-    void Execute(ScanContext &context) override
-    {
-        try
+        // 3. 扫描模块（新活动检测）
+        if (!ScanModulesWithTimeout(context, budget_ms, startTime))
         {
-            const int budget_ms = CheatConfigManager::GetInstance().GetHeavyScanBudgetMs();
-            const auto startTime = std::chrono::steady_clock::now();
-
-            ScanNewThreads(context, startTime, budget_ms);
-
-            // Check for timeout before proceeding to module scan
-            auto now = std::chrono::steady_clock::now();
-            if (std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count() > budget_ms)
-            {
-                context.HandleSensorTimeout(GetName());
-                return;
-            }
-
-            ScanNewModules(context, startTime, budget_ms);
-            context.ResetSensorFailure(GetName());
+            // 失败原因已经在ScanModulesWithTimeout中记录
+            return SensorExecutionResult::FAILURE;
         }
-        catch (const std::exception &e)
+
+        // 统一的执行结果判断逻辑
+        // 成功条件：没有失败原因记录（包括超时）
+        if (m_lastFailureReason != anti_cheat::UNKNOWN_FAILURE)
         {
-            context.HandleSensorException(GetName(), e.what());
+            return SensorExecutionResult::FAILURE;
         }
-        catch (...)
-        {
-            context.HandleSensorException(GetName(), "Unknown exception");
-        }
+
+        return SensorExecutionResult::SUCCESS;
     }
 
    private:
-    void ScanNewThreads(ScanContext &context, const std::chrono::steady_clock::time_point &startTime, int budget_ms)
+    bool ScanThreadsWithTimeout(ScanContext &context, int budget_ms,
+                                const std::chrono::steady_clock::time_point &startTime)
     {
-        HANDLE hThreadSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
-        if (hThreadSnapshot == INVALID_HANDLE_VALUE)
-        {
-            return;
-        }
-        auto snapshot_closer = [](HANDLE h) { CloseHandle(h); };
-        std::unique_ptr<void, decltype(snapshot_closer)> snapshot_handle(hThreadSnapshot, snapshot_closer);
+        int threadCount = 0;
+        bool hasSystemFailure = false;
+        bool timeoutOccurred = false;
 
-        THREADENTRY32 te;
-        te.dwSize = sizeof(te);
-        if (Thread32First(hThreadSnapshot, &te))
+        // 获取当前进程ID，检查失败
+        DWORD currentPid = GetCurrentProcessId();
+        if (currentPid == 0)
         {
-            int i = 0;
-            do
+            LOG_ERROR(AntiCheatLogger::LogCategory::SENSOR, "ThreadAndModuleActivitySensor: GetCurrentProcessId失败");
+            RecordFailure(anti_cheat::THREAD_MODULE_GET_PROCESS_ID_FAILED);
+            return false;
+        }
+
+        // 使用公共扫描器枚举线程
+        ThreadScanner::EnumerateThreads(
+                [&](DWORD threadId) {
+                    // 优化：每25个线程检查一次超时，因为线程检查较重
+                    if (threadCount % 25 == 0)
+                    {
+                        auto now = std::chrono::steady_clock::now();
+                        if (std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count() > budget_ms)
+                        {
+                            LOG_WARNING(AntiCheatLogger::LogCategory::SENSOR,
+                                        "ThreadAndModuleActivitySensor: 线程扫描超时");
+                            RecordFailure(anti_cheat::THREAD_SCAN_TIMEOUT);
+                            timeoutOccurred = true;
+                            return;
+                        }
+                    }
+                    threadCount++;
+
+                    // 检查是否为新线程
+                    bool isNewThread = context.GetKnownThreadIds().insert(threadId).second;
+                    if (isNewThread)
+                    {
+                        // 新线程检测：分析起始地址
+                        AnalyzeNewThread(context, threadId);
+                    }
+
+                    // 完整性检测：对所有线程进行深度分析
+                    AnalyzeThreadIntegrity(context, threadId);
+                },
+                currentPid);
+
+        // 如果发生超时，直接返回失败
+        if (timeoutOccurred)
+        {
+            return false;
+        }
+
+        // 检查是否有系统级失败（线程扫描失败）
+        if (context.GetKnownThreadIds().empty())
+        {
+            // 检查是否是系统级失败（CreateToolhelp32Snapshot失败）
+            HANDLE hTest = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+            if (hTest == INVALID_HANDLE_VALUE)
             {
-                // 生产环境优化：更频繁的超时检查，提高响应性
-                if ((i++ & 15) == 0)  // 每16次检查（原31次）
-                {
-                    auto now = std::chrono::steady_clock::now();
-                    if (std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count() > budget_ms)
-                    {
-                        context.AddEvidence(anti_cheat::RUNTIME_ERROR, "NewActivitySensor(Thread)扫描超时中止。");
-                        return;
-                    }
-
-                    // 生产环境优化：在线程密集环境中让出CPU
-                    if ((i & 127) == 0 && i > 0)  // 每128次让出CPU
-                    {
-                        Sleep(0);  // 让出时间片给其他线程
-                    }
-                }
-
-                if (te.th32OwnerProcessID == GetCurrentProcessId())
-                {
-                    if (context.GetKnownThreadIds().insert(te.th32ThreadID).second)
-                    {
-                        // New thread detected, perform deeper analysis
-                        AnalyzeNewThread(context, te.th32ThreadID);
-                    }
-                }
-            } while (Thread32Next(hThreadSnapshot, &te));
+                LOG_WARNING(AntiCheatLogger::LogCategory::SENSOR, "ThreadAndModuleActivitySensor: 线程快照创建失败");
+                RecordFailure(anti_cheat::THREAD_MODULE_CREATE_SNAPSHOT_FAILED);
+                hasSystemFailure = true;
+            }
+            else
+            {
+                CloseHandle(hTest);
+                // 如果没有线程但快照成功，说明线程扫描失败
+                RecordFailure(anti_cheat::THREAD_MODULE_THREAD_SCAN_FAILED);
+                hasSystemFailure = true;
+            }
         }
+
+        return !hasSystemFailure;
     }
 
     void AnalyzeNewThread(ScanContext &context, DWORD threadId)
     {
-        auto thread_closer = [](HANDLE h) {
-            if (h)
-                CloseHandle(h);
-        };
-        std::unique_ptr<void, decltype(thread_closer)> hThread(OpenThread(THREAD_QUERY_INFORMATION, FALSE, threadId),
-                                                               thread_closer);
+        HANDLE hThread = OpenThread(THREAD_QUERY_INFORMATION, FALSE, threadId);
+        if (hThread)
+        {
+            auto thread_closer = [](HANDLE h) { CloseHandle(h); };
+            std::unique_ptr<void, decltype(thread_closer)> thread_handle(hThread, thread_closer);
 
+            PVOID startAddress = nullptr;
+            if (g_pNtQueryInformationThread &&
+                NT_SUCCESS(g_pNtQueryInformationThread(hThread,
+                                                       (THREADINFOCLASS)9,  // ThreadQuerySetWin32StartAddress
+                                                       &startAddress, sizeof(startAddress), nullptr)))
+            {
+                if (startAddress)
+                {
+                    std::wstring modulePath;
+                    if (!context.IsAddressInLegitimateModule(startAddress, modulePath))
+                    {
+                        std::ostringstream oss;
+                        oss << "检测到新线程 (TID: " << threadId << ") 的起始地址 (0x" << std::hex << startAddress
+                            << ") 不在任何已知模块中，疑似Shellcode。";
+                        context.AddEvidence(anti_cheat::RUNTIME_THREAD_NEW_UNKNOWN, oss.str());
+                    }
+                }
+            }
+            else
+            {
+                // 记录NtQueryInformationThread失败
+                RecordFailure(anti_cheat::THREAD_MODULE_QUERY_THREAD_FAILED);
+            }
+        }
+        else
+        {
+            // OpenThread失败，但检测到新线程本身就算检测成功
+            // 注意：不统计为m_openThreadFailures，因为检测到新线程就算成功
+            context.AddEvidence(anti_cheat::RUNTIME_THREAD_NEW_UNKNOWN,
+                                "检测到新线程 (TID: " + std::to_string(threadId) + "), 无法获取其起始地址。");
+        }
+    }
+
+    void AnalyzeThreadIntegrity(ScanContext &context, DWORD threadId)
+    {
+        // API可用性检查
+        if (!g_pNtQueryInformationThread)
+        {
+            return;  // 静默跳过，不记录错误
+        }
+
+        HANDLE hThread = OpenThread(THREAD_QUERY_INFORMATION, FALSE, threadId);
         if (!hThread)
         {
-            context.AddEvidence(anti_cheat::RUNTIME_THREAD_NEW_UNKNOWN,
-                                "检测到新线程 (TID: " + std::to_string(threadId) + "), 但无法打开句柄进行分析。");
+            // OpenThread失败，但这是正常的系统限制，不算检测失败
+            // 注意：不统计为m_openThreadFailures，因为这是正常的系统行为
             return;
         }
 
+        auto thread_closer = [](HANDLE h) { CloseHandle(h); };
+        std::unique_ptr<void, decltype(thread_closer)> thread_handle(hThread, thread_closer);
+
+        // 检查线程起始地址
         PVOID startAddress = nullptr;
-        if (g_pNtQueryInformationThread &&
-            NT_SUCCESS(g_pNtQueryInformationThread(hThread.get(),
+        if (NT_SUCCESS(g_pNtQueryInformationThread(hThread,
                                                    (THREADINFOCLASS)9,  // ThreadQuerySetWin32StartAddress
                                                    &startAddress, sizeof(startAddress), nullptr)))
         {
             if (startAddress)
             {
                 std::wstring modulePath;
-                if (context.IsAddressInLegitimateModule(startAddress, modulePath))
+                if (!context.IsAddressInLegitimateModule(startAddress, modulePath))
                 {
-                    // Thread starts in a known module, this is likely safe.
-                    // For higher security, we could check if the start address is a valid export.
-                    // For now, we'll consider it low priority.
-                }
-                else
-                {
-                    // Thread starts outside of any known module, this is a strong indicator of shellcode.
                     std::ostringstream oss;
-                    oss << "检测到新线程 (TID: " << threadId << ") 的起始地址 (0x" << std::hex << startAddress
+                    oss << "检测到线程(TID: " << threadId << ") 的起始地址 (0x" << std::hex << startAddress
                         << ") 不在任何已知模块中，疑似Shellcode。";
-                    context.AddEvidence(anti_cheat::RUNTIME_THREAD_SHELLCODE, oss.str());
+                    context.AddEvidence(anti_cheat::RUNTIME_THREAD_NEW_UNKNOWN, oss.str());
                 }
             }
         }
         else
         {
-            context.AddEvidence(anti_cheat::RUNTIME_THREAD_NEW_UNKNOWN,
-                                "检测到新线程 (TID: " + std::to_string(threadId) + "), 无法获取其起始地址。");
+            // 记录NtQueryInformationThread失败
+            RecordFailure(anti_cheat::THREAD_MODULE_QUERY_THREAD_FAILED);
+        }
+
+        // 检查线程是否隐藏调试器
+        ULONG isHidden = 0;
+        if (NT_SUCCESS(g_pNtQueryInformationThread(hThread,
+                                                   (THREADINFOCLASS)17,  // ThreadHideFromDebugger
+                                                   &isHidden, sizeof(isHidden), nullptr)))
+        {
+            if (isHidden)
+            {
+                std::ostringstream oss;
+                oss << "检测到线程(TID: " << threadId << ") 被设置为对调试器隐藏。";
+                context.AddEvidence(anti_cheat::ENVIRONMENT_DEBUGGER_DETECTED, oss.str());
+            }
+        }
+        else
+        {
+            // 记录NtQueryInformationThread失败
+            RecordFailure(anti_cheat::THREAD_MODULE_QUERY_THREAD_FAILED);
         }
     }
 
-    void ScanNewModules(ScanContext &context, const std::chrono::steady_clock::time_point &startTime, int budget_ms)
+    bool ScanModulesWithTimeout(ScanContext &context, int budget_ms,
+                                const std::chrono::steady_clock::time_point &startTime)
     {
-        std::vector<HMODULE> hModsVec(1024);
-        DWORD cbNeeded;
-        if (!EnumProcessModules(GetCurrentProcess(), hModsVec.data(), hModsVec.size() * sizeof(HMODULE), &cbNeeded))
-        {
-            return;
-        }
+        int moduleCount = 0;
+        bool hasSystemFailure = false;
+        bool timeoutOccurred = false;
 
-        if (hModsVec.size() * sizeof(HMODULE) < cbNeeded)
-        {
-            hModsVec.resize(cbNeeded / sizeof(HMODULE));
-            if (!EnumProcessModules(GetCurrentProcess(), hModsVec.data(), hModsVec.size() * sizeof(HMODULE), &cbNeeded))
+        // 使用公共扫描器枚举模块
+        ModuleScanner::EnumerateModules([&](HMODULE hModule) {
+            // 优化：每15个模块检查一次超时，因为模块检查中等重量
+            if (moduleCount % 15 == 0)
             {
-                return;
-            }
-        }
-
-        const unsigned int moduleCount = cbNeeded / sizeof(HMODULE);
-        for (unsigned int i = 0; i < moduleCount; i++)
-        {
-            // 生产环境优化：保持每16次检查频率，并增加批处理优化
-            if ((i & 15) == 0)
-            {
-                auto now_modules = std::chrono::steady_clock::now();
-                if (std::chrono::duration_cast<std::chrono::milliseconds>(now_modules - startTime).count() > budget_ms)
+                auto now = std::chrono::steady_clock::now();
+                if (std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count() > budget_ms)
                 {
-                    context.AddEvidence(anti_cheat::RUNTIME_ERROR, "NewActivitySensor(Module)扫描超时中止。");
+                    LOG_WARNING(AntiCheatLogger::LogCategory::SENSOR, "ThreadAndModuleActivitySensor: 模块扫描超时");
+                    RecordFailure(anti_cheat::MODULE_SCAN_TIMEOUT);
+                    timeoutOccurred = true;
                     return;
                 }
-
-                // 生产环境优化：在模块扫描中适当让出CPU
-                if ((i & 63) == 0 && i > 0)  // 每64次让出CPU
-                {
-                    Sleep(0);
-                }
             }
+            moduleCount++;
 
-            if (context.GetKnownModules().insert(hModsVec[i]).second)
+            if (context.GetKnownModules().insert(hModule).second)
             {
                 // New module detected, verify its signature
-                context.VerifyModuleSignature(hModsVec[i]);
+                context.VerifyModuleSignature(hModule);
+            }
+        });
+
+        // 如果发生超时，直接返回失败
+        if (timeoutOccurred)
+        {
+            return false;
+        }
+
+        // 检查是否有系统级失败（模块扫描失败）
+        if (context.GetKnownModules().empty())
+        {
+            // 检查是否是系统级失败（EnumProcessModules失败）
+            std::vector<HMODULE> hMods(1);
+            DWORD cbNeeded = 0;
+            if (!EnumProcessModules(GetCurrentProcess(), hMods.data(), hMods.size() * sizeof(HMODULE), &cbNeeded))
+            {
+                LOG_WARNING(AntiCheatLogger::LogCategory::SENSOR, "ThreadAndModuleActivitySensor: 模块枚举失败");
+                RecordFailure(anti_cheat::THREAD_MODULE_OPEN_MODULE_FAILED);
+                hasSystemFailure = true;
+            }
+            else
+            {
+                // 如果没有模块但枚举成功，说明模块扫描失败
+                RecordFailure(anti_cheat::THREAD_MODULE_MODULE_SCAN_FAILED);
+                hasSystemFailure = true;
             }
         }
+
+        return !hasSystemFailure;
     }
 };
 
-class EnvironmentSensor : public ISensor
+class MemorySecuritySensor : public ISensor
 {
    public:
     const char *GetName() const override
     {
-        return "EnvironmentSensor";
+        return "MemorySecuritySensor";
     }
     SensorWeight GetWeight() const override
     {
-        return SensorWeight::MEDIUM;  // 1-10ms: 环境检测
+        return SensorWeight::HEAVY;  // 10-100ms: 内存安全检测
     }
-    void Execute(ScanContext &context) override
+
+    SensorExecutionResult Execute(ScanContext &context) override
     {
-        const auto startTime = std::chrono::steady_clock::now();
-        const int budget_ms = CheatConfigManager::GetInstance().GetHeavyScanBudgetMs();
+        // 重置失败原因
+        m_lastFailureReason = anti_cheat::UNKNOWN_FAILURE;
 
-        try
+        // 策略1：配置版本门控 - 检查当前OS版本是否满足配置的最低要求
+        if (!IsOsSupported(context))
         {
-            auto knownGoodProcesses = CheatConfigManager::GetInstance().GetKnownGoodProcesses();
-            auto &knownHarmfulProcesses = context.GetKnownHarmfulProcesses();
+            LOG_DEBUG(AntiCheatLogger::LogCategory::SENSOR, "内存安全检测已禁用：当前OS版本低于配置最低要求");
+            RecordFailure(anti_cheat::MEMORY_OS_VERSION_UNSUPPORTED);
+            return SensorExecutionResult::FAILURE;
+        }
 
-            std::set<DWORD> currentPids;
+        const int budget_ms = CheatConfigManager::GetInstance().GetHeavyScanBudgetMs();
+        const auto startTime = std::chrono::steady_clock::now();
+
+        // 4. 使用公共扫描器进行内存遍历
+        bool timeoutOccurred = false;
+        MemoryScanner::ScanMemoryRegions([&](const MEMORY_BASIC_INFORMATION &mbi) {
+            // 检查超时
+            auto now = std::chrono::steady_clock::now();
+            if (std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count() > budget_ms)
             {
-                using UniqueSnapshotHandle = std::unique_ptr<void, decltype(&::CloseHandle)>;
-                UniqueSnapshotHandle hSnapshot(CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0), &::CloseHandle);
-                if (hSnapshot.get() != INVALID_HANDLE_VALUE)
-                {
-                    PROCESSENTRY32W pe;
-                    pe.dwSize = sizeof(pe);
-                    if (Process32FirstW(hSnapshot.get(), &pe))
-                    {
-                        do
-                        {
-                            currentPids.insert(pe.th32ProcessID);
-                        } while (Process32NextW(hSnapshot.get(), &pe));
-                    }
-                }
-            }
-            for (auto it = knownHarmfulProcesses.begin(); it != knownHarmfulProcesses.end();)
-            {
-                if (currentPids.find(it->first) == currentPids.end())
-                {
-                    it = knownHarmfulProcesses.erase(it);
-                }
-                else
-                {
-                    ++it;
-                }
-            }
-
-            std::unordered_map<DWORD, std::vector<std::wstring>> windowTitlesByPid;
-            auto enumProc = [](HWND hWnd, LPARAM lParam) -> BOOL {
-                if (!IsWindowVisible(hWnd))
-                    return TRUE;
-                auto *pMap = reinterpret_cast<std::unordered_map<DWORD, std::vector<std::wstring>> *>(lParam);
-                DWORD processId = 0;
-                GetWindowThreadProcessId(hWnd, &processId);
-                if (processId > 0)
-                {
-                    wchar_t buffer[256];
-                    if (GetWindowTextLengthW(hWnd) > 0 && GetWindowTextW(hWnd, buffer, ARRAYSIZE(buffer)) > 0)
-                    {
-                        (*pMap)[processId].push_back(buffer);
-                    }
-                }
-                return TRUE;
-            };
-            EnumWindows(enumProc, reinterpret_cast<LPARAM>(&windowTitlesByPid));
-
-            using UniqueSnapshotHandle = std::unique_ptr<void, decltype(&::CloseHandle)>;
-            UniqueSnapshotHandle hSnapshot(CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0), &::CloseHandle);
-            if (hSnapshot.get() == INVALID_HANDLE_VALUE)
+                LOG_WARNING(AntiCheatLogger::LogCategory::SENSOR, "MemorySecuritySensor: 内存扫描超时");
+                RecordFailure(anti_cheat::MEMORY_SCAN_TIMEOUT);
+                timeoutOccurred = true;
                 return;
+            }
 
-            PROCESSENTRY32W pe;
-            pe.dwSize = sizeof(pe);
-            if (Process32FirstW(hSnapshot.get(), &pe))
+            // 性能优化：跳过已知安全区域
+            uintptr_t currentAddr = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
+            if (IsKnownSafeRegion(currentAddr, mbi.RegionSize))
             {
-                int i = 0;
-                do
-                {
-                    if ((i++ & 31) == 0)
-                    {
-                        auto now = std::chrono::steady_clock::now();
-                        if (std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count() > budget_ms)
-                        {
-                            context.HandleSensorTimeout(GetName());
-                            return;
-                        }
-                    }
-
-                    // ... (rest of the loop is the same)
-                } while (Process32NextW(hSnapshot.get(), &pe));
-            }
-            context.ResetSensorFailure(GetName());
-        }
-        catch (const std::exception &e)
-        {
-            context.HandleSensorException(GetName(), e.what());
-        }
-        catch (...)
-        {
-            context.HandleSensorException(GetName(), "Unknown exception");
-        }
-    }
-};
-
-class PrivateExecutableMemorySensor : public ISensor
-{
-   public:
-    const char *GetName() const override
-    {
-        return "PrivateExecutableMemorySensor";
-    }
-    SensorWeight GetWeight() const override
-    {
-        return SensorWeight::HEAVY;  // 10-100ms: 私有可执行内存扫描
-    }
-    void Execute(ScanContext &context) override
-    {
-        const auto startTime = std::chrono::steady_clock::now();
-        const int budget_ms = CheatConfigManager::GetInstance().GetHeavyScanBudgetMs();
-        int i = 0;
-
-        try
-        {
-            // 性能优化：智能区域过滤和增量扫描
-            static std::unordered_set<uintptr_t> scannedRegions;
-            static std::chrono::steady_clock::time_point lastFullScan = std::chrono::steady_clock::now();
-            const auto now = std::chrono::steady_clock::now();
-            
-            // 每5分钟执行一次完整扫描，其他时候执行增量扫描
-            const bool isFullScan = (now - lastFullScan) > std::chrono::minutes(5);
-            if (isFullScan) {
-                scannedRegions.clear();
-                lastFullScan = now;
+                return;
             }
 
-            LPBYTE address = nullptr;
-            MEMORY_BASIC_INFORMATION mbi;
-
-            // 生产环境优化：32位系统地址空间保护
-            const uintptr_t maxAddress = sizeof(void *) == 4 ? 0x7FFFFFFF : 0x7FFFFFFFFFFF;
-
-            while (VirtualQuery(address, &mbi, sizeof(mbi)))
+            // 核心检测逻辑：专注于内存安全检测，不重复模块完整性检测
+            if (mbi.State == MEM_COMMIT)
             {
-                // 生产环境优化：地址范围检查，避免扫描系统保留区域
-                uintptr_t currentAddr = reinterpret_cast<uintptr_t>(address);
-                if (currentAddr > maxAddress)
+                // 检测隐藏模块（不在模块列表中的可执行内存）
+                if ((mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE)))
                 {
-                    break;  // 超出用户地址空间范围
+                    DetectHiddenModule(context, mbi);
                 }
 
-                // 性能优化：跳过已知安全区域
-                if (IsKnownSafeRegion(currentAddr, mbi.RegionSize))
+                // 检测私有可执行内存（动态分配的可执行代码）
+                if (mbi.Type == MEM_PRIVATE && (mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ |
+                                                               PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)))
                 {
-                    address = reinterpret_cast<LPBYTE>(mbi.BaseAddress) + mbi.RegionSize;
-                    continue;
-                }
-
-                // 性能优化：增量扫描 - 跳过已扫描区域
-                uintptr_t regionHash = currentAddr ^ (currentAddr >> 12);
-                if (!isFullScan && scannedRegions.count(regionHash) > 0)
-                {
-                    address = reinterpret_cast<LPBYTE>(mbi.BaseAddress) + mbi.RegionSize;
-                    continue;
-                }
-                scannedRegions.insert(regionHash);
-
-                if ((i++ & 31) == 0)  // 优化：减少超时检查频率
-                {
-                    auto now = std::chrono::steady_clock::now();
-                    if (std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count() > budget_ms)
-                    {
-                        context.HandleSensorTimeout(GetName());
-                        return;
-                    }
-
-                    // 生产环境优化：内存扫描过程中让出CPU
-                    if ((i & 255) == 0 && i > 0)  // 优化：减少CPU让出频率
-                    {
-                        Sleep(0);  // 优化：使用Sleep(0)而不是Sleep(1)
-                    }
-                }
-
-                if (mbi.State == MEM_COMMIT && mbi.Type == MEM_PRIVATE &&
-                    (mbi.Protect &
-                     (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)))
-                {
-                    // 生产环境优化：增加大小合理性检查，避免误报
-                    if (mbi.RegionSize >= 0x1000 && mbi.RegionSize <= 0x1000000)  // 4KB到16MB之间
-                    {
-                        std::wstring modulePath;
-                        if (!context.IsAddressInLegitimateModule(mbi.BaseAddress, modulePath))
-                        {
-                            std::ostringstream oss;
-                            oss << "检测到私有可执行内存. 地址: 0x" << std::hex
-                                << reinterpret_cast<uintptr_t>(mbi.BaseAddress) << ", 大小: " << std::dec
-                                << mbi.RegionSize << " 字节.";
-
-                            context.AddEvidence(anti_cheat::RUNTIME_MEMORY_EXEC_PRIVATE, oss.str());
-                        }
-                    }
-                }
-
-                address = reinterpret_cast<LPBYTE>(mbi.BaseAddress) + mbi.RegionSize;
-
-                // 生产环境优化：地址溢出保护
-                if (address < reinterpret_cast<LPBYTE>(mbi.BaseAddress) ||
-                    reinterpret_cast<uintptr_t>(address) > maxAddress)
-                {
-                    break;
+                    DetectPrivateExecutableMemory(context, mbi);
                 }
             }
-            context.ResetSensorFailure(GetName());
-        }
-        catch (const std::exception &e)
+        });
+
+        // 如果发生超时，直接返回失败
+        if (timeoutOccurred)
         {
-            context.HandleSensorException(GetName(), e.what());
+            return SensorExecutionResult::FAILURE;
         }
-        catch (...)
+
+        // 统一的执行结果判断逻辑
+        // 成功条件：没有失败原因记录（包括超时）
+        if (m_lastFailureReason != anti_cheat::UNKNOWN_FAILURE)
         {
-            context.HandleSensorException(GetName(), "Unknown exception");
+            return SensorExecutionResult::FAILURE;
         }
+
+        return SensorExecutionResult::SUCCESS;
     }
 
    private:
-    // 性能优化：智能安全区域检测
-    static bool IsKnownSafeRegion(uintptr_t baseAddr, SIZE_T regionSize)
+    // 检测隐藏模块
+    void DetectHiddenModule(ScanContext &context, const MEMORY_BASIC_INFORMATION &mbi)
     {
-        // 跳过系统保留区域
-        if (baseAddr < 0x10000) return true;  // 64KB以下
-        
-        // 跳过大内存池（通常由内存分配器管理）
-        if (regionSize > 0x1000000) return true;  // 16MB以上
-        
-        // 跳过特定地址范围（根据系统特性调整）
-        if (baseAddr >= 0x7FFE0000 && baseAddr < 0x7FFF0000) return true;  // 系统保留
-        
-        return false;
-    }
-};
-
-class SuspiciousLaunchSensor : public ISensor
-{
-   public:
-    const char *GetName() const override
-    {
-        return "SuspiciousLaunchSensor";
-    }
-    SensorWeight GetWeight() const override
-    {
-        return SensorWeight::MEDIUM;  // 1-10ms: 可疑启动检测
-    }
-    void Execute(ScanContext &context) override
-    {
-        try
-        {
-            // 此检查仅在启动时父进程缺失且尚未上报关联事件时运行
-            if (!context.GetParentWasMissingAtStartup())
-            {
-                return;
-            }
-
-            // 检查本会话中是否已发现其他高风险作弊行为
-            if (context.HasEvidenceOfType(anti_cheat::INTEGRITY_MEMORY_PATCH) ||
-                context.HasEvidenceOfType(anti_cheat::RUNTIME_MODULE_NEW_UNKNOWN) ||
-                context.HasEvidenceOfType(anti_cheat::INTEGRITY_API_HOOK) ||
-                context.HasEvidenceOfType(anti_cheat::RUNTIME_MEMORY_EXEC_PRIVATE))
-            {
-                // 如果是，我们现在有了一个高可信度的傀儡进程攻击信号
-                context.AddEvidence(anti_cheat::ENVIRONMENT_SUSPICIOUS_LAUNCH,
-                                    "父进程缺失，且检测到其他可疑活动（如内存篡改或未知模块），疑似傀儡进程攻击。 ");
-
-                // 上报关联后，清除标志以避免重复上报
-                context.ClearParentWasMissingFlag();
-            }
-            context.ResetSensorFailure(GetName());
-        }
-        catch (const std::exception &e)
-        {
-            context.HandleSensorException(GetName(), e.what());
-        }
-        catch (...)
-        {
-            context.HandleSensorException(GetName(), "Unknown exception");
-        }
-    }
-};
-
-// 线程完整性扫描传感器
-class ThreadIntegritySensor : public ISensor
-{
-   public:
-    const char *GetName() const override
-    {
-        return "ThreadIntegritySensor";
-    }
-    SensorWeight GetWeight() const override
-    {
-        return SensorWeight::HEAVY;  // 10-100ms: 线程完整性检测
-    }
-
-    void Execute(ScanContext &context) override
-    {
-        const auto startTime = std::chrono::steady_clock::now();
-        const int budget_ms = CheatConfigManager::GetInstance().GetHeavyScanBudgetMs();
-
-        try
-        {
-            auto snapshot_closer = [](HANDLE h) {
-                if (h)
-                    CloseHandle(h);
-            };
-            using UniqueSnapshotHandle = std::unique_ptr<void, decltype(snapshot_closer)>;
-
-            UniqueSnapshotHandle hThreadSnapshot(CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0), snapshot_closer);
-            if (hThreadSnapshot.get() == INVALID_HANDLE_VALUE)
-            {
-                return;
-            }
-
-            const DWORD currentPid = GetCurrentProcessId();
-            THREADENTRY32 te;
-            te.dwSize = sizeof(te);
-
-            if (Thread32First(hThreadSnapshot.get(), &te))
-            {
-                int i = 0;
-                do
-                {
-                    if ((i++ & 31) == 0)
-                    {
-                        auto now = std::chrono::steady_clock::now();
-                        if (std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count() > budget_ms)
-                        {
-                            context.HandleSensorTimeout(GetName());
-                            return;
-                        }
-                    }
-
-                    if (te.th32OwnerProcessID != currentPid)
-                    {
-                        continue;
-                    }
-
-                    using UniqueThreadHandle = std::unique_ptr<void, decltype(snapshot_closer)>;
-                    UniqueThreadHandle hThread(OpenThread(THREAD_QUERY_INFORMATION, FALSE, te.th32ThreadID),
-                                               snapshot_closer);
-
-                    if (!hThread.get())
-                    {
-                        continue;
-                    }
-
-                    PVOID startAddress = nullptr;
-                    if (g_pNtQueryInformationThread &&
-                        NT_SUCCESS(g_pNtQueryInformationThread(hThread.get(),
-                                                               (THREADINFOCLASS)9,  // ThreadQuerySetWin32StartAddress
-                                                               &startAddress, sizeof(startAddress), nullptr)))
-                    {
-                        if (startAddress)
-                        {
-                            std::wstring modulePath;
-                            if (!context.IsAddressInLegitimateModule(startAddress, modulePath))
-                            {
-                                std::ostringstream oss;
-                                oss << "检测到线程(TID: " << te.th32ThreadID << ") 的起始地址 (0x" << std::hex
-                                    << startAddress << ") 不在任何已知模块中，疑似Shellcode。";
-                                context.AddEvidence(anti_cheat::RUNTIME_THREAD_NEW_UNKNOWN, oss.str());
-                            }
-                        }
-                    }
-
-                    ULONG isHidden = 0;
-                    if (g_pNtQueryInformationThread &&
-                        NT_SUCCESS(g_pNtQueryInformationThread(hThread.get(),
-                                                               (THREADINFOCLASS)17,  // ThreadHideFromDebugger
-                                                               &isHidden, sizeof(isHidden), nullptr)))
-                    {
-                        if (isHidden)
-                        {
-                            std::ostringstream oss;
-                            oss << "检测到线程(TID: " << te.th32ThreadID << ") 被设置为对调试器隐藏。";
-                            context.AddEvidence(anti_cheat::ENVIRONMENT_DEBUGGER_DETECTED, oss.str());
-                        }
-                    }
-
-                } while (Thread32Next(hThreadSnapshot.get(), &te));
-            }
-            context.ResetSensorFailure(GetName());
-        }
-        catch (const std::exception &e)
-        {
-            context.HandleSensorException(GetName(), e.what());
-        }
-        catch (...)
-        {
-            context.HandleSensorException(GetName(), "Unknown exception");
-        }
-    }
-};
-
-// 新增：隐藏模块扫描传感器
-class HiddenModuleSensor : public ISensor
-{
-   public:
-    const char *GetName() const override
-    {
-        return "HiddenModuleSensor";
-    }
-    SensorWeight GetWeight() const override
-    {
-        return SensorWeight::HEAVY;  // 10-100ms: 隐藏模块检测
-    }
-    void Execute(ScanContext &context) override
-    {
-        const auto startTime = std::chrono::steady_clock::now();
-        const int budget_ms = CheatConfigManager::GetInstance().GetHeavyScanBudgetMs();
-        int i = 0;
-
-        try
-        {
-            // 策略1：配置版本门控 - 检查当前OS是否满足配置的最低要求
-            if (!context.IsCurrentOsSupported())
-            {
-                LOG_DEBUG(AntiCheatLogger::LogCategory::SENSOR, "隐藏模块检测已禁用：当前OS版本低于配置最低要求");
-                return;
-            }
-            
-            // 性能优化：智能区域过滤和增量扫描
-            static std::unordered_set<uintptr_t> scannedRegions;
-            static std::chrono::steady_clock::time_point lastFullScan = std::chrono::steady_clock::now();
-            const auto now = std::chrono::steady_clock::now();
-            
-            // 每5分钟执行一次完整扫描，其他时候执行增量扫描
-            const bool isFullScan = (now - lastFullScan) > std::chrono::minutes(5);
-            if (isFullScan) {
-                scannedRegions.clear();
-                lastFullScan = now;
-            }
-            
-            MEMORY_BASIC_INFORMATION mbi;
-            LPBYTE address = nullptr;
-
-            // 生产环境优化：地址空间范围限制
-            const uintptr_t maxAddress = sizeof(void *) == 4 ? 0x7FFFFFFF : 0x7FFFFFFFFFFF;
-
-            while (VirtualQuery(address, &mbi, sizeof(mbi)))
-            {
-                // 生产环境优化：地址范围检查
-                uintptr_t currentAddr = reinterpret_cast<uintptr_t>(address);
-                if (currentAddr > maxAddress)
-                {
-                    break;  // 超出用户地址空间范围
-                }
-
-                // 性能优化：跳过已知安全区域
-                if (IsKnownSafeRegion(currentAddr, mbi.RegionSize))
-                {
-                    address = reinterpret_cast<LPBYTE>(mbi.BaseAddress) + mbi.RegionSize;
-                    continue;
-                }
-
-                // 性能优化：增量扫描 - 跳过已扫描区域
-                uintptr_t regionHash = currentAddr ^ (currentAddr >> 12);
-                if (!isFullScan && scannedRegions.count(regionHash) > 0)
-                {
-                    address = reinterpret_cast<LPBYTE>(mbi.BaseAddress) + mbi.RegionSize;
-                    continue;
-                }
-                scannedRegions.insert(regionHash);
-
-                if ((i++ & 31) == 0)  // 优化：减少超时检查频率
-                {
-                    auto now = std::chrono::steady_clock::now();
-                    if (std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count() > budget_ms)
-                    {
-                        context.HandleSensorTimeout(GetName());
-                        return;
-                    }
-
-                    // 生产环境优化：让出CPU时间片
-                    if ((i & 255) == 0 && i > 0)  // 优化：减少CPU让出频率
-                    {
-                        Sleep(0);  // 优化：使用Sleep(0)而不是Sleep(1)
-                    }
-                }
-
-                if (mbi.State == MEM_COMMIT &&
-                    (mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE)))
-                {
-                    HMODULE hMod = nullptr;
-                    if (!GetModuleHandleExW(
-                                GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+        HMODULE hMod = nullptr;
+        if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
                                 (LPCWSTR)mbi.BaseAddress, &hMod))
+        {
+            // GetModuleHandleExW失败，记录失败原因
+            RecordFailure(anti_cheat::MEMORY_GET_MODULE_HANDLE_FAILED);
+            uintptr_t baseAddr = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
+            SIZE_T regionSize = mbi.RegionSize;
+
+            // 使用配置化的检测阈值
+            const uint32_t minRegionSize = CheatConfigManager::GetInstance().GetMinMemoryRegionSize();
+            const uint32_t maxRegionSize = CheatConfigManager::GetInstance().GetMaxMemoryRegionSize();
+
+            if (baseAddr > 0x10000 && regionSize >= minRegionSize && regionSize <= maxRegionSize)
+            {
+                auto peCheckResult = CheckHiddenMemoryRegion(mbi.BaseAddress, regionSize);
+                if (peCheckResult.shouldReport)
+                {
+                    char msgBuffer[256];
+                    if (peCheckResult.accessible)
                     {
-                        // 生产环境优化：更精确的检测阈值，减少误报
-                        uintptr_t baseAddr = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
-                        SIZE_T regionSize = mbi.RegionSize;
-
-                        // 提高地址下限，过滤掉一些系统保留区域
-                        if (baseAddr > 0x10000 && regionSize >= 0x1000 &&  // 至少4KB
-                            regionSize <= 0x100000 &&                      // 不超过1MB，避免大内存池误报
-                            baseAddr < maxAddress)                         // 在有效地址范围内
-                        {
-                            // 生产环境优化：增加PE头检查，减少对合法内存分配器的误报
-                            auto peCheckResult = CheckHiddenMemoryRegion(mbi.BaseAddress, regionSize);
-                            if (peCheckResult.shouldReport)
-                            {
-                                char msgBuffer[256];
-                                if (peCheckResult.accessible)
-                                {
-                                    sprintf_s(msgBuffer, sizeof(msgBuffer), 
-                                             "检测到隐藏的可执行内存区域: 0x%p 大小: %llu 字节", 
-                                             (void*)baseAddr, regionSize);
-                                }
-                                else
-                                {
-                                    sprintf_s(msgBuffer, sizeof(msgBuffer), 
-                                             "检测到隐藏的可执行内存区域（无法读取）: 0x%p 大小: %llu 字节", 
-                                             (void*)baseAddr, regionSize);
-                                }
-                                context.AddEvidence(anti_cheat::INTEGRITY_MEMORY_PATCH, std::string(msgBuffer));
-                            }
-                        }
+                        sprintf_s(msgBuffer, sizeof(msgBuffer), "检测到隐藏的可执行内存区域: 0x%p 大小: %llu 字节",
+                                  (void *)baseAddr, regionSize);
                     }
+                    else
+                    {
+                        sprintf_s(msgBuffer, sizeof(msgBuffer),
+                                  "检测到隐藏的可执行内存区域（无法读取）: 0x%p 大小: %llu 字节", (void *)baseAddr,
+                                  regionSize);
+                    }
+                    context.AddEvidence(anti_cheat::INTEGRITY_MEMORY_PATCH, std::string(msgBuffer));
                 }
-                address = reinterpret_cast<LPBYTE>(mbi.BaseAddress) + mbi.RegionSize;
-
-                // 生产环境优化：地址溢出保护
-                if (address < reinterpret_cast<LPBYTE>(mbi.BaseAddress) ||
-                    reinterpret_cast<uintptr_t>(address) > maxAddress)
-                    break;
             }
-            context.ResetSensorFailure(GetName());
         }
-        catch (const std::exception &e)
+        else
         {
-            context.HandleSensorException(GetName(), e.what());
-        }
-        catch (...)
-        {
-            context.HandleSensorException(GetName(), "Unknown exception");
+            // GetModuleHandleExW成功，说明地址在已知模块中，不需要进一步检测
+            // 注意：不统计为失败，因为这是正常的检测流程
         }
     }
 
-   private:
+    // 检测私有可执行内存
+    void DetectPrivateExecutableMemory(ScanContext &context, const MEMORY_BASIC_INFORMATION &mbi)
+    {
+        // 使用配置化的检测阈值
+        const uint32_t minRegionSize = CheatConfigManager::GetInstance().GetMinMemoryRegionSize();
+        const uint32_t maxRegionSize = CheatConfigManager::GetInstance().GetMaxMemoryRegionSize();
+
+        if (mbi.RegionSize >= minRegionSize && mbi.RegionSize <= maxRegionSize)
+        {
+            if (!context.IsAddressInLegitimateModule(mbi.BaseAddress))
+            {
+                std::ostringstream oss;
+                oss << "检测到私有可执行内存. 地址: 0x" << std::hex << reinterpret_cast<uintptr_t>(mbi.BaseAddress)
+                    << ", 大小: " << std::dec << mbi.RegionSize << " 字节.";
+
+                context.AddEvidence(anti_cheat::RUNTIME_MEMORY_EXEC_PRIVATE, oss.str());
+                // 私有可执行内存检测完成
+            }
+        }
+    }
+
     // 性能优化：智能安全区域检测
     static bool IsKnownSafeRegion(uintptr_t baseAddr, SIZE_T regionSize)
     {
         // 跳过系统保留区域
-        if (baseAddr < 0x10000) return true;  // 64KB以下
-        
+        if (baseAddr < 0x10000)
+            return true;  // 64KB以下
+
         // 跳过大内存池（通常由内存分配器管理）
-        if (regionSize > 0x1000000) return true;  // 16MB以上
-        
+        if (regionSize > CheatConfigManager::GetInstance().GetMaxMemoryRegionSize())
+            return true;  // 超过配置的最大内存区域大小
+
         // 跳过特定地址范围（根据系统特性调整）
-        if (baseAddr >= 0x7FFE0000 && baseAddr < 0x7FFF0000) return true;  // 系统保留
-        
+        if (baseAddr >= 0x7FFE0000 && baseAddr < 0x7FFF0000)
+            return true;  // 系统保留
+
         return false;
     }
 
@@ -3706,8 +3019,9 @@ class HiddenModuleSensor : public ISensor
         {
             // 简单检查是否可能是PE文件头
             const BYTE *pMem = reinterpret_cast<const BYTE *>(baseAddress);
-            bool mightBePE = (regionSize >= 0x400 && pMem[0] == 'M' && pMem[1] == 'Z');
-            
+            bool mightBePE = (regionSize >= CheatConfigManager::GetInstance().GetMinMemoryRegionSize() &&
+                              pMem[0] == 'M' && pMem[1] == 'Z');
+
             result.accessible = true;
             result.shouldReport = mightBePE;
         }
@@ -3716,58 +3030,422 @@ class HiddenModuleSensor : public ISensor
             // 如果读取内存失败，仍然报告，因为这很可能是恶意隐藏
             result.accessible = false;
             result.shouldReport = true;
+            // 记录内存访问异常失败
+            RecordFailure(anti_cheat::MEMORY_ACCESS_EXCEPTION);
         }
         return result;
     }
 };
 
+class VehHookSensor : public ISensor
+{
+   public:
+    const char *GetName() const override
+    {
+        return "VehHookSensor";
+    }
+    SensorWeight GetWeight() const override
+    {
+        return SensorWeight::CRITICAL;  // > 100ms: VEH检测需特殊处理
+    }
+
+    SensorExecutionResult Execute(ScanContext &context) override
+    {
+        // 重置失败原因
+        m_lastFailureReason = anti_cheat::UNKNOWN_FAILURE;
+
+        try
+        {
+            // 策略1：配置版本门控 - 检查当前OS版本是否满足配置的最低要求
+            if (!IsOsSupported(context))
+            {
+                LOG_DEBUG(AntiCheatLogger::LogCategory::SENSOR, "VEH检测已禁用：当前OS版本低于配置最低要求");
+                RecordFailure(anti_cheat::VEH_OS_VERSION_UNSUPPORTED);
+                return SensorExecutionResult::FAILURE;
+            }
+
+            auto winVer = context.GetWindowsVersion();
+            // 策略2：版本检查 - 只在已知稳定的版本上运行
+            if (winVer == SystemUtils::WindowsVersion::Win_Unknown)
+            {
+                LOG_WARNING(AntiCheatLogger::LogCategory::SENSOR, "VEH检测在未知Windows版本上禁用以确保稳定性");
+                RecordFailure(anti_cheat::VEH_WINDOWS_VERSION_UNKNOWN);
+                return SensorExecutionResult::FAILURE;
+            }
+
+            const uintptr_t base = context.GetVehListAddress();
+            if (base == 0)
+            {
+                LOG_WARNING(AntiCheatLogger::LogCategory::SENSOR, "VEH链表地址获取失败，跳过检测");
+                RecordFailure(anti_cheat::VEH_LIST_ADDRESS_FAILED);
+                return SensorExecutionResult::FAILURE;
+            }
+
+            // 策略3：内存验证 - 确保VEH链表基地址有效
+            MEMORY_BASIC_INFORMATION baseMbi = {};
+            if (VirtualQuery((PVOID)base, &baseMbi, sizeof(baseMbi)) != sizeof(baseMbi))
+            {
+                LOG_WARNING(AntiCheatLogger::LogCategory::SENSOR, "VEH链表基地址内存查询失败");
+                RecordFailure(anti_cheat::VEH_VIRTUAL_QUERY_FAILED);
+                return SensorExecutionResult::FAILURE;
+            }
+
+            if (baseMbi.State != MEM_COMMIT)
+            {
+                LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR, "VEH链表基地址内存状态异常: 0x%08X", baseMbi.State);
+                RecordFailure(anti_cheat::VEH_MEMORY_STATE_ABNORMAL);
+                return SensorExecutionResult::FAILURE;
+            }
+
+            const int budget_ms = CheatConfigManager::GetInstance().GetHeavyScanBudgetMs();
+            const auto startTime = std::chrono::steady_clock::now();
+
+            LIST_ENTRY *pHead = nullptr;
+
+            // 策略4：结构体访问保护
+            auto accessResult = AccessVehStructSafe(base, winVer);
+            if (!accessResult.success)
+            {
+                LOG_ERROR_F(AntiCheatLogger::LogCategory::SENSOR, "VEH结构体访问异常: 0x%08X",
+                            accessResult.exceptionCode);
+                RecordFailure(anti_cheat::VEH_LIST_ACCESS_FAILED);
+                return SensorExecutionResult::FAILURE;
+            }
+
+            pHead = accessResult.pHead;
+            if (!pHead || !SystemUtils::IsValidPointer(pHead, sizeof(LIST_ENTRY)))
+            {
+                LOG_WARNING(AntiCheatLogger::LogCategory::SENSOR, "VEH链表头指针无效");
+                RecordFailure(anti_cheat::VEH_HEAD_POINTER_INVALID);
+                return SensorExecutionResult::FAILURE;
+            }
+
+            // 策略5：保守的处理器枚举
+            std::vector<PVOID> handlers;
+            auto traverseResult = TraverseVehListSafe(pHead, budget_ms);
+            if (!traverseResult.success)
+            {
+                if (traverseResult.exceptionCode != 0)
+                {
+                    LOG_ERROR_F(AntiCheatLogger::LogCategory::SENSOR, "VEH链表遍历异常: 0x%08X",
+                                traverseResult.exceptionCode);
+                    RecordFailure(anti_cheat::VEH_TRAVERSE_FAILED);
+                }
+                else
+                {
+                    LOG_WARNING(AntiCheatLogger::LogCategory::SENSOR, "VEH链表遍历超时");
+                    RecordFailure(anti_cheat::VEH_EXECUTION_TIMEOUT);
+                }
+                return SensorExecutionResult::FAILURE;
+            }
+
+            for (int i = 0; i < traverseResult.handlerCount; ++i)
+            {
+                handlers.push_back(traverseResult.handlers[i]);
+            }
+
+            if (traverseResult.success && !handlers.empty())
+            {
+                // 策略6：限制检查数量和频率
+                const size_t maxHandlers = (size_t)CheatConfigManager::GetInstance().GetMaxVehHandlersToScan();
+                const size_t checkCount = std::min(handlers.size(), maxHandlers);
+
+                LOG_INFO_F(AntiCheatLogger::LogCategory::SENSOR, "VEH检测: 发现%zu个处理器，检查前%zu个",
+                           handlers.size(), checkCount);
+
+                // 更新统计数据
+                m_handlerCount = static_cast<uint32_t>(handlers.size());  // 发现的处理器总数
+
+                for (size_t i = 0; i < checkCount; ++i)
+                {
+                    // 每5次循环检查一次时间，因为VEH处理器数量少但检查很重
+                    if (i % 5 == 0)
+                    {
+                        auto now = std::chrono::steady_clock::now();
+                        auto elapsed_ms =
+                                std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count();
+
+                        if (elapsed_ms > budget_ms)
+                        {
+                            LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR,
+                                          "VEH检测超时，已检查%zu/%zu个处理器，耗时%ldms", i, checkCount, elapsed_ms);
+                            RecordFailure(anti_cheat::VEH_EXECUTION_TIMEOUT);
+                            return SensorExecutionResult::FAILURE;
+                        }
+                    }
+
+                    // 使用统一的指针验证接口
+                    if (!SystemUtils::IsValidPointer(handlers[i], sizeof(VECTORED_HANDLER_ENTRY)))
+                    {
+                        LOG_ERROR_F(AntiCheatLogger::LogCategory::SENSOR, "VEH处理器#%zu指针验证失败", i);
+                        RecordFailure(anti_cheat::VEH_POINTER_VALIDATION_FAILED);  // 统计指针验证失败
+                    }
+                    else
+                    {
+                        this->AnalyzeHandlerSecurity(
+                                context, reinterpret_cast<const VECTORED_HANDLER_ENTRY *>(handlers[i]), (int)i);
+                    }
+                }
+            }
+            else
+            {
+                if (traverseResult.success)
+                {
+                    LOG_INFO(AntiCheatLogger::LogCategory::SENSOR, "VEH检测: 未发现处理器");
+                }
+                // 注意：如果traverseResult.success为false，TraverseVehListSafe方法中已经有相应的LOG记录
+            }
+        }
+
+        // 统一的执行结果判断逻辑
+        // 成功条件：没有失败原因记录（包括超时）
+        if (m_lastFailureReason != anti_cheat::UNKNOWN_FAILURE)
+        {
+            return SensorExecutionResult::FAILURE;
+        }
+
+        return SensorExecutionResult::SUCCESS;
+    }
+
+   private:
+    struct VehAccessResult
+    {
+        bool success = false;
+        LIST_ENTRY *pHead = nullptr;
+        DWORD exceptionCode = 0;
+    };
+
+    static VehAccessResult AccessVehStructSafe(uintptr_t base, SystemUtils::WindowsVersion winVer)
+    {
+        VehAccessResult result;
+        __try
+        {
+            switch (winVer)
+            {
+                case SystemUtils::WindowsVersion::Win_XP: {
+                    auto *pList = reinterpret_cast<VECTORED_HANDLER_LIST_XP *>(base);
+                    if (SystemUtils::IsValidPointer(pList, sizeof(VECTORED_HANDLER_LIST_XP)))
+                    {
+                        result.pHead = &pList->List;
+                    }
+                    break;
+                }
+                case SystemUtils::WindowsVersion::Win_Vista_Win7: {
+                    auto *pList = reinterpret_cast<VECTORED_HANDLER_LIST_VISTA *>(base);
+                    if (SystemUtils::IsValidPointer(pList, sizeof(VECTORED_HANDLER_LIST_VISTA)))
+                    {
+                        result.pHead = &pList->ExceptionList;
+                    }
+                    break;
+                }
+                case SystemUtils::WindowsVersion::Win_8_Win81:
+                case SystemUtils::WindowsVersion::Win_10:
+                case SystemUtils::WindowsVersion::Win_11:
+                default: {
+                    auto *pList = reinterpret_cast<VECTORED_HANDLER_LIST_WIN8 *>(base);
+                    if (SystemUtils::IsValidPointer(pList, sizeof(VECTORED_HANDLER_LIST_WIN8)))
+                    {
+                        result.pHead = &pList->ExceptionList;
+                    }
+                    break;
+                }
+            }
+            result.success = true;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            result.exceptionCode = GetExceptionCode();
+        }
+        return result;
+    }
+
+    // 合并的VEH链表遍历函数 - 分析：VEH链表遍历通常很快，但为了安全起见保留budget_ms检查
+    static VehTraverseResult TraverseVehListSafe(LIST_ENTRY *pHead, int budget_ms)
+    {
+        VehTraverseResult result = {false, {0}, 0, 0};
+        __try
+        {
+            const auto startTime = std::chrono::steady_clock::now();
+            LIST_ENTRY *pNode = pHead->Flink;
+            int safetyCounter = 0;
+            const int kMaxNodes = 2048;
+
+            while (pNode && pNode != pHead && safetyCounter++ < kMaxNodes && result.handlerCount < 2048)
+            {
+                // 优化：每25次循环检查一次超时，因为安全计数器需要更频繁的检查
+                if (safetyCounter % 25 == 0)
+                {
+                    auto now = std::chrono::steady_clock::now();
+                    if (std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count() > budget_ms)
+                    {
+                        result.success = false;  // 超时视为失败
+                        return result;           // Timeout
+                    }
+                }
+
+                if (!SystemUtils::IsValidPointer(pNode, sizeof(LIST_ENTRY)))
+                    break;
+
+                auto *pEntry = CONTAINING_RECORD(pNode, VECTORED_HANDLER_ENTRY, List);
+                if (!SystemUtils::IsValidPointer(pEntry, sizeof(VECTORED_HANDLER_ENTRY)))
+                    break;
+
+                // 检查Handler是否为空，空的Handler可能是异常情况
+                if (pEntry->Handler != nullptr)
+                {
+                    result.handlers[result.handlerCount++] = pEntry->Handler;
+                }
+                else
+                {
+                    // 空的VEH Handler可能是异常情况，记录但继续处理
+                    LOG_WARNING(AntiCheatLogger::LogCategory::SENSOR, "VEH检测: 发现空的Handler，可能是异常情况");
+                }
+
+                LIST_ENTRY *pNext = pNode->Flink;
+                if (!SystemUtils::IsValidPointer(pNext, sizeof(LIST_ENTRY)))
+                    break;
+                pNode = pNext;
+            }
+            result.success = true;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            result.success = false;
+            result.exceptionCode = GetExceptionCode();
+        }
+        return result;
+    }
+
+    // VEH处理器安全分析
+    void AnalyzeHandlerSecurity(ScanContext &context, PVOID handlerAddress, int index)
+    {
+        if (!handlerAddress)
+            return;
+
+        std::wstring modulePath;
+        bool isInBaselineModule = context.IsAddressInLegitimateModule(handlerAddress, modulePath);
+
+        if (isInBaselineModule)
+        {
+            // 地址在基线建立的模块中，进一步验证其是否在代码节内
+            // 先检查页面保护，避免读取无效/非执行内存导致访问冲突
+            MEMORY_BASIC_INFORMATION mbi = {};
+            if (VirtualQuery(handlerAddress, &mbi, sizeof(mbi)) == 0)
+            {
+                RecordFailure(anti_cheat::VEH_VIRTUAL_QUERY_FAILED);  // 统计VirtualQuery失败
+                return;                                               // 无法查询，保守退出
+            }
+            const DWORD prot = mbi.Protect & 0xFF;
+            const bool isExec = (prot == PAGE_EXECUTE) || (prot == PAGE_EXECUTE_READ) ||
+                                (prot == PAGE_EXECUTE_READWRITE) || (prot == PAGE_EXECUTE_WRITECOPY);
+            if (!isExec)
+            {
+                // 非可执行页面中的处理函数极不正常，作为可疑迹象上报
+                context.AddEvidence(anti_cheat::INTEGRITY_API_HOOK,
+                                    "VEH 处理函数位于非可执行页面，疑似劫持或保护绕过。");
+                return;
+            }
+
+            HMODULE hModule = NULL;
+            if (GetModuleHandleExW(
+                        GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                        (LPCWSTR)handlerAddress, &hModule) &&
+                hModule)
+            {
+                PVOID codeBase = nullptr;
+                DWORD codeSize = 0;
+                if (SystemUtils::GetModuleCodeSectionInfo(hModule, codeBase, codeSize))
+                {
+                    uintptr_t addr = reinterpret_cast<uintptr_t>(handlerAddress);
+                    uintptr_t start = reinterpret_cast<uintptr_t>(codeBase);
+                    if (addr >= start && addr < (start + codeSize))
+                    {
+                        return;  // 在基线模块的合法代码节内，安全
+                    }
+                }
+                else
+                {
+                    // GetModuleCodeSectionInfo失败本身就是可疑行为，作为证据上报
+                    std::wostringstream woss;
+                    woss << L"检测到VEH处理器被劫持到基线模块的非代码区. 模块: "
+                         << (modulePath.empty() ? L"未知" : modulePath) << L", 地址: 0x" << std::hex << handlerAddress
+                         << L" (GetModuleCodeSectionInfo失败)";
+                    context.AddEvidence(anti_cheat::INTEGRITY_API_HOOK, Utils::WideToString(woss.str()));
+                    return;
+                }
+            }
+            else
+            {
+                // GetModuleHandleExW失败本身就是可疑行为，作为证据上报
+                std::wostringstream woss;
+                woss << L"检测到VEH处理器被劫持到基线模块的非代码区. 模块: "
+                     << (modulePath.empty() ? L"未知" : modulePath) << L", 地址: 0x" << std::hex << handlerAddress
+                     << L" (GetModuleHandleExW失败)";
+                context.AddEvidence(anti_cheat::INTEGRITY_API_HOOK, Utils::WideToString(woss.str()));
+                return;
+            }
+            // 不在代码节内，或无法获取信息，视为劫持
+            std::wostringstream woss;
+            woss << L"检测到VEH处理器被劫持到基线模块的非代码区. 模块: " << (modulePath.empty() ? L"未知" : modulePath)
+                 << L", 地址: 0x" << std::hex << handlerAddress;
+            context.AddEvidence(anti_cheat::INTEGRITY_API_HOOK, Utils::WideToString(woss.str()));
+        }
+        else
+        {
+            // 地址不在基线建立的模块中，需要检查是否在白名单中
+            auto whitelistedVEHModules = context.GetWhitelistedVEHModules();
+            bool isWhitelisted = false;
+            // 如果modulePath不为空，说明地址在某个模块中（非基线模块）
+            if (!modulePath.empty() && whitelistedVEHModules)
+            {
+                // 修复：提取文件名进行比对，而不是完整路径
+                std::wstring modulePathLower = modulePath;
+                std::transform(modulePathLower.begin(), modulePathLower.end(), modulePathLower.begin(), ::towlower);
+
+                // 提取文件名（去除路径）
+                size_t lastSlash = modulePathLower.find_last_of(L"\\/");
+                std::wstring fileName =
+                        (lastSlash != std::wstring::npos) ? modulePathLower.substr(lastSlash + 1) : modulePathLower;
+
+                if (whitelistedVEHModules->count(fileName) > 0)
+                {
+                    isWhitelisted = true;
+                    LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR, "VEH处理器在白名单中: %s (文件名: %s)",
+                                Utils::WideToString(modulePath).c_str(), Utils::WideToString(fileName).c_str());
+                }
+            }
+
+            if (!isWhitelisted)
+            {
+                std::wostringstream woss;
+                if (!modulePath.empty())
+                {
+                    woss << L"检测到可疑的VEH Hook (Handler #" << index << L"). 来源: " << modulePath << L", 地址: 0x"
+                         << std::hex << handlerAddress;
+                }
+                else
+                {
+                    woss << L"检测到来自Shellcode的VEH Hook (Handler #" << index << L"). 地址: 0x" << std::hex
+                         << handlerAddress;
+                }
+                context.AddEvidence(anti_cheat::INTEGRITY_API_HOOK, Utils::WideToString(woss.str()));
+            }
+            else
+            {
+                // 白名单处理器，不记录到Metrics中
+                LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR, "VEH处理器在白名单中，跳过上报: %s",
+                            Utils::WideToString(modulePath).c_str());
+            }
+        }
+    }
+};
+
 }  // namespace Sensors
-
-// --- VirtualAlloc Hooking ---
-// 定义原始API函数指针类型
-typedef LPVOID(WINAPI *VirtualAlloc_t)(LPVOID lpAddress, SIZE_T dwSize, DWORD flAllocationType, DWORD flProtect);
-typedef LPVOID(WINAPI *VirtualAllocEx_t)(HANDLE hProcess, LPVOID lpAddress, SIZE_T dwSize, DWORD flAllocationType,
-                                         DWORD flProtect);
-typedef BOOL(WINAPI *VirtualProtect_t)(LPVOID lpAddress, SIZE_T dwSize, DWORD flNewProtect, PDWORD lpflOldProtect);
-typedef NTSTATUS(WINAPI *NtAllocateVirtualMemory_t)(HANDLE ProcessHandle, PVOID *BaseAddress, ULONG ZeroBits,
-                                                    PSIZE_T RegionSize, ULONG AllocationType, ULONG Protect);
-
-// 扩展API函数指针类型定义
-typedef LPVOID(WINAPI *HeapAlloc_t)(HANDLE hHeap, DWORD dwFlags, SIZE_T dwBytes);
-typedef LPVOID(WINAPI *MapViewOfFile_t)(HANDLE hFileMappingObject, DWORD dwDesiredAccess, DWORD dwFileOffsetHigh,
-                                        DWORD dwFileOffsetLow, SIZE_T dwNumberOfBytesToMap);
-typedef HMODULE(WINAPI *LoadLibraryW_t)(LPCWSTR lpLibFileName);
-typedef HMODULE(WINAPI *LoadLibraryA_t)(LPCSTR lpLibFileName);
-typedef BOOL(WINAPI *WriteProcessMemory_t)(HANDLE hProcess, LPVOID lpBaseAddress, LPCVOID lpBuffer, SIZE_T nSize,
-                                           SIZE_T *lpNumberOfBytesWritten);
-typedef NTSTATUS(WINAPI *NtWriteVirtualMemory_t)(HANDLE ProcessHandle, PVOID BaseAddress, PVOID Buffer,
-                                                 SIZE_T BufferSize, PSIZE_T NumberOfBytesWritten);
-typedef NTSTATUS(WINAPI *NtCreateThread_t)(PHANDLE ThreadHandle, ACCESS_MASK DesiredAccess,
-                                           POBJECT_ATTRIBUTES ObjectAttributes, HANDLE ProcessHandle,
-                                           PVOID StartRoutine, PVOID Argument, ULONG CreateFlags, PSIZE_T ZeroBits,
-                                           PSIZE_T StackSize, PSIZE_T MaximumStackSize,
-                                           PPS_ATTRIBUTE_LIST AttributeList);
-
-// 指向原始函数的"跳板"
-static VirtualAlloc_t pTrampolineVirtualAlloc = nullptr;
-static VirtualAllocEx_t pTrampolineVirtualAllocEx = nullptr;
-static VirtualProtect_t pTrampolineVirtualProtect = nullptr;
-static NtAllocateVirtualMemory_t pTrampolineNtAllocateVirtualMemory = nullptr;
-
-// 钩子函数实现已删除以解决性能问题
 
 CheatMonitor &CheatMonitor::GetInstance()
 {
     static CheatMonitor instance;
     return instance;
-}
-
-CheatMonitor::Pimpl::Pimpl()
-{
-    m_windowsVersion = GetWindowsVersion();  // 初始化时检测并缓存Windows版本
-    // 服务器开关，默认关闭，待配置下发开启
-    m_enableVehScan = false;
-    m_enableHandleScan = false;
 }
 
 CheatMonitor::CheatMonitor() : m_pimpl(std::make_unique<Pimpl>())
@@ -3780,13 +3458,10 @@ CheatMonitor::~CheatMonitor()
 
 bool CheatMonitor::Initialize()
 {
-    std::lock_guard<std::mutex> lock(m_initMutex);  // 增加互斥锁保护
     if (!m_pimpl)
         m_pimpl = std::make_unique<Pimpl>();
     if (m_pimpl->m_isSystemActive.load())
         return true;  // 已经初始化成功，直接返回true
-
-    m_pimpl->m_isShuttingDown = false;
 
     try
     {
@@ -3800,13 +3475,11 @@ bool CheatMonitor::Initialize()
     }
 
     m_pimpl->m_isSystemActive = true;
-    m_pimpl->m_metrics.init_success.fetch_add(1);
     return true;
 }
 
 void CheatMonitor::Shutdown()
 {
-    std::lock_guard<std::mutex> lock(m_initMutex);
     if (!m_pimpl || !m_pimpl->m_isSystemActive.load())
         return;
 
@@ -3814,10 +3487,6 @@ void CheatMonitor::Shutdown()
         OnPlayerLogout();
 
     m_pimpl->m_isSystemActive = false;
-    m_pimpl->m_cv.notify_one();
-    m_pimpl->m_isShuttingDown = true;
-
-    m_pimpl->m_cv.notify_all();
 
     if (m_pimpl->m_monitorThread.joinable())
         m_pimpl->m_monitorThread.join();
@@ -3826,82 +3495,67 @@ void CheatMonitor::Shutdown()
     m_pimpl.reset();
 }
 
-void CheatMonitor::Pimpl::HandleSensorException(const char *name, const std::string &exception_what)
+void CheatMonitor::OnPlayerLogin(uint32_t user_id, const std::string &user_name)
 {
-    m_metrics.sensor_exceptions.fetch_add(1);
-    AddEvidence(anti_cheat::RUNTIME_ERROR, std::string("重量级传感器C++异常: ") + name + ": " + exception_what);
-    int fails = ++m_sensorFailureCounts[name];
-    auto backoff = std::min<std::chrono::milliseconds>(std::chrono::milliseconds(200 * (1 << std::min(fails, 5))),
-                                                       std::chrono::milliseconds(15000));
-    m_sensorBackoffUntil[name] = std::chrono::steady_clock::now() + backoff;
-}
+    if (!m_pimpl || !m_pimpl->m_isSystemActive.load())
+        return;
 
-void CheatMonitor::Pimpl::HandleSensorTimeout(const char *name)
-{
-    m_metrics.sensor_timeouts.fetch_add(1);
-    AddEvidence(anti_cheat::RUNTIME_ERROR, std::string(name) + "超时中止。");
-    // 超预算：本tick不再继续更多重量级工作
-    int fails = ++m_sensorFailureCounts[name];
-    auto backoff = std::min<std::chrono::milliseconds>(std::chrono::milliseconds(200 * (1 << std::min(fails, 5))),
-                                                       std::chrono::milliseconds(20000));
-    m_sensorBackoffUntil[name] = std::chrono::steady_clock::now() + backoff;
-}
+    // 先登出上一个玩家，这会处理上一个会话的报告上传和状态清理
+    OnPlayerLogout();
 
-void CheatMonitor::Pimpl::ResetSensorFailure(const char *name)
-{
-    m_sensorFailureCounts[name] = 0;
-    m_sensorBackoffUntil.erase(name);
-}
+    // 为新玩家重置会话状态
+    m_pimpl->ResetSessionState();
 
-// 辅助结构和函数，避免在SEH中使用C++对象
-struct CallerValidationResult
-{
-    bool success = false;
-    HMODULE hModule = nullptr;
-    bool inCodeSection = false;
-    bool hasModulePath = false;
-    wchar_t modulePath[MAX_PATH] = {0};
-};
-
-static CallerValidationResult CheckCallerAddressSafe(PVOID caller_address)
-{
-    CallerValidationResult result;
-    __try
     {
-        HMODULE hModule = NULL;
-        if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                               (LPCWSTR)caller_address, &hModule) &&
-            hModule)
+        std::lock_guard<std::mutex> lock(m_pimpl->m_sessionMutex);
+        m_pimpl->m_currentUserId = user_id;
+        m_pimpl->m_currentUserName = user_name;
+    }
+
+    m_pimpl->m_hasServerConfig = false;  // 重置配置状态，等待服务器下发
+    m_pimpl->m_isSessionActive = true;
+
+    LOG_INFO_F(AntiCheatLogger::LogCategory::SYSTEM, "Player %s logged in. Session started.",
+               m_pimpl->m_currentUserName.c_str());
+
+    // 玩家登录时上报硬件信息，确保每个玩家的硬件信息都能统计到
+    m_pimpl->UploadHardwareReport();
+}
+
+void CheatMonitor::OnPlayerLogout()
+{
+    if (!m_pimpl || !m_pimpl->m_isSystemActive.load())
+        return;
+
+    m_pimpl->UploadEvidenceReport();
+    m_pimpl->UploadSensorExecutionStatsReport();
+
+    if (m_pimpl->m_isSessionActive.load())
+    {
+        LOG_INFO_F(AntiCheatLogger::LogCategory::SYSTEM, "Player %s logged out. Session ended.",
+                   m_pimpl->m_currentUserName.c_str());
+
         {
-            result.hModule = hModule;
-            result.success = true;
-            
-            PVOID codeBase = nullptr;
-            DWORD codeSize = 0;
-            if (GetCodeSectionInfo(hModule, codeBase, codeSize))
-            {
-                uintptr_t addr = reinterpret_cast<uintptr_t>(caller_address);
-                uintptr_t start = reinterpret_cast<uintptr_t>(codeBase);
-                uintptr_t end = start + codeSize;
-
-                if (addr >= start && addr < end)
-                {
-                    result.inCodeSection = true;
-                    
-                    // 获取模块路径
-                    if (GetModuleFileNameW(hModule, result.modulePath, MAX_PATH) > 0)
-                    {
-                        result.hasModulePath = true;
-                    }
-                }
-            }
+            std::lock_guard<std::mutex> lock(m_pimpl->m_sessionMutex);
+            m_pimpl->m_currentUserId = 0;        // 清理用户ID
+            m_pimpl->m_currentUserName.clear();  // 清理用户名
         }
+
+        m_pimpl->m_isSessionActive = false;
+        m_pimpl->m_hasServerConfig = false;  // 玩家登出，配置失效
     }
-    __except (EXCEPTION_EXECUTE_HANDLER)
+}
+
+void CheatMonitor::OnServerConfigUpdated()
+{
+    if (m_pimpl)
     {
-        result.success = false;
+        // 调用Pimpl的函数来处理配置更新的细节
+        m_pimpl->OnConfigUpdated();
+
+        m_pimpl->m_hasServerConfig = true;
+        // 配置更新完成，监控线程可以根据新配置开始扫描
     }
-    return result;
 }
 
 bool CheatMonitor::IsCallerLegitimate()
@@ -3912,9 +3566,9 @@ bool CheatMonitor::IsCallerLegitimate()
     }
 
     PVOID caller_address = _ReturnAddress();
-    
+
     // 先做基本的SEH保护检查
-    auto validationResult = CheckCallerAddressSafe(caller_address);
+    auto validationResult = SystemUtils::CheckCallerAddressSafe(caller_address);
     if (!validationResult.success)
     {
         return false;
@@ -3924,26 +3578,31 @@ bool CheatMonitor::IsCallerLegitimate()
     {
         // 地址在代码节内，现在检查模块是否在白名单中
         std::wstring modulePath(validationResult.modulePath);
-                        std::transform(modulePath.begin(), modulePath.end(), modulePath.begin(), ::towlower);
+        std::transform(modulePath.begin(), modulePath.end(), modulePath.begin(), ::towlower);
 
-                        std::lock_guard<std::mutex> lock(m_pimpl->m_modulePathsMutex);
-                        if (m_pimpl->m_legitimateModulePaths.count(modulePath) > 0)
-                        {
-                            return true;  // 合法：在白名单模块的代码节内
-                        }
-                    }
+        // m_legitimateModulePaths存储的是完整文件路径，直接比较即可
+        std::lock_guard<std::mutex> lock(m_pimpl->m_modulePathsMutex);
+        if (m_pimpl->m_legitimateModulePaths.count(modulePath) > 0)
+        {
+            return true;  // 合法：在白名单模块的代码节内
+        }
+    }
     else if (validationResult.hModule && !validationResult.inCodeSection)
-                {
-                    // 地址在已知模块中，但不在其代码节内，非常可疑
-                    std::wostringstream woss;
-                    woss << L"IsCallerLegitimate: 调用来自已知模块，但位于非代码节. 地址: 0x" << std::hex
-                         << caller_address;
-                    m_pimpl->AddEvidence(anti_cheat::RUNTIME_ILLEGAL_FUNCTION_CALL, Utils::WideToString(woss.str()));
+    {
+        // 地址在已知模块中，但不在其代码节内，非常可疑
+        std::wostringstream woss;
+        woss << L"IsCallerLegitimate: 调用来自已知模块，但位于非代码节. 地址: 0x" << std::hex << caller_address;
+        m_pimpl->AddEvidence(anti_cheat::RUNTIME_ILLEGAL_FUNCTION_CALL, Utils::WideToString(woss.str()));
         return false;
     }
 
     // 默认情况下，如果模块未找到或不在白名单中，则为非法调用
     return false;
+}
+
+CheatMonitor::Pimpl::Pimpl()
+{
+    m_windowsVersion = SystemUtils::GetWindowsVersion();  // 初始化时检测并缓存Windows版本
 }
 
 void CheatMonitor::Pimpl::InitializeSystem()
@@ -3954,19 +3613,22 @@ void CheatMonitor::Pimpl::InitializeSystem()
     // --- 传感器注册（基于权重精细化分级） ---
     // 创建所有传感器实例
     std::vector<std::unique_ptr<ISensor>> allSensors;
+    // 按重要程度从低到高注册传感器
+    // LIGHT WEIGHT (最低重要程度)
     allSensors.emplace_back(std::make_unique<Sensors::AdvancedAntiDebugSensor>());
-    allSensors.emplace_back(std::make_unique<Sensors::SystemIntegritySensor>());
+    allSensors.emplace_back(std::make_unique<Sensors::SystemCodeIntegritySensor>());
+
+    // MEDIUM WEIGHT (较低重要程度)
     allSensors.emplace_back(std::make_unique<Sensors::IatHookSensor>());
-    allSensors.emplace_back(std::make_unique<Sensors::SelfIntegritySensor>());
-    allSensors.emplace_back(std::make_unique<Sensors::EnvironmentSensor>());
-    allSensors.emplace_back(std::make_unique<Sensors::SuspiciousLaunchSensor>());
-    allSensors.emplace_back(std::make_unique<Sensors::MemoryScanSensor>());
+    allSensors.emplace_back(std::make_unique<Sensors::ProcessAndWindowMonitorSensor>());
+
+    // HEAVY WEIGHT (中等重要程度)
+    allSensors.emplace_back(std::make_unique<Sensors::ModuleIntegritySensor>());
     allSensors.emplace_back(std::make_unique<Sensors::ProcessHandleSensor>());
-    allSensors.emplace_back(std::make_unique<Sensors::HandleCorrelationSensor>());
-    allSensors.emplace_back(std::make_unique<Sensors::NewActivitySensor>());
-    allSensors.emplace_back(std::make_unique<Sensors::PrivateExecutableMemorySensor>());
-    allSensors.emplace_back(std::make_unique<Sensors::HiddenModuleSensor>());
-    allSensors.emplace_back(std::make_unique<Sensors::ThreadIntegritySensor>());
+    allSensors.emplace_back(std::make_unique<Sensors::ThreadAndModuleActivitySensor>());
+    allSensors.emplace_back(std::make_unique<Sensors::MemorySecuritySensor>());
+
+    // CRITICAL WEIGHT (最高重要程度)
     allSensors.emplace_back(std::make_unique<Sensors::VehHookSensor>());
 
     // 根据权重自动分类传感器
@@ -3977,29 +3639,24 @@ void CheatMonitor::Pimpl::InitializeSystem()
         {
             case SensorWeight::LIGHT:
             case SensorWeight::MEDIUM:
-                m_lightweight_sensors.emplace_back(std::move(sensor));
+                m_lightweightSensors.emplace_back(std::move(sensor));
                 break;
             case SensorWeight::HEAVY:
             case SensorWeight::CRITICAL:
-                m_heavyweight_sensors.emplace_back(std::move(sensor));
+                m_heavyweightSensors.emplace_back(std::move(sensor));
                 break;
         }
     }
 
     LOG_INFO_F(AntiCheatLogger::LogCategory::SYSTEM, "传感器注册完成: %zu轻量级, %zu重量级",
-               m_lightweight_sensors.size(), m_heavyweight_sensors.size());
-
-    // 为所有重量级传感器应用超时和退避策略
-    for (const auto &sensor : m_heavyweight_sensors)
-    {
-        // 在此处添加超时和退避逻辑
-    }
+               m_lightweightSensors.size(), m_heavyweightSensors.size());
 
     // --- 初始化 ---
     InitializeProcessBaseline();
     // HardenProcessAndThreads();
     CheckParentProcessAtStartup();
-    Sensor_DetectVirtualMachine();
+    DetectVirtualMachine();
+
     m_vehListAddress = FindVehListAddress();
     if (m_vehListAddress == 0)
     {
@@ -4024,9 +3681,9 @@ void CheatMonitor::Pimpl::InitializeProcessBaseline()
     {
         PVOID codeBase = nullptr;
         DWORD codeSize = 0;
-        if (GetCodeSectionInfo(m_hSelfModule, codeBase, codeSize))
+        if (SystemUtils::GetModuleCodeSectionInfo(m_hSelfModule, codeBase, codeSize))
         {
-            m_selfModuleBaselineHash = CalculateHash(static_cast<BYTE *>(codeBase), codeSize);
+            m_selfModuleBaselineHash = SystemUtils::CalculateFnv1aHash(static_cast<BYTE *>(codeBase), codeSize);
         }
         else
         {
@@ -4035,33 +3692,50 @@ void CheatMonitor::Pimpl::InitializeProcessBaseline()
     }
 
     // 1. 建立已知模块列表和路径白名单
+    std::vector<HMODULE> hMods(1024);  // 使用合理的默认值
+    DWORD cbNeeded;
+    if (EnumProcessModules(GetCurrentProcess(), hMods.data(), hMods.size() * sizeof(HMODULE), &cbNeeded))
     {
-        std::lock_guard<std::mutex> lock(m_modulePathsMutex);
-        m_legitimateModulePaths.clear();
-        std::vector<HMODULE> hMods(1024);
-        DWORD cbNeeded;
-        if (EnumProcessModules(GetCurrentProcess(), hMods.data(), hMods.size() * sizeof(HMODULE), &cbNeeded))
+        if (hMods.size() * sizeof(HMODULE) < cbNeeded)
         {
-            if (hMods.size() * sizeof(HMODULE) < cbNeeded)
+            hMods.resize(cbNeeded / sizeof(HMODULE));
+            EnumProcessModules(GetCurrentProcess(), hMods.data(), hMods.size() * sizeof(HMODULE), &cbNeeded);
+        }
+
+        // 先收集所有数据，最后一次性加锁更新
+        std::vector<std::wstring> modulePaths;
+        std::set<HMODULE> tempKnownModules;
+        for (unsigned int i = 0; i < (cbNeeded / sizeof(HMODULE)); i++)
+        {
+            tempKnownModules.insert(hMods[i]);
+            wchar_t szModName[MAX_PATH];
+            if (GetModuleFileNameW(hMods[i], szModName, MAX_PATH))
             {
-                hMods.resize(cbNeeded / sizeof(HMODULE));
-                EnumProcessModules(GetCurrentProcess(), hMods.data(), hMods.size() * sizeof(HMODULE), &cbNeeded);
-            }
-            for (unsigned int i = 0; i < (cbNeeded / sizeof(HMODULE)); i++)
-            {
-                m_knownModules.insert(hMods[i]);
-                wchar_t szModName[MAX_PATH];
-                if (GetModuleFileNameW(hMods[i], szModName, MAX_PATH))
-                {
-                    std::wstring path(szModName);
-                    std::transform(path.begin(), path.end(), path.begin(), ::towlower);
-                    m_legitimateModulePaths.insert(path);
-                }
+                std::wstring path(szModName);
+                std::transform(path.begin(), path.end(), path.begin(), ::towlower);
+                modulePaths.push_back(path);
             }
         }
-    }  // Mutex scope ends
+
+        // 一次性加锁更新m_knownModules
+        {
+            std::lock_guard<std::mutex> lock(m_baselineMutex);
+            m_knownModules = std::move(tempKnownModules);
+        }
+
+        // 最小化锁范围：只保护最终的集合更新
+        {
+            std::lock_guard<std::mutex> lock(m_modulePathsMutex);
+            m_legitimateModulePaths.clear();
+            for (const auto &path : modulePaths)
+            {
+                m_legitimateModulePaths.insert(path);
+            }
+        }
+    }
 
     // 2. 建立已知线程列表
+    std::vector<DWORD> threadIds;
     HANDLE hThreadSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
     if (hThreadSnapshot != INVALID_HANDLE_VALUE)
     {
@@ -4073,29 +3747,42 @@ void CheatMonitor::Pimpl::InitializeProcessBaseline()
             {
                 if (te.th32OwnerProcessID == GetCurrentProcessId())
                 {
-                    m_knownThreadIds.insert(te.th32ThreadID);
+                    threadIds.push_back(te.th32ThreadID);
                 }
             } while (Thread32Next(hThreadSnapshot, &te));
         }
         CloseHandle(hThreadSnapshot);
     }
 
+    // 一次性更新基线数据
+    {
+        std::lock_guard<std::mutex> lock(m_baselineMutex);
+        for (DWORD threadId : threadIds)
+        {
+            m_knownThreadIds.insert(threadId);
+        }
+    }
+
     // 3. 建立关键模块代码节的哈希基线
     m_moduleBaselineHashes.clear();
-    for (const auto &hModule : m_knownModules)
     {
-        if (hModule == m_hSelfModule)
-            continue;
-        wchar_t modulePath_w[MAX_PATH];
-        if (GetModuleFileNameW(hModule, modulePath_w, MAX_PATH) == 0)
-            continue;
-        std::wstring modulePath(modulePath_w);
-
-        PVOID codeBase = nullptr;
-        DWORD codeSize = 0;
-        if (GetCodeSectionInfo(hModule, codeBase, codeSize))
+        std::lock_guard<std::mutex> lock(m_baselineMutex);
+        for (const auto &hModule : m_knownModules)
         {
-            m_moduleBaselineHashes[modulePath] = CalculateHash(static_cast<BYTE *>(codeBase), codeSize);
+            if (hModule == m_hSelfModule)
+                continue;
+            wchar_t modulePath_w[MAX_PATH];
+            if (GetModuleFileNameW(hModule, modulePath_w, MAX_PATH) == 0)
+                continue;
+            std::wstring modulePath(modulePath_w);
+
+            PVOID codeBase = nullptr;
+            DWORD codeSize = 0;
+            if (SystemUtils::GetModuleCodeSectionInfo(hModule, codeBase, codeSize))
+            {
+                m_moduleBaselineHashes[modulePath] =
+                        SystemUtils::CalculateFnv1aHash(static_cast<BYTE *>(codeBase), codeSize);
+            }
         }
     }
 
@@ -4131,7 +3818,8 @@ void CheatMonitor::Pimpl::InitializeProcessBaseline()
                                               (uint8_t *)&func_ptr + sizeof(func_ptr));
                             pThunk++;
                         }
-                        m_iatBaselineHashes[dllName] = CalculateHash(iat_hashes.data(), iat_hashes.size());
+                        m_iatBaselineHashes[dllName] =
+                                SystemUtils::CalculateFnv1aHash(iat_hashes.data(), iat_hashes.size());
                         pCurrentDesc++;
                     }
                 }
@@ -4147,171 +3835,141 @@ void CheatMonitor::Pimpl::InitializeProcessBaseline()
     m_processBaselineEstablished = true;
 }
 
+void CheatMonitor::Pimpl::MonitorLoop()
+{
+    InitializeSystem();
+
+    // 初始化扫描时间
+    auto next_light_scan = std::chrono::steady_clock::now();
+    auto next_heavy_scan = std::chrono::steady_clock::now();
+    auto next_report_upload = std::chrono::steady_clock::now();
+    auto next_sensor_stats_upload = std::chrono::steady_clock::now();
+
+    while (m_isSystemActive.load())
+    {
+        // 从CheatConfigManager获取动态扫描间隔
+        const auto base_interval = std::chrono::seconds(CheatConfigManager::GetInstance().GetBaseScanInterval());
+        // 使用简单的sleep替代条件变量，因为这里没有复杂的等待条件
+        std::this_thread::sleep_for(base_interval);
+
+        // 核心逻辑：只有在会话激活并且已收到服务器配置后才执行扫描
+        if (!m_isSessionActive.load() || !m_hasServerConfig.load())
+        {
+            continue;
+        }
+
+        // 在循环开始时定义now变量，确保在整个循环迭代中都有效
+        const auto now = std::chrono::steady_clock::now();
+
+        // === 轻量级传感器扫描 (45秒间隔) ===
+        if (now >= next_light_scan)
+        {
+            ExecuteLightweightSensors();
+            next_light_scan = now + GetLightScanInterval();
+        }
+
+        // === 重量级传感器扫描 (8分钟间隔) ===
+        if (now >= next_heavy_scan)
+        {
+            ExecuteHeavyweightSensors();
+            next_heavy_scan = now + GetHeavyScanInterval();
+        }
+
+        // === 报告上传调度 ===
+        if (now >= next_report_upload)
+        {
+            UploadEvidenceReport();
+            next_report_upload =
+                    now + std::chrono::minutes(CheatConfigManager::GetInstance().GetReportUploadIntervalMinutes());
+        }
+
+        // === 统一传感器统计上报调度 (2小时间隔) ===
+        // 包含重量级和轻量级传感器的所有统计信息
+        if (now >= next_sensor_stats_upload)
+        {
+            UploadSensorExecutionStatsReport();
+            next_sensor_stats_upload =
+                    now + std::chrono::minutes(CheatConfigManager::GetInstance().GetReportUploadIntervalMinutes());
+        }
+
+        // 随机抖动，避免可预测的扫描周期
+        AddRandomJitter();
+    }
+}
+
 void CheatMonitor::Pimpl::ResetSessionState()
 {
-    std::lock_guard<std::mutex> lock(m_sessionMutex);
-    m_currentUserId = 0;
-    m_currentUserName.clear();
-    m_uniqueEvidence.clear();
-    m_evidences.clear();
-    m_lastReported.clear();
-    m_reportedIllegalCallSources.clear();
-    m_suspiciousHandleHolders.clear();
-    m_knownHarmfulProcesses.clear();
-    m_evidenceOverflowed = false;
-}
-
-void CheatMonitor::OnPlayerLogin(uint32_t user_id, const std::string &user_name)
-{
-    if (!m_pimpl || !m_pimpl->m_isSystemActive.load())
-        return;
-    // 先登出上一个玩家，这会处理上一个会话的报告上传和状态清理
-    OnPlayerLogout();
-
-    // 为新玩家重置会话状态
-    m_pimpl->ResetSessionState();
-
+    // 重置会话状态变量（受m_sessionMutex保护）
     {
-        std::lock_guard<std::mutex> lock(m_pimpl->m_sessionMutex);
-        m_pimpl->m_currentUserId = user_id;
-        m_pimpl->m_currentUserName = user_name;
-        m_pimpl->m_hasServerConfig = false;  // 重置配置状态，等待服务器下发
-        m_pimpl->m_isSessionActive = true;
+        std::lock_guard<std::mutex> lock(m_sessionMutex);
+        m_currentUserId = 0;
+        m_currentUserName.clear();
+        m_uniqueEvidence.clear();
+        m_evidences.clear();
+        m_lastReported.clear();
+        m_evidenceOverflowed = false;
     }
-    
-    // 玩家登录时上报硬件信息，确保每个玩家的硬件信息都能统计到
-    m_pimpl->UploadHardwareReport();
-    
-    m_pimpl->m_cv.notify_one();
-}
 
-void CheatMonitor::OnPlayerLogout()
-{
-    if (!m_pimpl || !m_pimpl->m_isSystemActive.load())
-        return;
-
+    // 重置统一传感器统计（受m_sensorStatsMutex保护）
     {
-        std::lock_guard<std::mutex> lock(m_pimpl->m_sessionMutex);
-        if (m_pimpl->m_isSessionActive.load())
-        {
-            //  如果当前会话有任何证据，则在会话结束时强制上传一次报告
-            if (!m_pimpl->m_evidences.empty())
-            {
-                m_pimpl->UploadEvidenceReport();
-            }
-            
-            // 会话结束时也上传最终的遥测数据
-            m_pimpl->UploadTelemetryReport();
-            m_pimpl->m_isSessionActive = false;
-            m_pimpl->m_hasServerConfig = false;  // 玩家登出，配置失效
-            LOG_INFO_F(AntiCheatLogger::LogCategory::SYSTEM, "Player %s logged out. Session ended.",
-                       m_pimpl->m_currentUserName.c_str());
-        }
+        std::lock_guard<std::mutex> lock(m_sensorStatsMutex);
+        m_sensorExecutionStats.clear();
     }
-}
 
-void CheatMonitor::SetGameWindow(void *hwnd)
-{
-    if (m_pimpl)
+    // 重置基线数据（受m_baselineMutex保护）
     {
-        m_pimpl->m_hGameWindow = (HWND)hwnd;
+        std::lock_guard<std::mutex> lock(m_baselineMutex);
+        m_knownThreadIds.clear();
+        m_knownModules.clear();
     }
-}
 
-void CheatMonitor::OnServerConfigUpdated()
-{
-    if (m_pimpl)
-    {
-        // 调用Pimpl的函数来处理配置更新的细节
-        m_pimpl->OnConfigUpdated();
-
-        m_pimpl->m_hasServerConfig = true;
-        // 立即唤醒监控线程，以便它可以根据新配置开始扫描
-        m_pimpl->m_cv.notify_one();
-    }
+    LOG_INFO(AntiCheatLogger::LogCategory::SYSTEM, "Session state reset completed");
 }
 
 void CheatMonitor::Pimpl::OnConfigUpdated()
 {
     // 获取配置信息
-    anti_cheat::RolloutGroup rolloutGroup = CheatConfigManager::GetInstance().GetRolloutGroupEnum();
-    std::string rolloutGroupName = CheatConfigManager::GetInstance().GetRolloutGroupName();
-    anti_cheat::OsMinimum requiredMinOs = CheatConfigManager::GetInstance().GetRequiredMinOs();  // 基于rollout_group_enum推导
+    std::string osVersionName = CheatConfigManager::GetInstance().GetMinOsVersionName();
+    anti_cheat::OsVersion requiredOsVersion = CheatConfigManager::GetInstance().GetMinOsVersion();
 
-    // === 第一步：版本门控检查 ===
     // 使用统一的IsCurrentOsSupported()方法检查版本兼容性
     const bool osVersionSupported = IsCurrentOsSupported();
-    
-    // === 第二步：基于版本兼容性设置基础功能 ===
-    bool enableBasicFeatures = osVersionSupported;
-    bool enableVehScan = false;
-    bool enableHandleScan = false;
 
-    if (!enableBasicFeatures) {
-        // 版本不兼容，所有功能禁用
-        LOG_WARNING_F(AntiCheatLogger::LogCategory::SYSTEM,
-                     "OS版本不兼容: 当前OS=%d, rollout_group要求=%d, 所有功能已禁用",
-                     (int)m_windowsVersion, (int)requiredMinOs);
-    } else {
-        // === 第二步：版本兼容后，直接从CheatConfigManager获取灰度分组配置 ===
-        // 注意：版本检查已在IsCurrentOsSupported()中完成，这里无需重复检查
-        enableVehScan = CheatConfigManager::GetInstance().IsVehScanEnabled();
-        enableHandleScan = CheatConfigManager::GetInstance().IsHandleScanEnabled();
-    }
-
-    // === 第四步：应用最终的传感器开关状态 ===
-    m_enableVehScan = enableBasicFeatures && enableVehScan;
-    m_enableHandleScan = enableBasicFeatures && enableHandleScan;
-
-    // === 详细日志记录 ===
-    LOG_INFO_F(AntiCheatLogger::LogCategory::SYSTEM, 
-               "OS版本门控结果: 当前OS=%d, rollout_group推导min_os=%d, 版本兼容=%s",
-               (int)m_windowsVersion, (int)requiredMinOs, osVersionSupported ? "是" : "否");
-               
-    LOG_INFO_F(AntiCheatLogger::LogCategory::SYSTEM, 
-               "灰度分组配置: %s, 基础功能=%s, VEH扫描=%s, Handle扫描=%s",
-               rolloutGroupName.c_str(),
-               enableBasicFeatures ? "启用" : "禁用",
-               m_enableVehScan ? "启用" : "禁用",
-               m_enableHandleScan ? "启用" : "禁用");
-
-    // 如果版本不兼容，记录为运行时错误
-    if (!osVersionSupported)
-    {
-        AddEvidence(anti_cheat::RUNTIME_ERROR,
-                    "客户端OS版本低于配置最低要求，反作弊功能已自动禁用以确保稳定性。");
-    }
+    LOG_INFO_F(AntiCheatLogger::LogCategory::SYSTEM, "OS版本门控结果: 当前OS=%d, 配置要求min_os=%d, 版本兼容=%s",
+               (int)m_windowsVersion, (int)requiredOsVersion, osVersionSupported ? "是" : "否");
 }
 
 bool CheatMonitor::Pimpl::IsCurrentOsSupported() const
 {
-    anti_cheat::OsMinimum requiredMinOs = CheatConfigManager::GetInstance().GetRequiredMinOs();
-    
-    switch (requiredMinOs) {
-            case anti_cheat::OS_ANY:
-                return true;
-            case anti_cheat::OS_WIN7_SP1:
-                return m_windowsVersion == Win_Vista_Win7 || m_windowsVersion == Win_8_Win81 ||
-                       m_windowsVersion == Win_10 || m_windowsVersion == Win_11;
-            case anti_cheat::OS_WIN8:
-                return m_windowsVersion == Win_8_Win81 || m_windowsVersion == Win_10 || m_windowsVersion == Win_11;
-            case anti_cheat::OS_WIN10:
-                return m_windowsVersion == Win_10 || m_windowsVersion == Win_11;
-            case anti_cheat::OS_WIN11:
-                return m_windowsVersion == Win_11;
-            default:
-                return false;
+    anti_cheat::OsVersion requiredOsVersion = CheatConfigManager::GetInstance().GetMinOsVersion();
+
+    switch (requiredOsVersion)
+    {
+        case anti_cheat::OS_ANY:
+            return true;
+        case anti_cheat::OS_WIN_XP:
+            return m_windowsVersion == SystemUtils::WindowsVersion::Win_XP ||
+                   m_windowsVersion == SystemUtils::WindowsVersion::Win_Vista_Win7 ||
+                   m_windowsVersion == SystemUtils::WindowsVersion::Win_8_Win81 ||
+                   m_windowsVersion == SystemUtils::WindowsVersion::Win_10 ||
+                   m_windowsVersion == SystemUtils::WindowsVersion::Win_11;
+        case anti_cheat::OS_WIN7_SP1:
+            return m_windowsVersion == SystemUtils::WindowsVersion::Win_Vista_Win7 ||
+                   m_windowsVersion == SystemUtils::WindowsVersion::Win_8_Win81 ||
+                   m_windowsVersion == SystemUtils::WindowsVersion::Win_10 ||
+                   m_windowsVersion == SystemUtils::WindowsVersion::Win_11;
+        case anti_cheat::OS_WIN10:
+            return m_windowsVersion == SystemUtils::WindowsVersion::Win_10 ||
+                   m_windowsVersion == SystemUtils::WindowsVersion::Win_11;
+        default:
+            return false;
     }
 }
 
 void CheatMonitor::Pimpl::AddEvidence(anti_cheat::CheatCategory category, const std::string &description)
 {
     std::lock_guard<std::mutex> lock(m_sessionMutex);
-    AddEvidenceInternal(category, description);
-}
 
-void CheatMonitor::Pimpl::AddEvidenceInternal(anti_cheat::CheatCategory category, const std::string &description)
-{
     if (m_evidenceOverflowed)
         return;
 
@@ -4337,6 +3995,7 @@ void CheatMonitor::Pimpl::AddEvidenceInternal(anti_cheat::CheatCategory category
 
     // 检查上报冷却时间
     const auto now = std::chrono::steady_clock::now();
+
     auto it = m_lastReported.find({m_currentUserId, category});
     if (it != m_lastReported.end())
     {
@@ -4360,31 +4019,8 @@ void CheatMonitor::Pimpl::AddEvidenceInternal(anti_cheat::CheatCategory category
     m_lastReported[{m_currentUserId, category}] = now;  // 更新上报时间
 
     LOG_WARNING_F(AntiCheatLogger::LogCategory::SECURITY, "Evidence added: %s", description.c_str());
-
-    // 简单计数：检测类证据计入cheats_detected
-    if (category != anti_cheat::SYSTEM_INITIALIZED && category != anti_cheat::SYSTEM_FINGERPRINT &&
-        category != anti_cheat::RUNTIME_ERROR)
-    {
-        m_metrics.cheats_detected.fetch_add(1);
-    }
 }
 
-bool CheatMonitor::Pimpl::HasEvidenceOfType(anti_cheat::CheatCategory category)
-{
-    std::lock_guard<std::mutex> lock(m_sessionMutex);
-    for (const auto &evidence : m_evidences)
-    {
-        if (evidence.category() == category)
-        {
-            return true;
-        }
-    }
-    return false;
-}
-
-
-
-// 硬件信息上报 - 通常在初始化或硬件变化时调用
 void CheatMonitor::Pimpl::UploadHardwareReport()
 {
     if (!m_hwCollector)
@@ -4393,40 +4029,35 @@ void CheatMonitor::Pimpl::UploadHardwareReport()
     auto fp = m_hwCollector->ConsumeFingerprint();
     if (!fp)
         return;
-    
+
     anti_cheat::Report report;
     report.set_type(anti_cheat::REPORT_HARDWARE);
-    
+
     auto hardware_report = report.mutable_hardware();
     hardware_report->set_report_id(Utils::GenerateUuid());
     hardware_report->set_report_timestamp_ms(
-        std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::system_clock::now().time_since_epoch()).count());
+            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
+                    .count());
     *hardware_report->mutable_fingerprint() = *fp;
-    
-    // 获取灰度分组信息（使用新的分组名称）
-    std::string rollout_group = CheatConfigManager::GetInstance().GetRolloutGroupName();
-    if (!rollout_group.empty()) {
-        hardware_report->set_rollout_group(rollout_group);
-    }
-    
+
     SendReport(report);
 }
 
-// 作弊证据上报 - 当累积了足够证据时调用
 void CheatMonitor::Pimpl::UploadEvidenceReport()
 {
+    std::lock_guard<std::mutex> lock(m_sessionMutex);
+
     if (m_evidences.empty())
         return;
-    
+
     anti_cheat::Report report;
     report.set_type(anti_cheat::REPORT_EVIDENCE);
-    
+
     auto evidence_report = report.mutable_evidence();
     evidence_report->set_report_id(Utils::GenerateUuid());
     evidence_report->set_report_timestamp_ms(
-        std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::system_clock::now().time_since_epoch()).count());
+            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
+                    .count());
 
     // 移动证据到报告中，并清空本地缓存
     for (auto &evidence : m_evidences)
@@ -4439,46 +4070,105 @@ void CheatMonitor::Pimpl::UploadEvidenceReport()
     SendReport(report);
 }
 
-// 遥测数据上报 - 定期或达到阈值时调用
-void CheatMonitor::Pimpl::UploadTelemetryReport()
+void CheatMonitor::Pimpl::UploadTelemetryMetricsReport(const anti_cheat::TelemetryMetrics &metrics)
 {
     anti_cheat::Report report;
     report.set_type(anti_cheat::REPORT_TELEMETRY);
-    
+
     auto telemetry_report = report.mutable_telemetry();
     telemetry_report->set_report_id(Utils::GenerateUuid());
     telemetry_report->set_report_timestamp_ms(
-        std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::system_clock::now().time_since_epoch()).count());
-    
-    // 构建遥测指标
-    anti_cheat::TelemetryMetrics tm;
-    tm.set_init_success((uint64_t)m_metrics.init_success.load());
-    tm.set_init_fail((uint64_t)m_metrics.init_fail.load());
-    tm.set_veh_exceptions((uint64_t)m_metrics.veh_exceptions.load());
-    tm.set_sensor_exceptions((uint64_t)m_metrics.sensor_exceptions.load());
-    tm.set_sensor_timeouts((uint64_t)m_metrics.sensor_timeouts.load());
-    tm.set_cheats_detected((uint64_t)m_metrics.cheats_detected.load());
-    
-    // 构建性能遥测（低频+抖动发送）
-    m_reportUploadCount++;
-    bool sendPerfThisTime = (m_reportUploadCount % m_perfEveryNReports) == 0;
-    if (sendPerfThisTime && m_perfJitter(m_rng) < 20)
-    {
-        sendPerfThisTime = false;
-    }
-    FillPerfTelemetry(tm, sendPerfThisTime);
-    
-    *telemetry_report->mutable_metrics() = tm;
-
-    // 控制台打印本地快照（便于本地soak测试）
-    LogPerfTelemetry();
+            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
+                    .count());
+    *telemetry_report->mutable_metrics() = metrics;
 
     SendReport(report);
 }
 
-// 统一的发送方法
-void CheatMonitor::Pimpl::SendReport(const anti_cheat::Report& report)
+void CheatMonitor::Pimpl::UploadSensorExecutionStatsReport()
+{
+    // 创建TelemetryMetrics并填充统一传感器统计数据
+    anti_cheat::TelemetryMetrics metrics;
+    {
+        std::lock_guard<std::mutex> lock(m_sensorStatsMutex);
+
+        // 填充每个传感器的详细执行统计
+        for (const auto &kv : m_sensorExecutionStats)
+        {
+            const std::string &name = kv.first;
+            const auto &stats = kv.second;
+
+            // 添加到metrics中
+            (*metrics.mutable_sensor_execution_stats())[name] = stats;
+        }
+
+        // 清空统计数据，准备下一轮统计
+        m_sensorExecutionStats.clear();
+    }
+
+    // 汇总上报不需要设置基础信息字段，只包含传感器统计数据
+
+    UploadTelemetryMetricsReport(metrics);
+}
+
+void CheatMonitor::Pimpl::RecordSensorExecutionStats(const char *name, int duration_ms, SensorExecutionResult result,
+                                                     anti_cheat::SensorFailureReason failureReason)
+{
+    std::lock_guard<std::mutex> lock(m_sensorStatsMutex);
+
+    auto &stats = m_sensorExecutionStats[name];
+
+    // 更新执行次数和时间统计
+    switch (result)
+    {
+        case SensorExecutionResult::SUCCESS:
+            stats.set_success_count(stats.success_count() + 1);
+            stats.set_total_success_time_ms(stats.total_success_time_ms() + duration_ms);
+            if (stats.success_count() > 0)
+            {
+                stats.set_avg_success_time_ms(stats.total_success_time_ms() / stats.success_count());
+            }
+            // 更新最大/最小成功执行时间
+            if (stats.max_success_time_ms() == 0 || duration_ms > stats.max_success_time_ms())
+            {
+                stats.set_max_success_time_ms(duration_ms);
+            }
+            if (stats.min_success_time_ms() == 0 || duration_ms < stats.min_success_time_ms())
+            {
+                stats.set_min_success_time_ms(duration_ms);
+            }
+            break;
+        case SensorExecutionResult::FAILURE:
+            stats.set_failure_count(stats.failure_count() + 1);
+            stats.set_total_failure_time_ms(stats.total_failure_time_ms() + duration_ms);
+            if (stats.failure_count() > 0)
+            {
+                stats.set_avg_failure_time_ms(stats.total_failure_time_ms() / stats.failure_count());
+            }
+            // 更新最大/最小失败执行时间
+            if (stats.max_failure_time_ms() == 0 || duration_ms > stats.max_failure_time_ms())
+            {
+                stats.set_max_failure_time_ms(duration_ms);
+            }
+            if (stats.min_failure_time_ms() == 0 || duration_ms < stats.min_failure_time_ms())
+            {
+                stats.set_min_failure_time_ms(duration_ms);
+            }
+            break;
+        case SensorExecutionResult::TIMEOUT:
+            stats.set_timeout_count(stats.timeout_count() + 1);
+            // 超时统计只记录次数，不记录时间
+            break;
+    }
+
+    // 记录失败原因（使用enum索引）
+    if (result == SensorExecutionResult::FAILURE && failureReason != anti_cheat::UNKNOWN_FAILURE)
+    {
+        (*stats.mutable_failure_reasons())[static_cast<int32>(failureReason)]++;
+    }
+}
+
+void CheatMonitor::Pimpl::SendReport(const anti_cheat::Report &report)
 {
     std::string serialized_report;
     if (!report.SerializeToString(&serialized_report))
@@ -4486,275 +4176,43 @@ void CheatMonitor::Pimpl::SendReport(const anti_cheat::Report& report)
         LOG_WARNING_F(AntiCheatLogger::LogCategory::SYSTEM, "Failed to serialize report");
         return;
     }
-    
-    const char* report_type_name = "Unknown";
+
+    const char *report_type_name = "Unknown";
     size_t content_size = 0;
-    
-    switch (report.type()) {
+
+    switch (report.type())
+    {
         case anti_cheat::REPORT_HARDWARE:
             report_type_name = "Hardware";
-            if (report.has_hardware()) {
-                content_size = 1; // 1个硬件指纹
+            if (report.has_hardware())
+            {
+                content_size = 1;  // 1个硬件指纹
             }
             break;
         case anti_cheat::REPORT_EVIDENCE:
             report_type_name = "Evidence";
-            if (report.has_evidence()) {
+            if (report.has_evidence())
+            {
                 content_size = report.evidence().evidences_size();
             }
             break;
         case anti_cheat::REPORT_TELEMETRY:
             report_type_name = "Telemetry";
-            if (report.has_telemetry()) {
-                content_size = 1; // 1个遥测包
+            if (report.has_telemetry())
+            {
+                content_size = 1;  // 1个遥测包
             }
             break;
         default:
             break;
     }
-    
-    LOG_INFO_F(AntiCheatLogger::LogCategory::SYSTEM, 
-               "Uploading %s report... Size: %zu bytes, content items: %zu",
+
+    LOG_INFO_F(AntiCheatLogger::LogCategory::SYSTEM, "Uploading %s report... Size: %zu bytes, content items: %zu",
                report_type_name, serialized_report.length(), content_size);
-    
+
     // TODO: 将 report 序列化并通过网络发送到服务器
     // HttpSend(server_url, serialized_report);
 }
-
-void CheatMonitor::Pimpl::MonitorLoop()
-{
-    InitializeSystem();
-
-    auto next_heavy_scan = std::chrono::steady_clock::now();
-    auto next_report_upload = std::chrono::steady_clock::now();
-
-    while (m_isSystemActive.load())
-    {
-        {
-            std::unique_lock<std::mutex> lock(m_cvMutex);
-            // 从CheatConfigManager获取动态扫描间隔
-            const auto base_interval = std::chrono::seconds(CheatConfigManager::GetInstance().GetBaseScanInterval());
-            m_cv.wait_for(lock, base_interval, [this] { return !m_isSystemActive.load(); });
-        }
-
-        if (!m_isSystemActive.load())
-            break;
-
-        // 在循环开始时定义now变量，确保在整个循环迭代中都有效
-        const auto now = std::chrono::steady_clock::now();
-
-        // 核心逻辑：只有在会话激活并且已收到服务器配置后才执行扫描
-        if (!m_isSessionActive.load() || !m_hasServerConfig.load())
-        {
-            continue;
-        }
-
-        // --- 轻量级扫描调度 ---
-        if (!m_lightweight_sensors.empty())
-        {
-            m_lightSensorIndex %= m_lightweight_sensors.size();
-            const auto &sensor = m_lightweight_sensors[m_lightSensorIndex];
-            // 服务器开关：跳过特定传感器
-            const char *name = sensor->GetName();
-            if ((strcmp(name, "VehHookSensor") == 0) &&
-                !(m_enableVehScan && IsCurrentOsSupported()))
-            {
-                m_lightSensorIndex++;
-                goto AFTER_LIGHT;  // 跳过执行
-            }
-            // Watchdog/backoff: 跳过处于退避期的传感器
-            {
-                auto itBackoff = m_sensorBackoffUntil.find(name);
-                if (itBackoff != m_sensorBackoffUntil.end() && std::chrono::steady_clock::now() < itBackoff->second)
-                {
-                    m_lightSensorIndex++;
-                    goto AFTER_LIGHT;
-                }
-            }
-            ExecuteLightweightSensorSafe(sensor.get(), name);
-            m_lightSensorIndex++;
-        }
-    AFTER_LIGHT:
-
-        // --- 重量级扫描调度 ---
-        if (now >= next_heavy_scan)
-        {
-            if (!m_heavyweight_sensors.empty())
-            {
-                m_heavySensorIndex %= m_heavyweight_sensors.size();
-                const auto &sensor = m_heavyweight_sensors[m_heavySensorIndex];
-                const char *name = sensor->GetName();
-
-                // 服务器开关：跳过特定传感器
-                if ((strcmp(name, "ProcessHandleSensor") == 0) &&
-                    !(m_enableHandleScan && IsCurrentOsSupported()))
-                {
-                    m_heavySensorIndex++;
-                    goto AFTER_HEAVY;  // 跳过执行
-                }
-
-                // Watchdog/backoff: 跳过处于退避期的传感器
-                auto itBackoff = m_sensorBackoffUntil.find(name);
-                if (itBackoff != m_sensorBackoffUntil.end() && std::chrono::steady_clock::now() < itBackoff->second)
-                {
-                    m_heavySensorIndex++;
-                    goto AFTER_HEAVY;
-                }
-
-                // 生产环境修复：补全重量级传感器性能记录
-                const auto t0 = std::chrono::steady_clock::now();
-                bool executionCompleted = false;
-
-                executionCompleted = ExecuteHeavyweightSensorSafe(sensor.get(), name);
-
-                // 生产环境修复：记录重量级传感器性能数据（无论成功或异常）
-                const auto t1 = std::chrono::steady_clock::now();
-                const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
-                RecordSensorRuntime(name, (int)elapsed_ms);
-
-                // 检查是否超时
-                if (elapsed_ms > CheatConfigManager::GetInstance().GetHeavyScanBudgetMs())
-                {
-                    m_metrics.sensor_timeouts.fetch_add(1);
-                    AddEvidence(anti_cheat::RUNTIME_ERROR, std::string(name) + "超时中止。");
-
-                    int fails = ++m_sensorFailureCounts[name];
-                    auto backoff = std::min<std::chrono::milliseconds>(
-                            std::chrono::milliseconds(500 * (1 << std::min(fails, 5))),
-                            std::chrono::milliseconds(60000));
-                    m_sensorBackoffUntil[name] = std::chrono::steady_clock::now() + backoff;
-                }
-                else if (executionCompleted)
-                {
-                    // 成功执行：清理失败计数和退避
-                    m_sensorFailureCounts[name] = 0;
-                    m_sensorBackoffUntil.erase(name);
-                }
-                m_heavySensorIndex++;
-            }
-        }
-        // 从CheatConfigManager获取动态扫描间隔
-        next_heavy_scan = now + std::chrono::minutes(CheatConfigManager::GetInstance().GetHeavyScanIntervalMinutes());
-    }
-AFTER_HEAVY:
-
-    // --- 报告上传调度 ---
-    // 重新获取当前时间，确保变量可用
-    const auto now_upload = std::chrono::steady_clock::now();
-    if (now_upload >= next_report_upload)
-    {
-        std::lock_guard<std::mutex> lock(m_sessionMutex);
-        
-        // 使用新的分类上报策略
-        // 1. 优先上报积累的作弊证据
-        if (!m_evidences.empty()) {
-            UploadEvidenceReport();
-        }
-        
-        // 2. 定期上报遥测数据（每5次周期上报一次）
-        static int telemetry_counter = 0;
-        if (++telemetry_counter >= 5) {
-            UploadTelemetryReport();
-            telemetry_counter = 0;
-        }
-           
-        // 从CheatConfigManager获取动态上传间隔
-        next_report_upload =
-                now_upload + std::chrono::minutes(CheatConfigManager::GetInstance().GetReportUploadIntervalMinutes());
-    }
-
-    // 增加随机抖动，避免可预测的扫描周期
-    std::uniform_int_distribution<long> jitter_dist(0, CheatConfigManager::GetInstance().GetJitterMilliseconds());
-    std::this_thread::sleep_for(std::chrono::milliseconds(jitter_dist(m_rng)));
-}
-
-void CheatMonitor::Pimpl::ExecuteLightweightSensorSafe(ISensor* sensor, const char* name)
-{
-    ScanContext context(this);
-    const auto t0 = std::chrono::steady_clock::now();
-    try
-    {
-        sensor->Execute(context);
-    }
-    catch (const std::exception &e)
-    {
-        m_metrics.sensor_exceptions.fetch_add(1);
-        AddEvidence(anti_cheat::RUNTIME_ERROR,
-                    std::string("轻量级传感器C++异常: ") + name + ": " + e.what());
-        // 异常：增加失败计数并退避
-        int fails = ++m_sensorFailureCounts[name];
-        auto backoff = std::min<std::chrono::milliseconds>(
-                std::chrono::milliseconds(50 * (1 << std::min(fails, 5))), std::chrono::milliseconds(5000));
-        m_sensorBackoffUntil[name] = std::chrono::steady_clock::now() + backoff;
-    }
-    catch (...)
-    {
-        m_metrics.sensor_exceptions.fetch_add(1);
-        AddEvidence(anti_cheat::RUNTIME_ERROR, std::string("轻量级传感器未知C++异常: ") + name);
-        int fails = ++m_sensorFailureCounts[name];
-        auto backoff = std::min<std::chrono::milliseconds>(
-                std::chrono::milliseconds(50 * (1 << std::min(fails, 5))), std::chrono::milliseconds(5000));
-        m_sensorBackoffUntil[name] = std::chrono::steady_clock::now() + backoff;
-    }
-    const auto t1 = std::chrono::steady_clock::now();
-    const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
-    if (elapsed_ms > CheatConfigManager::GetInstance().GetLightScanBudgetMs())
-    {
-        m_metrics.sensor_timeouts.fetch_add(1);
-        // 超预算：本tick不再继续更多轻量工作
-        // 视为一次失败，进入短退避
-        int fails = ++m_sensorFailureCounts[name];
-        auto backoff = std::min<std::chrono::milliseconds>(
-                std::chrono::milliseconds(25 * (1 << std::min(fails, 4))), std::chrono::milliseconds(2000));
-        m_sensorBackoffUntil[name] = std::chrono::steady_clock::now() + backoff;
-    }
-    else
-    {
-        // 成功：清理失败计数与退避
-        m_sensorFailureCounts[name] = 0;
-        m_sensorBackoffUntil.erase(name);
-    }
-    RecordSensorRuntime(name, (int)elapsed_ms);
-}
-
-bool CheatMonitor::Pimpl::ExecuteHeavyweightSensorSafe(ISensor* sensor, const char* name)
-{
-    bool executionCompleted = false;
-    ScanContext context(this);
-
-    try
-    {
-        sensor->Execute(context);
-        executionCompleted = true;
-        context.ResetSensorFailure(name);
-    }
-    catch (const std::exception &e)
-    {
-        m_metrics.sensor_exceptions.fetch_add(1);
-        AddEvidence(anti_cheat::RUNTIME_ERROR,
-                    std::string("重量级传感器C++异常: ") + name + ": " + e.what());
-
-        int fails = ++m_sensorFailureCounts[name];
-        auto backoff = std::min<std::chrono::milliseconds>(
-                std::chrono::milliseconds(300 * (1 << std::min(fails, 5))),
-                std::chrono::milliseconds(30000));
-        m_sensorBackoffUntil[name] = std::chrono::steady_clock::now() + backoff;
-    }
-    catch (...)
-    {
-        m_metrics.sensor_exceptions.fetch_add(1);
-        AddEvidence(anti_cheat::RUNTIME_ERROR, std::string("重量级传感器未知C++异常: ") + name);
-
-        int fails = ++m_sensorFailureCounts[name];
-        auto backoff = std::min<std::chrono::milliseconds>(
-                std::chrono::milliseconds(300 * (1 << std::min(fails, 5))),
-                std::chrono::milliseconds(30000));
-        m_sensorBackoffUntil[name] = std::chrono::steady_clock::now() + backoff;
-    }
-    return executionCompleted;
-}
-
-// InputProcessingLoop函数已删除以解决性能问题
 
 void CheatMonitor::Pimpl::HardenProcessAndThreads()
 {
@@ -4771,11 +4229,10 @@ void CheatMonitor::Pimpl::HardenProcessAndThreads()
         }
         CloseHandle(hToken);
     }
-    
+
     if (!isElevated)
     {
-        LOG_WARNING(AntiCheatLogger::LogCategory::SYSTEM, 
-                   "进程未以管理员权限运行，某些安全策略可能无法设置");
+        LOG_WARNING(AntiCheatLogger::LogCategory::SYSTEM, "进程未以管理员权限运行，某些安全策略可能无法设置");
     }
 
     // 2. 启用进程缓解策略 (DEP, 禁止创建子进程等)
@@ -4789,7 +4246,7 @@ void CheatMonitor::Pimpl::HardenProcessAndThreads()
     {
         int successCount = 0;
         int totalPolicies = 2;
-        
+
         // 启用DEP - 检查返回值和错误
         PROCESS_MITIGATION_DEP_POLICY depPolicy = {};
         depPolicy.Enable = 1;
@@ -4799,20 +4256,19 @@ void CheatMonitor::Pimpl::HardenProcessAndThreads()
         {
             successCount++;
             LOG_INFO(AntiCheatLogger::LogCategory::SYSTEM, "DEP缓解策略已启用");
-                }
-                else
-                {
+        }
+        else
+        {
             DWORD error = GetLastError();
             // 对于常见的预期错误，使用INFO级别而不是WARNING
             if (error == ERROR_ACCESS_DENIED || error == ERROR_NOT_SUPPORTED || error == ERROR_ALREADY_EXISTS)
             {
-                LOG_INFO_F(AntiCheatLogger::LogCategory::SYSTEM, 
-                           "DEP缓解策略设置跳过，错误代码: %lu (预期情况)", error);
+                LOG_INFO_F(AntiCheatLogger::LogCategory::SYSTEM, "DEP缓解策略设置跳过，错误代码: %lu (预期情况)",
+                           error);
             }
             else
             {
-                LOG_WARNING_F(AntiCheatLogger::LogCategory::SYSTEM, 
-                             "DEP缓解策略设置失败，错误代码: %lu", error);
+                LOG_WARNING_F(AntiCheatLogger::LogCategory::SYSTEM, "DEP缓解策略设置失败，错误代码: %lu", error);
             }
         }
 
@@ -4831,16 +4287,15 @@ void CheatMonitor::Pimpl::HardenProcessAndThreads()
             // 对于常见的预期错误，使用INFO级别而不是WARNING
             if (error == ERROR_ACCESS_DENIED || error == ERROR_NOT_SUPPORTED || error == ERROR_ALREADY_EXISTS)
             {
-                LOG_INFO_F(AntiCheatLogger::LogCategory::SYSTEM, 
-                           "子进程禁止策略设置跳过，错误代码: %lu (预期情况)", error);
+                LOG_INFO_F(AntiCheatLogger::LogCategory::SYSTEM, "子进程禁止策略设置跳过，错误代码: %lu (预期情况)",
+                           error);
             }
             else
             {
-                LOG_WARNING_F(AntiCheatLogger::LogCategory::SYSTEM, 
-                             "子进程禁止策略设置失败，错误代码: %lu", error);
+                LOG_WARNING_F(AntiCheatLogger::LogCategory::SYSTEM, "子进程禁止策略设置失败，错误代码: %lu", error);
             }
         }
-        
+
         // 总结策略设置结果
         if (successCount == totalPolicies)
         {
@@ -4848,42 +4303,39 @@ void CheatMonitor::Pimpl::HardenProcessAndThreads()
         }
         else if (successCount > 0)
         {
-            LOG_INFO_F(AntiCheatLogger::LogCategory::SYSTEM, 
-                      "已启用 %d/%d 个进程缓解策略", successCount, totalPolicies);
+            LOG_INFO_F(AntiCheatLogger::LogCategory::SYSTEM, "已启用 %d/%d 个进程缓解策略", successCount,
+                       totalPolicies);
         }
         else
         {
-            LOG_INFO(AntiCheatLogger::LogCategory::SYSTEM, 
-                    "未能启用进程缓解策略 (这在某些环境下是正常的)");
+            LOG_INFO(AntiCheatLogger::LogCategory::SYSTEM, "未能启用进程缓解策略 (这在某些环境下是正常的)");
         }
     }
     else
     {
         // API不可用通常是因为系统版本过低，不视为错误
-        LOG_WARNING(AntiCheatLogger::LogCategory::SYSTEM, 
-                   "SetProcessMitigationPolicy API 不可用，可能是系统版本过低。");
+        LOG_WARNING(AntiCheatLogger::LogCategory::SYSTEM,
+                    "SetProcessMitigationPolicy API 不可用，可能是系统版本过低。");
     }
 
     // 2. 隐藏我们自己的监控线程，增加逆向分析难度
     if (g_pNtSetInformationThread)
     {
         NTSTATUS status = g_pNtSetInformationThread(GetCurrentThread(), (THREADINFOCLASS)17,  // ThreadHideFromDebugger
-                                                   nullptr, 0);
+                                                    nullptr, 0);
         if (!NT_SUCCESS(status))
         {
             // 线程隐藏失败通常不影响功能，只记录日志
-            LOG_WARNING_F(AntiCheatLogger::LogCategory::SYSTEM, 
-                         "线程隐藏设置失败，NTSTATUS: 0x%08X", status);
-    }
-    else
-    {
+            LOG_WARNING_F(AntiCheatLogger::LogCategory::SYSTEM, "线程隐藏设置失败，NTSTATUS: 0x%08X", status);
+        }
+        else
+        {
             LOG_INFO(AntiCheatLogger::LogCategory::SYSTEM, "监控线程已设置为对调试器隐藏");
-    }
+        }
     }
     else
     {
-        LOG_WARNING(AntiCheatLogger::LogCategory::SYSTEM, 
-                   "NtSetInformationThread API 不可用，无法隐藏监控线程");
+        LOG_WARNING(AntiCheatLogger::LogCategory::SYSTEM, "NtSetInformationThread API 不可用，无法隐藏监控线程");
     }
 }
 
@@ -4908,13 +4360,13 @@ void CheatMonitor::Pimpl::CheckParentProcessAtStartup()
     else
     {
         // Case 2: Parent process not found (orphaned).
-        // This is suspicious and could be a sign of a loader that has already exited.
-        // We flag it and let SuspiciousLaunchSensor make the final call based on other evidence.
-        m_parentWasMissingAtStartup = true;
+        // This could indicate an abnormal launch, but we don't treat it as definitive evidence
+        // since many legitimate launchers exit after starting the game.
+        LOG_INFO(AntiCheatLogger::LogCategory::SYSTEM, "Parent process not found - could be normal launcher behavior");
     }
 }
 
-void CheatMonitor::Pimpl::Sensor_DetectVirtualMachine()
+void CheatMonitor::Pimpl::DetectVirtualMachine()
 {
     DetectVmByCpuid();
     DetectVmByRegistry();
@@ -5015,79 +4467,6 @@ void CheatMonitor::Pimpl::DetectVmByMacAddress()
     }
 }
 
-void CheatMonitor::Pimpl::DoCheckIatHooks(ScanContext &context, const BYTE *baseAddress,
-                                          const IMAGE_IMPORT_DESCRIPTOR *pImportDesc)
-{
-    const auto &baselineHashes = context.GetIatBaselineHashes();
-    while (pImportDesc->Name)
-    {
-        const char *dllName = (const char *)(baseAddress + pImportDesc->Name);
-        auto it = baselineHashes.find(dllName);
-        if (it != baselineHashes.end())
-        {
-            // Calculate current hash
-            std::vector<uint8_t> current_iat_hashes;
-            auto *pThunk = reinterpret_cast<IMAGE_THUNK_DATA *>((BYTE *)baseAddress + pImportDesc->FirstThunk);
-            while (pThunk->u1.AddressOfData)
-            {
-                uintptr_t func_ptr = pThunk->u1.Function;
-                current_iat_hashes.insert(current_iat_hashes.end(), (uint8_t *)&func_ptr,
-                                          (uint8_t *)&func_ptr + sizeof(func_ptr));
-                pThunk++;
-            }
-            std::vector<uint8_t> currentHash = CalculateHash(current_iat_hashes.data(), current_iat_hashes.size());
-
-            if (currentHash != it->second)
-            {
-                context.AddEvidence(anti_cheat::INTEGRITY_API_HOOK, "检测到IAT Hook: " + std::string(dllName));
-            }
-        }
-        pImportDesc++;
-    }
-}
-
-void CheatMonitor::Pimpl::DoCheckIatHooksWithTimeout(ScanContext &context, const BYTE *baseAddress,
-                                                     const IMAGE_IMPORT_DESCRIPTOR *pImportDesc,
-                                                     const std::chrono::steady_clock::time_point &startTime,
-                                                     int budget_ms)
-{
-    const auto &baselineHashes = context.GetIatBaselineHashes();
-    while (pImportDesc->Name)
-    {
-        // 检查超时
-        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now() - startTime).count();
-        if (elapsed >= budget_ms)
-        {
-            context.HandleSensorTimeout("IatHookSensor");
-            return;
-        }
-
-        const char *dllName = (const char *)(baseAddress + pImportDesc->Name);
-        auto it = baselineHashes.find(dllName);
-        if (it != baselineHashes.end())
-        {
-            // Calculate current hash
-            std::vector<uint8_t> current_iat_hashes;
-            auto *pThunk = reinterpret_cast<IMAGE_THUNK_DATA *>((BYTE *)baseAddress + pImportDesc->FirstThunk);
-            while (pThunk->u1.AddressOfData)
-            {
-                uintptr_t func_ptr = pThunk->u1.Function;
-                current_iat_hashes.insert(current_iat_hashes.end(), (uint8_t *)&func_ptr,
-                                          (uint8_t *)&func_ptr + sizeof(func_ptr));
-                pThunk++;
-            }
-            std::vector<uint8_t> currentHash = CalculateHash(current_iat_hashes.data(), current_iat_hashes.size());
-
-            if (currentHash != it->second)
-            {
-                context.AddEvidence(anti_cheat::INTEGRITY_API_HOOK, "检测到IAT Hook: " + std::string(dllName));
-            }
-        }
-        pImportDesc++;
-    }
-}
-
 void CheatMonitor::Pimpl::VerifyModuleSignature(HMODULE hModule)
 {
     wchar_t modulePath_w[MAX_PATH];
@@ -5102,18 +4481,14 @@ void CheatMonitor::Pimpl::VerifyModuleSignature(HMODULE hModule)
     // 读取TTL一次，减少锁内工作量
     const auto ttl = std::chrono::minutes(CheatConfigManager::GetInstance().GetSignatureCacheDurationMinutes());
     {
-        std::lock_guard<std::mutex> lock(m_signatureCacheMutex);
-        // 低频执行：清理过期的缓存项，防止长期增长（约3%几率触发）
-        static std::uniform_int_distribution<int> dist_prune(0, 31);
-        if (dist_prune(m_rng) == 0)
+        // 确定性清理：每次调用都清理过期项，确保内存使用稳定
+        // 使用迭代器安全删除过期项
+        for (auto it = m_moduleSignatureCache.begin(); it != m_moduleSignatureCache.end();)
         {
-            for (auto it = m_moduleSignatureCache.begin(); it != m_moduleSignatureCache.end();)
-            {
-                if (now >= it->second.second + ttl)
-                    it = m_moduleSignatureCache.erase(it);
-                else
-                    ++it;
-            }
+            if (now >= it->second.second + ttl)
+                it = m_moduleSignatureCache.erase(it);
+            else
+                ++it;
         }
         // 节流：同一路径在短窗口内只验证一次，避免一个扫描周期内的重复开销
         const auto itThr = m_sigThrottleUntil.find(modulePath);
@@ -5140,19 +4515,22 @@ void CheatMonitor::Pimpl::VerifyModuleSignature(HMODULE hModule)
     switch (Utils::VerifyFileSignature(modulePath, m_windowsVersion))
     {
         case Utils::SignatureStatus::TRUSTED: {
-            std::lock_guard<std::mutex> lock(m_signatureCacheMutex);
             m_moduleSignatureCache[modulePath] = {SignatureVerdict::SIGNED_AND_TRUSTED, now};
             // 设置短节流窗口，避免本周期内重复验证
-            m_sigThrottleUntil[modulePath] = now + std::chrono::seconds(2);
+            m_sigThrottleUntil[modulePath] =
+                    now +
+                    std::chrono::seconds(CheatConfigManager::GetInstance().GetSignatureVerificationThrottleSeconds());
         }
         break;
         case Utils::SignatureStatus::UNTRUSTED: {
-            std::lock_guard<std::mutex> lock(m_signatureCacheMutex);
             m_moduleSignatureCache[modulePath] = {SignatureVerdict::UNSIGNED_OR_UNTRUSTED, now};
             // 未签名：也进行短节流
-            m_sigThrottleUntil[modulePath] = now + std::chrono::seconds(2);
+            m_sigThrottleUntil[modulePath] =
+                    now +
+                    std::chrono::seconds(CheatConfigManager::GetInstance().GetSignatureVerificationThrottleSeconds());
             // 在 XP/Vista/Win7 上，避免将现代SHA-2签名缺失误判为不受信任，降低证据等级：仅缓存，不立即上报。
-            if (m_windowsVersion != Win_XP && m_windowsVersion != Win_Vista_Win7)
+            if (m_windowsVersion != SystemUtils::WindowsVersion::Win_XP &&
+                m_windowsVersion != SystemUtils::WindowsVersion::Win_Vista_Win7)
             {
                 AddEvidence(anti_cheat::RUNTIME_MODULE_NEW_UNKNOWN,
                             "加载了未签名的模块: " + Utils::WideToString(modulePath));
@@ -5162,10 +4540,9 @@ void CheatMonitor::Pimpl::VerifyModuleSignature(HMODULE hModule)
         case Utils::SignatureStatus::FAILED_TO_VERIFY:
             // 不缓存验证失败的结果，以便下次扫描时可以重试。
             // 但为了避免频繁抖动，设置更短的节流窗口。
-            {
-                std::lock_guard<std::mutex> lock(m_signatureCacheMutex);
-                m_sigThrottleUntil[modulePath] = now + std::chrono::milliseconds(750);
-            }
+            m_sigThrottleUntil[modulePath] =
+                    now + std::chrono::milliseconds(
+                                  CheatConfigManager::GetInstance().GetSignatureVerificationFailureThrottleMs());
             break;
     }
 }
@@ -5191,75 +4568,44 @@ bool CheatMonitor::Pimpl::IsAddressInLegitimateModule(PVOID address, std::wstrin
     return false;
 }
 
-// 获取版本
-WindowsVersion GetWindowsVersion()
+bool CheatMonitor::Pimpl::IsAddressInLegitimateModule(PVOID address)
 {
-    // 使用 RtlGetVersion 获取准确的OS版本信息, 它不受应用程序兼容性助手(shim)的影响。
-    typedef NTSTATUS(WINAPI * RtlGetVersion_t)(LPOSVERSIONINFOEXW lpVersionInformation);
-    static RtlGetVersion_t pRtlGetVersion =
-            (RtlGetVersion_t)GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "RtlGetVersion");
-
-    OSVERSIONINFOEXW osInfo = {0};
-    osInfo.dwOSVersionInfoSize = sizeof(osInfo);
-
-    if (pRtlGetVersion)
-    {
-        pRtlGetVersion(&osInfo);
-    }
-    else
-    {
-        // 为无法使用 RtlGetVersion 的旧系统提供降级方案
-        if (!GetVersionExW((LPOSVERSIONINFOW)&osInfo))
-        {
-            return Win_Unknown;
-        }
-    }
-
-    if (osInfo.dwMajorVersion == 5 && (osInfo.dwMinorVersion == 1 || osInfo.dwMinorVersion == 2))
-        return Win_XP;
-    if (osInfo.dwMajorVersion == 6 && osInfo.dwMinorVersion == 0)
-        return Win_Vista_Win7;  // Vista
-    if (osInfo.dwMajorVersion == 6 && osInfo.dwMinorVersion == 1)
-        return Win_Vista_Win7;  // Win7
-    if (osInfo.dwMajorVersion == 6 && (osInfo.dwMinorVersion == 2 || osInfo.dwMinorVersion == 3))
-        return Win_8_Win81;
-    if (osInfo.dwMajorVersion == 10 && osInfo.dwBuildNumber < 22000)
-        return Win_10;
-    if (osInfo.dwMajorVersion == 10 && osInfo.dwBuildNumber >= 22000)
-        return Win_11;
-
-    return Win_Unknown;
-}
-
-// 模式扫描（x86）
-PBYTE FindPattern(PBYTE base, SIZE_T size, const BYTE *pattern, SIZE_T patternSize, BYTE wildcard = 0x00)
-{
-    for (SIZE_T i = 0; i < size - patternSize; ++i)
-    {
-        bool found = true;
-        for (SIZE_T j = 0; j < patternSize; ++j)
-        {
-            if (pattern[j] != wildcard && base[i + j] != pattern[j])
-            {
-                found = false;
-                break;
-            }
-        }
-        if (found)
-            return base + i;
-    }
-    return nullptr;
+    std::wstring dummyPath;  // 不需要的路径参数
+    return IsAddressInLegitimateModule(address, dummyPath);
 }
 
 uintptr_t CheatMonitor::Pimpl::FindVehListAddress()
 {
     //  采用单一、更可靠的"诱饵处理函数"方法来定位VEH链表。
     // 此方法比依赖脆弱的字节码模式匹配要稳定得多，能更好地适应Windows版本更新。
-    PVOID pDecoyHandler = AddVectoredExceptionHandler(1, DecoyVehHandler);
+
+    // 添加retry机制：AddVectoredExceptionHandler可能因为系统负载等原因失败
+    PVOID pDecoyHandler = nullptr;
+    int retryCount = 0;
+    int maxRetries = 3;
+
+    while (!pDecoyHandler && retryCount < 3)
+    {
+        pDecoyHandler = AddVectoredExceptionHandler(1, SystemUtils::DecoyVehHandler);
+        if (!pDecoyHandler)
+        {
+            retryCount++;
+            DWORD error = GetLastError();
+            LOG_WARNING_F(AntiCheatLogger::LogCategory::SYSTEM,
+                          "FindVehListAddress: AddVectoredExceptionHandler失败 (尝试 %d/%d)，错误码: 0x%08X",
+                          retryCount, maxRetries, error);
+
+            if (retryCount < maxRetries)
+            {
+                Sleep(300);
+            }
+        }
+    }
+
     if (!pDecoyHandler)
     {
         LOG_ERROR(AntiCheatLogger::LogCategory::SYSTEM,
-                  "FindVehListAddress Error: AddVectoredExceptionHandler failed.");
+                  "FindVehListAddress Error: AddVectoredExceptionHandler failed after %d retries.", maxRetries);
         return 0;
     }
 
@@ -5273,7 +4619,8 @@ uintptr_t CheatMonitor::Pimpl::FindVehListAddress()
         for (int i = 0; i < 100; ++i)
         {
             const LIST_ENTRY *pBlink = pCurrent->Blink;
-            if (!IsValidPointer(pBlink, sizeof(LIST_ENTRY)) || !IsValidPointer(pBlink->Flink, sizeof(LIST_ENTRY *)))
+            if (!SystemUtils::IsValidPointer(pBlink, sizeof(LIST_ENTRY)) ||
+                !SystemUtils::IsValidPointer(pBlink->Flink, sizeof(LIST_ENTRY *)))
             {
                 break;  // 链表指针无效，终止遍历
             }
@@ -5295,7 +4642,11 @@ uintptr_t CheatMonitor::Pimpl::FindVehListAddress()
         listHeadAddress = 0;
     }
 
-    RemoveVectoredExceptionHandler(pDecoyHandler);
+    if (!RemoveVectoredExceptionHandler(pDecoyHandler))
+    {
+        LOG_ERROR_F(AntiCheatLogger::LogCategory::SYSTEM,
+                    "FindVehListAddress Error: Failed to remove decoy VEH handler. Error: 0x%08X", GetLastError());
+    }
 
     if (listHeadAddress == 0)
     {
@@ -5306,8 +4657,8 @@ uintptr_t CheatMonitor::Pimpl::FindVehListAddress()
     // 根据Windows版本，从链表头地址计算整个VEH列表结构的基地址
     // 这是必要的，因为VEH列表结构在不同Windows版本中不同
     uintptr_t structBaseAddress = 0;
-    WindowsVersion ver = GetWindowsVersion();
-    if (ver == Win_Unknown)
+    SystemUtils::WindowsVersion ver = SystemUtils::GetWindowsVersion();
+    if (ver == SystemUtils::WindowsVersion::Win_Unknown)
     {
         LOG_WARNING(AntiCheatLogger::LogCategory::SYSTEM,
                     "Unknown Windows version. Assuming Win8+ VEH list structure.");
@@ -5316,16 +4667,16 @@ uintptr_t CheatMonitor::Pimpl::FindVehListAddress()
 
     switch (ver)
     {
-        case Win_XP:
+        case SystemUtils::WindowsVersion::Win_XP:
             // 在XP中，List成员在CRITICAL_SECTION之后
             structBaseAddress = listHeadAddress - offsetof(VECTORED_HANDLER_LIST_XP, List);
             break;
-        case Win_Vista_Win7:
+        case SystemUtils::WindowsVersion::Win_Vista_Win7:
             // 在Vista/7中，是ExceptionList成员在SRWLOCK之后
             structBaseAddress = listHeadAddress - offsetof(VECTORED_HANDLER_LIST_VISTA, ExceptionList);
             break;
-        case Win_Unknown:  // 让未知情况的处理更明确
-        default:           // Win8及更新版本
+        case SystemUtils::WindowsVersion::Win_Unknown:  // 让未知情况的处理更明确
+        default:                                        // Win8及更新版本
             structBaseAddress = listHeadAddress - offsetof(VECTORED_HANDLER_LIST_WIN8, ExceptionList);
             break;
     }
@@ -5335,12 +4686,131 @@ uintptr_t CheatMonitor::Pimpl::FindVehListAddress()
     return structBaseAddress;
 }
 
-void CheatMonitor::Pimpl::InstallExtendedApiHooks()
+void CheatMonitor::Pimpl::CheckIatHooks(ScanContext &context, const BYTE *baseAddress,
+                                        const IMAGE_IMPORT_DESCRIPTOR *pImportDesc)
 {
-    // TODO: Implement safe IAT hooking for extended APIs
+    const auto &baselineHashes = context.GetIatBaselineHashes();
+    while (pImportDesc->Name)
+    {
+        const char *dllName = (const char *)(baseAddress + pImportDesc->Name);
+        auto it = baselineHashes.find(dllName);
+        if (it != baselineHashes.end())
+        {
+            // Calculate current hash
+            std::vector<uint8_t> current_iat_hashes;
+            auto *pThunk = reinterpret_cast<IMAGE_THUNK_DATA *>((BYTE *)baseAddress + pImportDesc->FirstThunk);
+            while (pThunk->u1.AddressOfData)
+            {
+                uintptr_t func_ptr = pThunk->u1.Function;
+                current_iat_hashes.insert(current_iat_hashes.end(), (uint8_t *)&func_ptr,
+                                          (uint8_t *)&func_ptr + sizeof(func_ptr));
+                pThunk++;
+            }
+            std::vector<uint8_t> currentHash =
+                    SystemUtils::CalculateFnv1aHash(current_iat_hashes.data(), current_iat_hashes.size());
+
+            if (currentHash != it->second)
+            {
+                context.AddEvidence(anti_cheat::INTEGRITY_API_HOOK, "检测到IAT Hook: " + std::string(dllName));
+            }
+        }
+        pImportDesc++;
+    }
 }
 
-void CheatMonitor::Pimpl::UninstallExtendedApiHooks()
+const std::chrono::milliseconds CheatMonitor::Pimpl::GetLightScanInterval() const
 {
-    // TODO: Implement safe IAT unhooking for extended APIs
+    // 轻量级传感器：使用配置的扫描间隔 + 随机抖动
+    const auto base_interval = std::chrono::seconds(CheatConfigManager::GetInstance().GetBaseScanInterval());
+    const auto jitter = std::chrono::milliseconds(m_rng() % 2000);
+    return base_interval + jitter;
+}
+
+const std::chrono::milliseconds CheatMonitor::Pimpl::GetHeavyScanInterval() const
+{
+    // 重量级传感器：使用配置的扫描间隔 + 随机抖动
+    const auto base_interval = std::chrono::minutes(CheatConfigManager::GetInstance().GetHeavyScanIntervalMinutes());
+    const auto jitter = std::chrono::milliseconds(m_rng() % 60000);
+    return base_interval + jitter;
+}
+
+void CheatMonitor::Pimpl::ExecuteLightweightSensors()
+{
+    if (m_lightweightSensors.empty())
+        return;
+
+    // 轻量级传感器：依次按index扫描，无需退避检查
+    m_lightSensorIndex %= m_lightweightSensors.size();
+    const auto &sensor = m_lightweightSensors[m_lightSensorIndex];
+    const char *name = sensor->GetName();
+
+    ExecuteAndMonitorSensor(sensor.get(), name, false /*isHeavyweight*/);
+    m_lightSensorIndex++;
+}
+
+void CheatMonitor::Pimpl::ExecuteHeavyweightSensors()
+{
+    if (m_heavyweightSensors.empty())
+        return;
+
+    // 重量级传感器：依次按index扫描，无需退避检查
+    m_heavySensorIndex %= m_heavyweightSensors.size();
+    const auto &sensor = m_heavyweightSensors[m_heavySensorIndex];
+    const char *name = sensor->GetName();
+
+    ExecuteAndMonitorSensor(sensor.get(), name, true /*isHeavyweight*/);
+    m_heavySensorIndex++;
+}
+
+void CheatMonitor::Pimpl::ExecuteAndMonitorSensor(ISensor *sensor, const char *name, bool isHeavyweight)
+{
+    const auto startTime = std::chrono::steady_clock::now();
+    ScanContext context(this);
+
+    try
+    {
+        SensorExecutionResult result = sensor->Execute(context);
+        const auto end = std::chrono::steady_clock::now();
+        const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(end - startTime).count();
+
+        // 获取失败原因
+        anti_cheat::SensorFailureReason failureReason = anti_cheat::UNKNOWN_FAILURE;
+        if (result == SensorExecutionResult::FAILURE)
+        {
+            // 从传感器的GetLastFailureReason方法获取失败原因
+            failureReason = sensor->GetLastFailureReason();
+        }
+
+        // 统一记录传感器执行统计
+        RecordSensorExecutionStats(name, (int)elapsed_ms, result, failureReason);
+    }
+    catch (const std::exception &e)
+    {
+        // 统一异常处理：既记录日志又记录统计
+        const auto end = std::chrono::steady_clock::now();
+        const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(end - startTime).count();
+        LOG_ERROR(AntiCheatLogger::LogCategory::SENSOR, "传感器异常: %s - %s", name, e.what());
+
+        // 记录异常执行统计 - 使用更明确的C++异常失败原因
+        RecordSensorExecutionStats(name, (int)elapsed_ms, SensorExecutionResult::FAILURE,
+                                   anti_cheat::CPP_EXCEPTION_FAILURE);
+    }
+    catch (...)
+    {
+        // 统一未知异常处理
+        const auto end = std::chrono::steady_clock::now();
+        const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(end - startTime).count();
+        LOG_ERROR(AntiCheatLogger::LogCategory::SENSOR, "传感器未知异常: %s", name);
+
+        // 记录异常执行统计 - 使用更明确的未知异常失败原因
+        RecordSensorExecutionStats(name, (int)elapsed_ms, SensorExecutionResult::FAILURE,
+                                   anti_cheat::UNKNOWN_EXCEPTION_FAILURE);
+    }
+}
+
+void CheatMonitor::Pimpl::AddRandomJitter()
+{
+    // 增加随机抖动，避免可预测的扫描周期
+    std::uniform_int_distribution<long> jitter_dist(0, CheatConfigManager::GetInstance().GetJitterMilliseconds());
+    std::this_thread::sleep_for(std::chrono::milliseconds(jitter_dist(m_rng)));
 }

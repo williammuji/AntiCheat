@@ -1,11 +1,34 @@
 {
-  "name": "anticheat",
-  "version": "1.0.0",
-  "description": "MMORPG Anti-Cheat Module",
-  "dependencies": [
-    "protobuf",
-    "gtest"
-  ],
-  "builtin-baseline": "f7423ee180c4b7f40d43402c2feb3859161ef625",
-  "supports": "windows"
+    "name": "anticheat-system",
+    "version": "1.0.0",
+    "description": "Anti-cheat system for MMORPG games with multi-layered detection",
+    "homepage": "https://github.com/your-org/AntiCheat",
+    "license": "MIT",
+    "supports": "windows",
+    "dependencies": [
+        {
+            "name": "protobuf",
+            "version>=": "3.21.0"
+        }
+    ],
+    "features": {
+        "tests": {
+            "description": "Build tests",
+            "dependencies": [
+                {
+                    "name": "gtest",
+                    "version>=": "1.12.0"
+                }
+            ]
+        },
+        "benchmarks": {
+            "description": "Build benchmarks",
+            "dependencies": [
+                {
+                    "name": "benchmark",
+                    "version>=": "1.7.0"
+                }
+            ]
+        }
+    }
 }

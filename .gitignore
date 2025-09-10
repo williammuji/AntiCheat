@@ -1,0 +1,63 @@
+# Build directories
+build/
+build-*/
+out/
+bin/
+obj/
+
+# Visual Studio
+.vs/
+*.vcxproj.user
+*.sln.docstates
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+
+# vcpkg
+vcpkg_installed/
+vcpkg/
+
+# Protobuf generated files
+*.pb.h
+*.pb.cc
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.temp
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDE files
+.vscode/settings.json
+.idea/
+*.swp
+*.swo
+
+# Test artifacts
+test-results/
+coverage/
+
+# Quality check reports
+*-quality-report.md
+pre-commit-report.md
+smoke-test-report.md
+
+# Backup files
+*.bak
+*.backup
+
+.cursor/
