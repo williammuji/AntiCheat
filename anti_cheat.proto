@@ -91,7 +91,7 @@ enum SensorFailureReason {
   
   // === 内存安全传感器特定失败 (130-134) ===
   MEMORY_GET_MODULE_HANDLE_FAILED = 130;  // 内存检测：GetModuleHandleExW失败
-  MEMORY_ACCESS_EXCEPTION = 131;          // 内存检测：内存访问异常
+  MEMORY_SECURITY_ACCESS_EXCEPTION = 131; // 内存检测：内存访问异常
   MEMORY_OS_VERSION_UNSUPPORTED = 132;    // 内存检测：OS版本不支持
   
   // === 线程和模块活动传感器特定失败 (140-149) ===
@@ -145,7 +145,7 @@ enum SensorFailureReason {
   PROCESS_HANDLE_BUFFER_SIZE_EXCEEDED = 241; // 进程句柄检测：缓冲区大小超限
   PROCESS_HANDLE_RETRY_EXCEEDED = 242; // 进程句柄检测：重试次数过多
   PROCESS_HANDLE_HANDLE_COUNT_EXCEEDED = 243; // 进程句柄检测：句柄数量超限
-  PROCESS_HANDLE_SCAN_TIMEOUT = 244; // 进程句柄检测：扫描超时
+  PROCESS_HANDLE_SENSOR_SCAN_TIMEOUT = 244; // 进程句柄检测：扫描超时
   
   // === VEH Hook传感器特定失败 (250-260) ===
   VEH_EXECUTION_TIMEOUT = 250; // VEH检测：执行超时

@@ -113,17 +113,9 @@ std::shared_ptr<const std::unordered_set<std::wstring>> CheatConfigManager::GetK
 }
 
 // --- 行为控制参数 ---
-int32_t CheatConfigManager::GetSuspiciousHandleTTLMinutes() const
-{
-    return GetCurrentConfig()->config->suspicious_handle_ttl_minutes();
-}
 int32_t CheatConfigManager::GetReportCooldownMinutes() const
 {
     return GetCurrentConfig()->config->report_cooldown_minutes();
-}
-int32_t CheatConfigManager::GetIllegalCallReportCooldownMinutes() const
-{
-    return GetCurrentConfig()->config->illegal_call_report_cooldown_minutes();
 }
 int32_t CheatConfigManager::GetJitterMilliseconds() const
 {
@@ -135,24 +127,8 @@ int32_t CheatConfigManager::GetMaxEvidencesPerSession() const
 {
     return GetCurrentConfig()->config->max_evidences_per_session();
 }
-int32_t CheatConfigManager::GetMaxIllegalSources() const
-{
-    return GetCurrentConfig()->config->max_illegal_sources();
-}
 
 // --- 容量与缓存控制 ---
-int32_t CheatConfigManager::GetMaxMouseMoveEvents() const
-{
-    return GetCurrentConfig()->config->max_mouse_move_events();
-}
-int32_t CheatConfigManager::GetMaxMouseClickEvents() const
-{
-    return GetCurrentConfig()->config->max_mouse_click_events();
-}
-int32_t CheatConfigManager::GetMaxKeyboardEvents() const
-{
-    return GetCurrentConfig()->config->max_keyboard_events();
-}
 int32_t CheatConfigManager::GetProcessCacheDurationMinutes() const
 {
     return GetCurrentConfig()->config->process_cache_duration_minutes();
@@ -170,63 +146,13 @@ int32_t CheatConfigManager::GetSignatureVerificationFailureThrottleMs() const
     return GetCurrentConfig()->config->signature_verification_failure_throttle_ms();
 }
 
-// --- 输入自动化检测参数 ---
-int32_t CheatConfigManager::GetMaxMouseMoveEvents() const
-{
-    return GetCurrentConfig()->config->max_mouse_move_events();
-}
+// --- 输入自动化检测参数 (已删除，保留函数以兼容性) ---
+// 这些函数已经在上面定义过了，这里删除重复定义
 
-int32_t CheatConfigManager::GetMaxMouseClickEvents() const
-{
-    return GetCurrentConfig()->config->max_mouse_click_events();
-}
-
-int32_t CheatConfigManager::GetMaxKeyboardEvents() const
-{
-    return GetCurrentConfig()->config->max_keyboard_events();
-}
-
-int32_t CheatConfigManager::GetKeyboardMacroMinSequenceLength() const
-{
-    return GetCurrentConfig()->config->keyboard_macro_min_sequence_length();
-}
-
-int32_t CheatConfigManager::GetKeyboardMacroMinPatternLength() const
-{
-    return GetCurrentConfig()->config->keyboard_macro_min_pattern_length();
-}
-
-double CheatConfigManager::GetMouseClickStddevThreshold() const
-{
-    return GetCurrentConfig()->config->mouse_click_stddev_threshold();
-}
-
-int32_t CheatConfigManager::GetMouseMoveCollinearThreshold() const
-{
-    return GetCurrentConfig()->config->mouse_move_collinear_threshold();
-}
-
-// --- 输入自动化检测参数 ---
-int32_t CheatConfigManager::GetKeyboardMacroMinSequenceLength() const
-{
-    return GetCurrentConfig()->config->keyboard_macro_min_sequence_length();
-}
-int32_t CheatConfigManager::GetKeyboardMacroMinPatternLength() const
-{
-    return GetCurrentConfig()->config->keyboard_macro_min_pattern_length();
-}
+// --- 输入自动化检测参数 (已删除，保留函数以兼容性) ---
 
 // --- 新增的Getters ---
 
-double CheatConfigManager::GetMouseClickStddevThreshold() const
-{
-    return GetCurrentConfig()->config->mouse_click_stddev_threshold();
-}
-
-int32_t CheatConfigManager::GetMouseMoveCollinearThreshold() const
-{
-    return GetCurrentConfig()->config->mouse_move_collinear_threshold();
-}
 
 int32_t CheatConfigManager::GetMaxVehHandlersToScan() const
 {
@@ -263,10 +189,6 @@ std::string CheatConfigManager::GetMinOsVersionName() const
 }
 
 // 通用配置参数（所有Sensor共用）
-int32_t CheatConfigManager::GetSensorTimeoutMs() const
-{
-    return GetCurrentConfig()->config->sensor_timeout_ms();
-}
 
 int32_t CheatConfigManager::GetHeavyScanBudgetMs() const
 {
