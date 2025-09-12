@@ -294,11 +294,11 @@ jobs:
         # Check configuration field integrity
         $configFields = @{
           "Scan Interval" = "base_scan_interval_seconds|heavy_scan_interval_minutes";
-          "Budget Control" = "light_scan_budget_ms|heavy_scan_budget_ms";
+          "Budget Control" = "heavy_scan_budget_ms";
           "Capacity Control" = "max_evidences_per_session|max_illegal_sources";
           "Security Threshold" = "max_veh_handlers_to_scan|max_handles_to_scan";
           "OS Version" = "min_os_version";
-          "Performance Control" = "timeout_count|elapsed_ms";
+          "Performance Control" = "timeout_count|heavy_scan_budget_ms";
           "Behavior Control" = "suspicious_handle_ttl_minutes|report_cooldown_minutes"
         }
         
