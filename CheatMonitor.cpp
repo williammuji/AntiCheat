@@ -1744,10 +1744,12 @@ class ProcessAndWindowMonitorSensor : public ISensor
                 }
 
                 // 检查点 3: 窗口标题黑名单检查
-                if (signatureStatus != Utils::SignatureStatus::TRUSTED &&
-                    (auto it = windowTitlesByPid.find(pe.th32ProcessID); it != windowTitlesByPid.end()))
+                if (signatureStatus != Utils::SignatureStatus::TRUSTED)
                 {
-                    for (const auto &title : it->second)
+                    auto it = windowTitlesByPid.find(pe.th32ProcessID);
+                    if (it != windowTitlesByPid.end())
+                    {
+                        for (const auto &title : it->second)
                     {
                         std::wstring lowerTitle = title;
                         std::transform(lowerTitle.begin(), lowerTitle.end(), lowerTitle.begin(), ::towlower);
@@ -1785,6 +1787,7 @@ class ProcessAndWindowMonitorSensor : public ISensor
                                 }
                             }
                         }
+                    }
                     }
                 }
 
@@ -4255,11 +4258,6 @@ void CheatMonitor::Pimpl::RecordSensorExecutionStats(const char *name, int durat
 
 void CheatMonitor::Pimpl::SendReport(const anti_cheat::Report &report)
 {
-    if (!CheatConfigManager::GetInstance().IsEnabled())
-    {
-        LOG_INFO(AntiCheatLogger::LogCategory::SYSTEM, "Uploads disabled by config. Report suppressed.");
-        return;
-    }
 
     std::string serialized_report;
     if (!report.SerializeToString(&serialized_report))
@@ -4833,8 +4831,6 @@ void CheatMonitor::Pimpl::ExecuteLightweightSensors()
     if (m_lightweightSensors.empty())
         return;
 
-    if (!CheatConfigManager::GetInstance().IsEnabled())
-        return;
 
     // 轻量级传感器：依次按index扫描
     m_lightSensorIndex %= m_lightweightSensors.size();
@@ -4848,8 +4844,6 @@ void CheatMonitor::Pimpl::ExecuteHeavyweightSensors()
     if (m_heavyweightSensors.empty())
         return;
 
-    if (!CheatConfigManager::GetInstance().IsEnabled())
-        return;
 
     // 重量级传感器：依次按index扫描
     m_heavySensorIndex %= m_heavyweightSensors.size();

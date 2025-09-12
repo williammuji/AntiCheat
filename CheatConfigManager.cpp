@@ -241,13 +241,6 @@ int32_t CheatConfigManager::GetSensorStatsUploadIntervalMinutes() const
     return GetCurrentConfig()->config->sensor_stats_upload_interval_minutes();
 }
 
-// --- Kill Switch（简化版） ---
-bool CheatConfigManager::IsEnabled() const
-{
-    // 全局开关：若enabled=false，则关闭一切；否则启用
-    return GetCurrentConfig()->config->has_enabled() ? GetCurrentConfig()->config->enabled() : true;
-}
-
 
 // --- 私有辅助函数 ---
 
@@ -714,8 +707,6 @@ void CheatConfigManager::SetDefaultValues(ConfigData& configData)
 
     // 不再在客户端生成/校验配置签名：配置下发已在传输层加密与鉴权
 
-    // --- Kill Switch（简化版）默认值 ---
-    configData.config->set_enabled(true);
 
     UpdateWideStringCaches(configData);
 }
