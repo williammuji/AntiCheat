@@ -153,7 +153,6 @@ int32_t CheatConfigManager::GetSignatureVerificationFailureThrottleMs() const
 
 // --- 新增的Getters ---
 
-
 int32_t CheatConfigManager::GetMaxVehHandlersToScan() const
 {
     return GetCurrentConfig()->config->max_veh_handlers_to_scan();
@@ -242,6 +241,14 @@ int32_t CheatConfigManager::GetSensorStatsUploadIntervalMinutes() const
     return GetCurrentConfig()->config->sensor_stats_upload_interval_minutes();
 }
 
+// --- Kill Switch（简化版） ---
+bool CheatConfigManager::IsEnabled() const
+{
+    // 全局开关：若enabled=false，则关闭一切；否则启用
+    return GetCurrentConfig()->config->has_enabled() ? GetCurrentConfig()->config->enabled() : true;
+}
+
+
 // --- 私有辅助函数 ---
 
 void CheatConfigManager::SetDefaultValues(ConfigData& configData)
@@ -250,7 +257,7 @@ void CheatConfigManager::SetDefaultValues(ConfigData& configData)
     configData.config->set_base_scan_interval_seconds(45);             // 轻量级扫描间隔45秒
     configData.config->set_heavy_scan_interval_minutes(8);             // 重量级扫描间隔8分钟
     configData.config->set_report_upload_interval_minutes(30);         // 证据上报间隔30分钟
-    configData.config->set_sensor_stats_upload_interval_minutes(120);  // 传感器统计上报间隔2小时
+    configData.config->set_sensor_stats_upload_interval_minutes(60);   // 传感器统计上报间隔60分钟
 
     // 1. 有害进程名 (Harmful Process Names)
     configData.config->clear_harmful_process_names();
@@ -297,7 +304,6 @@ void CheatConfigManager::SetDefaultValues(ConfigData& configData)
     configData.config->add_harmful_process_names("duniu");           // 毒牛/雷电模拟器
     configData.config->add_harmful_process_names("dnplayer");        // 雷电模拟器
     configData.config->add_harmful_process_names("ldplayer");        // 雷电模拟器新版本
-    configData.config->add_harmful_process_names("bsplayer");        // 蓝叠模拟器(误，实际是播放器)
     configData.config->add_harmful_process_names("bluestacks");      // 蓝叠模拟器正确名称
     configData.config->add_harmful_process_names("bstweaker");       // 蓝叠调优工具
     configData.config->add_harmful_process_names("mumu");            // 网易MUMU
@@ -686,6 +692,7 @@ void CheatConfigManager::SetDefaultValues(ConfigData& configData)
 
     // --- 通用配置参数（所有Sensor共用） ---
     configData.config->set_max_code_section_size(50 * 1024 * 1024);  // 最大代码节大小(50MB)
+    configData.config->set_heavy_scan_budget_ms(500);                 // 重量级扫描预算(毫秒)
 
     // [新增] MemorySecuritySensor配置参数
     configData.config->set_min_memory_region_size(4 * 1024);  // 最小内存区域大小(4KB)
@@ -706,6 +713,9 @@ void CheatConfigManager::SetDefaultValues(ConfigData& configData)
     configData.config->set_min_os_version(anti_cheat::OS_WIN10);  // 默认要求Windows 10+
 
     // 不再在客户端生成/校验配置签名：配置下发已在传输层加密与鉴权
+
+    // --- Kill Switch（简化版）默认值 ---
+    configData.config->set_enabled(true);
 
     UpdateWideStringCaches(configData);
 }
@@ -735,6 +745,8 @@ void CheatConfigManager::UpdateWideStringCaches(ConfigData& configData)
     convert_to_set(configData.config->whitelisted_process_paths(), configData.whitelistedProcessPaths_w);
     convert_to_set(configData.config->whitelisted_window_keywords(), configData.whitelistedWindowKeywords_w);
     convert_to_set(configData.config->known_good_processes(), configData.knownGoodProcesses_w);
+
+    // 简化版：无禁用名单
 }
 
 // --- 安全相关函数 ---

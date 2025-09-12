@@ -70,6 +70,9 @@ class CheatConfigManager
     int32_t GetMaxBufferSizeMb() const;                   // 最大缓冲区大小(MB)
     int32_t GetSensorStatsUploadIntervalMinutes() const;  // 传感器统计上报间隔(分钟)
 
+    // --- Kill Switch（简化版） ---
+    bool IsEnabled() const;  // 全局开关：false=不检测且不上报
+
    private:
     struct ConfigData
     {
@@ -80,6 +83,7 @@ class CheatConfigManager
         std::unordered_set<std::wstring> whitelistedProcessPaths_w;
         std::unordered_set<std::wstring> whitelistedWindowKeywords_w;
         std::unordered_set<std::wstring> knownGoodProcesses_w;
+        // 简化版：无禁用名单
 
         ConfigData() : config(std::make_unique<anti_cheat::ClientConfig>())
         {
