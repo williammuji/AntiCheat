@@ -31,9 +31,7 @@ jobs:
         vcpkgDirectory: '${{ github.workspace }}/vcpkg'
         vcpkgGitCommitId: 'f7423ee180c4b7f40d43402c2feb3859161ef625'
         vcpkgJsonGlob: 'vcpkg.json'
-        appendedCacheKey: ${{ matrix.platform }}-${{ matrix.config }}
         runVcpkgInstall: true
-        vcpkgArguments: '--triplet=${{ matrix.platform }}-windows --x-install-root=${{ github.workspace }}/vcpkg_installed'
 
     - name: 📚 vcpkg集成
       shell: powershell

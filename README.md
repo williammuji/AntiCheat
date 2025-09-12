@@ -11,7 +11,6 @@ Anti-cheat system for MMORPG games with multi-layered detection and sensor-based
 | **HEAVY** | 10-100ms | ModuleIntegritySensor, ProcessHandleSensor, ThreadAndModuleActivitySensor, MemorySecuritySensor | Deep system analysis |
 | **CRITICAL** | > 100ms | VehHookSensor | Advanced exception handling analysis |
 
-## Detection Methods
 
 ### AdvancedAntiDebugSensor
 - **PEB Debug Flags**: Detects debugger presence via Process Environment Block
