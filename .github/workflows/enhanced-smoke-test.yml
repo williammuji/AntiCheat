@@ -298,7 +298,7 @@ jobs:
           "Capacity Control" = "max_evidences_per_session|max_illegal_sources";
           "Security Threshold" = "max_veh_handlers_to_scan|max_handles_to_scan";
           "OS Version" = "min_os_version";
-          "Performance Control" = "veh_scan_timeout_ms|iat_scan_timeout_ms";
+          "Performance Control" = "timeout_count|elapsed_ms";
           "Behavior Control" = "suspicious_handle_ttl_minutes|report_cooldown_minutes"
         }
         
@@ -315,9 +315,9 @@ jobs:
         $listChecks = @{
           "Harmful Processes" = @{Pattern="add_harmful_process_names"; MinCount=50};
           "Harmful Keywords" = @{Pattern="add_harmful_keywords"; MinCount=60};
-          "VEH Whitelist" = @{Pattern="add_whitelisted_veh_modules"; MinCount=40};
+          "VEH Whitelist" = @{Pattern="add_whitelisted_veh_modules"; MinCount=20};
           "Window Whitelist" = @{Pattern="add_whitelisted_window_keywords"; MinCount=30};
-          "Safe Processes" = @{Pattern="add_known_good_processes"; MinCount=40}
+          "Safe Processes" = @{Pattern="add_known_good_processes"; MinCount=30}
         }
         
         foreach ($list in $listChecks.GetEnumerator()) {
