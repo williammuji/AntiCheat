@@ -45,8 +45,9 @@ jobs:
           
           # Verify build artifacts
           Write-Host "=== Verifying Build Artifacts ==="
-          $artifacts = Get-ChildItem -Path "build-smoke" -Recurse -Include "*.obj", "*.lib", "*.exe", "*.pdb" -ErrorAction SilentlyContinue
-          Write-Host "Found $($artifacts.Count) build artifacts"
+          $buildDir = "build-${{ matrix.platform }}"
+          $artifacts = Get-ChildItem -Path $buildDir -Recurse -Include "*.obj", "*.lib", "*.exe", "*.pdb" -ErrorAction SilentlyContinue
+          Write-Host "Found $($artifacts.Count) build artifacts in $buildDir"
           
           if ($artifacts.Count -eq 0) {
             Write-Error "No build artifacts found - build may have failed"
