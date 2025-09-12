@@ -257,7 +257,7 @@ jobs:
         $prodFeatures = @{
           "Timeout Control" = "HandleSensorTimeout|budget_ms";
           "Exception Handling" = "HandleSensorException|sensor_exceptions";
-          "Performance Recording" = "RecordSensorRuntime|elapsed_ms";
+          "Performance Recording" = "RecordSensorExecutionStats|elapsed_ms";
           "Backoff Mechanism" = "m_sensorBackoffUntil|backoff";
           "OS Version Control" = "min_os_version|GetMinOs"
         }
