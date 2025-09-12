@@ -230,7 +230,7 @@ jobs:
         
   # Test 5: Check performance telemetry fix
   Write-Host "`nTest 5: Check performance telemetry fix..."
-  if ($monitorContent -match "RecordSensorExecutionStats.*elapsed_ms" -or $monitorContent -match "RecordSensorExecutionStats.*duration_ms") {
+  if ($monitorContent -match 'RecordSensorExecutionStats.*elapsed_ms' -or $monitorContent -match 'RecordSensorExecutionStats.*duration_ms') {
     Write-Host "✅ Performance telemetry data recording fixed"
     $testResults += "PASS: Performance telemetry fix"
   } else {
