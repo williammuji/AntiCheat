@@ -335,7 +335,4 @@ message ClientConfig {
   // --- 通用配置参数（所有Sensor共用） ---
   optional int32 heavy_scan_budget_ms = 28;          // 重量级扫描预算时间(毫秒)  
 
-  // --- Kill Switch（简化版）---
-  // 全局开关：false=完全关闭（不检测、不上报），true=正常工作
-  optional bool enabled = 29;  // 默认服务器不下发则视为true
 }
