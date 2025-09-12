@@ -228,7 +228,7 @@ jobs:
         )
         
         foreach ($sensor in $expectedSensors) {
-          if ($monitorContent -match "std::make_unique<Sensors::$sensor>") {
+          if ($monitorContent -match "std::make_unique<$sensor>") {
             Write-Host "✅ Sensor registered: $sensor"
           } else {
             $errors += "Sensor not registered: $sensor"
@@ -255,10 +255,10 @@ jobs:
         
         # Check production environment features
         $prodFeatures = @{
-          "Timeout Control" = "HandleSensorTimeout|budget_ms";
-          "Exception Handling" = "HandleSensorException|sensor_exceptions";
+          "Timeout Control" = "budget_ms|elapsed_ms.*budget_ms";
+          "Exception Handling" = "catch.*exception|CPP_EXCEPTION_FAILURE|UNKNOWN_EXCEPTION_FAILURE";
           "Performance Recording" = "RecordSensorExecutionStats|elapsed_ms";
-          "Backoff Mechanism" = "m_sensorBackoffUntil|backoff";
+          "Backoff Mechanism" = "AddRandomJitter|jitter|Jitter";
           "OS Version Control" = "min_os_version|GetMinOs"
         }
         

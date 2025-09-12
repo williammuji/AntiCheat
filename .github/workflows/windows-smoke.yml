@@ -46,8 +46,22 @@ jobs:
           # Verify build artifacts
           Write-Host "=== Verifying Build Artifacts ==="
           $buildDir = "build-${{ matrix.platform }}"
-          $artifacts = Get-ChildItem -Path $buildDir -Recurse -Include "*.obj", "*.lib", "*.exe", "*.pdb" -ErrorAction SilentlyContinue
-          Write-Host "Found $($artifacts.Count) build artifacts in $buildDir"
+          Write-Host "Looking for artifacts in: $buildDir"
+          
+          # Check if build directory exists
+          if (Test-Path $buildDir) {
+            $artifacts = Get-ChildItem -Path $buildDir -Recurse -Include "*.obj", "*.lib", "*.exe", "*.pdb" -ErrorAction SilentlyContinue
+            Write-Host "Found $($artifacts.Count) build artifacts in $buildDir"
+            
+            # List some artifacts for debugging
+            if ($artifacts.Count -gt 0) {
+              Write-Host "Sample artifacts:"
+              $artifacts | Select-Object -First 5 | ForEach-Object { Write-Host "  - $($_.Name)" }
+            }
+          } else {
+            Write-Host "Build directory $buildDir does not exist"
+            $artifacts = @()
+          }
           
           if ($artifacts.Count -eq 0) {
             Write-Error "No build artifacts found - build may have failed"
