@@ -56,9 +56,7 @@ typedef NTSTATUS(WINAPI *NtQueryInformationThread_t)(HANDLE, THREADINFOCLASS, PV
 typedef NTSTATUS(WINAPI *NtQuerySystemInformation_t)(SYSTEM_INFORMATION_CLASS, PVOID, ULONG, PULONG);
 }
 
-// 全局函数指针变量
-NtQueryInformationThread_t g_pNtQueryInformationThread = nullptr;
-NtQuerySystemInformation_t g_pNtQuerySystemInformation = nullptr;
+// NT API函数指针将在SystemUtils命名空间中定义
 
 // 系统信息结构体定义
 typedef struct _SYSTEM_KERNEL_DEBUGGER_INFORMATION
@@ -124,6 +122,34 @@ typedef struct _VECTORED_HANDLER_LIST_WIN8
 
 namespace SystemUtils
 {
+// NT API函数指针定义
+NtQueryInformationThread_t g_pNtQueryInformationThread = nullptr;
+NtQuerySystemInformation_t g_pNtQuerySystemInformation = nullptr;
+PNtSetInformationThread g_pNtSetInformationThread = nullptr;
+
+// 初始化NT API函数指针
+void EnsureNtApisLoaded()
+{
+    HMODULE hNtdll = GetModuleHandleW(L"ntdll.dll");
+    if (!hNtdll)
+        return;
+    if (!g_pNtQuerySystemInformation)
+    {
+        g_pNtQuerySystemInformation =
+                reinterpret_cast<NtQuerySystemInformation_t>(GetProcAddress(hNtdll, "NtQuerySystemInformation"));
+    }
+    if (!g_pNtQueryInformationThread)
+    {
+        g_pNtQueryInformationThread =
+                reinterpret_cast<NtQueryInformationThread_t>(GetProcAddress(hNtdll, "NtQueryInformationThread"));
+    }
+    if (!g_pNtSetInformationThread)
+    {
+        g_pNtSetInformationThread =
+                reinterpret_cast<PNtSetInformationThread>(GetProcAddress(hNtdll, "NtSetInformationThread"));
+    }
+}
+
 // 函数声明
 bool GetModuleCodeSectionInfo(HMODULE hModule, PVOID &outBase, DWORD &outSize);
 
@@ -311,9 +337,10 @@ typedef struct _PS_ATTRIBUTE_LIST
 
 // 为兼容旧版SDK，手动定义缺失的枚举值
 // 注释：现代Windows 10 SDK已包含SystemCodeIntegrityInformation定义
-// #if !defined(NTDDI_WIN8) || (NTDDI_VERSION < NTDDI_WIN8)
-// const int SystemCodeIntegrityInformation = 102;
-// #endif
+// 但在某些开发环境中可能仍然需要手动定义
+#ifndef SystemCodeIntegrityInformation
+const int SystemCodeIntegrityInformation = 103;  // 使用标准值103
+#endif
 const int SystemHandleInformation = 16;
 
 typedef struct _SYSTEM_HANDLE_TABLE_ENTRY_INFO
@@ -338,31 +365,7 @@ typedef NTSTATUS(WINAPI *PNtQueryInformationThread)(HANDLE ThreadHandle, THREADI
                                                     PVOID ThreadInformation, ULONG ThreadInformationLength,
                                                     PULONG ReturnLength);
 
-// 将函数指针定义为文件内静态变量，避免在多个函数中重复定义。
-// 统一由 EnsureNtApisLoaded() 填充全局函数指针，避免重复定义与空指针问题
-PNtSetInformationThread g_pNtSetInformationThread = nullptr;
-
-static void EnsureNtApisLoaded()
-{
-    HMODULE hNtdll = GetModuleHandleW(L"ntdll.dll");
-    if (!hNtdll)
-        return;
-    if (!g_pNtQuerySystemInformation)
-    {
-        g_pNtQuerySystemInformation =
-                reinterpret_cast<NtQuerySystemInformation_t>(GetProcAddress(hNtdll, "NtQuerySystemInformation"));
-    }
-    if (!g_pNtQueryInformationThread)
-    {
-        g_pNtQueryInformationThread =
-                reinterpret_cast<NtQueryInformationThread_t>(GetProcAddress(hNtdll, "NtQueryInformationThread"));
-    }
-    if (!g_pNtSetInformationThread)
-    {
-        g_pNtSetInformationThread =
-                reinterpret_cast<PNtSetInformationThread>(GetProcAddress(hNtdll, "NtSetInformationThread"));
-    }
-}
+// 这些定义将移到SystemUtils命名空间中
 
 // PEB->VectoredExceptionHandlers 指向的结构体
 typedef struct _VECTORED_HANDLER_LIST
@@ -1260,10 +1263,10 @@ class ThreadScanner
         std::unique_ptr<void, decltype(thread_closer)> thread_handle(hThread, thread_closer);
 
         PVOID startAddress = nullptr;
-        if (g_pNtQueryInformationThread &&
-            NT_SUCCESS(g_pNtQueryInformationThread(hThread,
-                                                   (THREADINFOCLASS)9,  // ThreadQuerySetWin32StartAddress
-                                                   &startAddress, sizeof(startAddress), nullptr)))
+        if (SystemUtils::g_pNtQueryInformationThread &&
+            NT_SUCCESS(SystemUtils::g_pNtQueryInformationThread(hThread,
+                                                                (THREADINFOCLASS)9,  // ThreadQuerySetWin32StartAddress
+                                                                &startAddress, sizeof(startAddress), nullptr)))
         {
             return startAddress;
         }
@@ -1427,8 +1430,9 @@ class AdvancedAntiDebugSensor : public ISensor
         __try
         {
             SYSTEM_KERNEL_DEBUGGER_INFORMATION info;
-            if (g_pNtQuerySystemInformation &&
-                NT_SUCCESS(g_pNtQuerySystemInformation(SystemKernelDebuggerInformation, &info, sizeof(info), NULL)))
+            if (SystemUtils::g_pNtQuerySystemInformation &&
+                NT_SUCCESS(SystemUtils::g_pNtQuerySystemInformation(SystemKernelDebuggerInformation, &info,
+                                                                    sizeof(info), NULL)))
             {
                 if (info.KernelDebuggerEnabled && !info.KernelDebuggerNotPresent)
                 {
@@ -1565,8 +1569,10 @@ class SystemCodeIntegritySensor : public ISensor
         }
 
         SYSTEM_CODE_INTEGRITY_INFORMATION sci = {sizeof(sci), 0};
-        if (g_pNtQuerySystemInformation &&
-            NT_SUCCESS(g_pNtQuerySystemInformation(SystemCodeIntegrityInformation, &sci, sizeof(sci), nullptr)))
+        ULONG retLen = 0;
+        if (SystemUtils::g_pNtQuerySystemInformation &&
+            NT_SUCCESS(SystemUtils::g_pNtQuerySystemInformation(SystemCodeIntegrityInformation, &sci, sizeof(sci),
+                                                                &retLen)))
         {
             if (sci.CodeIntegrityOptions & 0x02)
             {
@@ -2311,7 +2317,7 @@ class ProcessHandleSensor : public ISensor
         const auto startTime = std::chrono::steady_clock::now();
 
         // 4. API可用性检查
-        if (!g_pNtQuerySystemInformation)
+        if (!SystemUtils::g_pNtQuerySystemInformation)
         {
             LOG_ERROR(AntiCheatLogger::LogCategory::SENSOR, "ProcessHandleSensor: NtQuerySystemInformation API不可用");
             RecordFailure(anti_cheat::PROCESS_HANDLE_QUERY_SYSTEM_INFO_FAILED);
@@ -2330,9 +2336,9 @@ class ProcessHandleSensor : public ISensor
 
         do
         {
-            status = g_pNtQuerySystemInformation
-                             ? g_pNtQuerySystemInformation(SystemHandleInformation, bufferManager.buffer,
-                                                           static_cast<ULONG>(bufferManager.size), nullptr)
+            status = SystemUtils::g_pNtQuerySystemInformation
+                             ? SystemUtils::g_pNtQuerySystemInformation(SystemHandleInformation, bufferManager.buffer,
+                                                                        static_cast<ULONG>(bufferManager.size), nullptr)
                              : (NTSTATUS)0xC0000002L;  // STATUS_NOT_IMPLEMENTED
 
             if (status == STATUS_INFO_LENGTH_MISMATCH)
@@ -2660,7 +2666,7 @@ class ThreadAndModuleActivitySensor : public ISensor
         const auto startTime = std::chrono::steady_clock::now();
 
         // 1. 检查系统API可用性（这是系统级别的检查）
-        if (!g_pNtQueryInformationThread)
+        if (!SystemUtils::g_pNtQueryInformationThread)
         {
             LOG_WARNING(AntiCheatLogger::LogCategory::SENSOR, "ThreadAndModuleActivitySensor: 系统API不可用");
             RecordFailure(anti_cheat::THREAD_MODULE_SYSTEM_API_FAILED);
@@ -2777,10 +2783,11 @@ class ThreadAndModuleActivitySensor : public ISensor
             std::unique_ptr<void, decltype(thread_closer)> thread_handle(hThread, thread_closer);
 
             PVOID startAddress = nullptr;
-            if (g_pNtQueryInformationThread &&
-                NT_SUCCESS(g_pNtQueryInformationThread(hThread,
-                                                       (THREADINFOCLASS)9,  // ThreadQuerySetWin32StartAddress
-                                                       &startAddress, sizeof(startAddress), nullptr)))
+            if (SystemUtils::g_pNtQueryInformationThread &&
+                NT_SUCCESS(
+                        SystemUtils::g_pNtQueryInformationThread(hThread,
+                                                                 (THREADINFOCLASS)9,  // ThreadQuerySetWin32StartAddress
+                                                                 &startAddress, sizeof(startAddress), nullptr)))
             {
                 if (startAddress)
                 {
@@ -2812,7 +2819,7 @@ class ThreadAndModuleActivitySensor : public ISensor
     void AnalyzeThreadIntegrity(ScanContext &context, DWORD threadId)
     {
         // API可用性检查
-        if (!g_pNtQueryInformationThread)
+        if (!SystemUtils::g_pNtQueryInformationThread)
         {
             return;  // 静默跳过，不记录错误
         }
@@ -2830,9 +2837,9 @@ class ThreadAndModuleActivitySensor : public ISensor
 
         // 检查线程起始地址
         PVOID startAddress = nullptr;
-        if (NT_SUCCESS(g_pNtQueryInformationThread(hThread,
-                                                   (THREADINFOCLASS)9,  // ThreadQuerySetWin32StartAddress
-                                                   &startAddress, sizeof(startAddress), nullptr)))
+        if (NT_SUCCESS(SystemUtils::g_pNtQueryInformationThread(hThread,
+                                                                (THREADINFOCLASS)9,  // ThreadQuerySetWin32StartAddress
+                                                                &startAddress, sizeof(startAddress), nullptr)))
         {
             if (startAddress)
             {
@@ -2854,9 +2861,9 @@ class ThreadAndModuleActivitySensor : public ISensor
 
         // 检查线程是否隐藏调试器
         ULONG isHidden = 0;
-        if (NT_SUCCESS(g_pNtQueryInformationThread(hThread,
-                                                   (THREADINFOCLASS)17,  // ThreadHideFromDebugger
-                                                   &isHidden, sizeof(isHidden), nullptr)))
+        if (NT_SUCCESS(SystemUtils::g_pNtQueryInformationThread(hThread,
+                                                                (THREADINFOCLASS)17,  // ThreadHideFromDebugger
+                                                                &isHidden, sizeof(isHidden), nullptr)))
         {
             if (isHidden)
             {
@@ -3702,7 +3709,7 @@ bool CheatMonitor::IsCallerLegitimate()
 CheatMonitor::Pimpl::Pimpl()
 {
     m_windowsVersion = SystemUtils::GetWindowsVersion();  // 初始化时检测并缓存Windows版本
-    EnsureNtApisLoaded();                                 // 确保NT API指针已初始化
+    SystemUtils::EnsureNtApisLoaded();                    // 确保NT API指针已初始化
 }
 
 void CheatMonitor::Pimpl::InitializeSystem()
@@ -4428,13 +4435,12 @@ void CheatMonitor::Pimpl::HardenProcessAndThreads()
     }
 
     // 2. 隐藏我们自己的监控线程，增加逆向分析难度
-    // 使用全局变量g_pNtSetInformationThread
-    typedef NTSTATUS(WINAPI * PNtSetInformationThread)(HANDLE, THREADINFOCLASS, PVOID, ULONG);
-    extern PNtSetInformationThread g_pNtSetInformationThread;
-    if (g_pNtSetInformationThread)
+    // 使用SystemUtils命名空间中的g_pNtSetInformationThread
+    if (SystemUtils::g_pNtSetInformationThread)
     {
-        NTSTATUS status = g_pNtSetInformationThread(GetCurrentThread(), (THREADINFOCLASS)17,  // ThreadHideFromDebugger
-                                                    nullptr, 0);
+        NTSTATUS status = SystemUtils::g_pNtSetInformationThread(GetCurrentThread(),
+                                                                 (THREADINFOCLASS)17,  // ThreadHideFromDebugger
+                                                                 nullptr, 0);
         if (!NT_SUCCESS(status))
         {
             // 线程隐藏失败通常不影响功能，只记录日志
