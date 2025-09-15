@@ -339,12 +339,30 @@ typedef NTSTATUS(WINAPI *PNtQueryInformationThread)(HANDLE ThreadHandle, THREADI
                                                     PULONG ReturnLength);
 
 // 将函数指针定义为文件内静态变量，避免在多个函数中重复定义。
-const auto g_pNtQuerySystemInformation = reinterpret_cast<PNtQuerySystemInformation>(
-        GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtQuerySystemInformation"));
-const auto g_pNtSetInformationThread = reinterpret_cast<PNtSetInformationThread>(
-        GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtSetInformationThread"));
-const auto g_pNtQueryInformationThread = reinterpret_cast<PNtQueryInformationThread>(
-        GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtQueryInformationThread"));
+// 统一由 EnsureNtApisLoaded() 填充全局函数指针，避免重复定义与空指针问题
+PNtSetInformationThread g_pNtSetInformationThread = nullptr;
+
+static void EnsureNtApisLoaded()
+{
+    HMODULE hNtdll = GetModuleHandleW(L"ntdll.dll");
+    if (!hNtdll)
+        return;
+    if (!g_pNtQuerySystemInformation)
+    {
+        g_pNtQuerySystemInformation =
+                reinterpret_cast<NtQuerySystemInformation_t>(GetProcAddress(hNtdll, "NtQuerySystemInformation"));
+    }
+    if (!g_pNtQueryInformationThread)
+    {
+        g_pNtQueryInformationThread =
+                reinterpret_cast<NtQueryInformationThread_t>(GetProcAddress(hNtdll, "NtQueryInformationThread"));
+    }
+    if (!g_pNtSetInformationThread)
+    {
+        g_pNtSetInformationThread =
+                reinterpret_cast<PNtSetInformationThread>(GetProcAddress(hNtdll, "NtSetInformationThread"));
+    }
+}
 
 // PEB->VectoredExceptionHandlers 指向的结构体
 typedef struct _VECTORED_HANDLER_LIST
@@ -1750,44 +1768,44 @@ class ProcessAndWindowMonitorSensor : public ISensor
                     if (it != windowTitlesByPid.end())
                     {
                         for (const auto &title : it->second)
-                    {
-                        std::wstring lowerTitle = title;
-                        std::transform(lowerTitle.begin(), lowerTitle.end(), lowerTitle.begin(), ::towlower);
-
-                        // 检查窗口标题是否在白名单中
-                        bool isWhitelistedWindow = false;
-                        auto whitelistedKeywords = context.GetWhitelistedWindowKeywords();
-                        if (whitelistedKeywords)
                         {
-                            for (const auto &whitelistedKeyword : *whitelistedKeywords)
+                            std::wstring lowerTitle = title;
+                            std::transform(lowerTitle.begin(), lowerTitle.end(), lowerTitle.begin(), ::towlower);
+
+                            // 检查窗口标题是否在白名单中
+                            bool isWhitelistedWindow = false;
+                            auto whitelistedKeywords = context.GetWhitelistedWindowKeywords();
+                            if (whitelistedKeywords)
                             {
-                                if (lowerTitle.find(whitelistedKeyword) != std::wstring::npos)
+                                for (const auto &whitelistedKeyword : *whitelistedKeywords)
                                 {
-                                    isWhitelistedWindow = true;
-                                    break;
+                                    if (lowerTitle.find(whitelistedKeyword) != std::wstring::npos)
+                                    {
+                                        isWhitelistedWindow = true;
+                                        break;
+                                    }
+                                }
+                            }
+                            if (isWhitelistedWindow)
+                            {
+                                continue;  // 窗口标题在白名单中，检查下一个窗口标题
+                            }
+
+                            // 检查窗口标题是否包含有害关键词
+                            auto harmfulKeywords = context.GetHarmfulKeywords();
+                            if (harmfulKeywords)
+                            {
+                                for (const auto &keyword : *harmfulKeywords)
+                                {
+                                    if (lowerTitle.find(keyword) != std::wstring::npos)
+                                    {
+                                        context.AddEvidence(anti_cheat::ENVIRONMENT_HARMFUL_PROCESS,
+                                                            "有害进程(窗口标题): " + Utils::WideToString(title));
+                                        goto next_process_loop;  // 跳出内外两层循环，检查下一个进程
+                                    }
                                 }
                             }
                         }
-                        if (isWhitelistedWindow)
-                        {
-                            continue;  // 窗口标题在白名单中，检查下一个窗口标题
-                        }
-
-                        // 检查窗口标题是否包含有害关键词
-                        auto harmfulKeywords = context.GetHarmfulKeywords();
-                        if (harmfulKeywords)
-                        {
-                            for (const auto &keyword : *harmfulKeywords)
-                            {
-                                if (lowerTitle.find(keyword) != std::wstring::npos)
-                                {
-                                    context.AddEvidence(anti_cheat::ENVIRONMENT_HARMFUL_PROCESS,
-                                                        "有害进程(窗口标题): " + Utils::WideToString(title));
-                                    goto next_process_loop;  // 跳出内外两层循环，检查下一个进程
-                                }
-                            }
-                        }
-                    }
                     }
                 }
 
@@ -2312,8 +2330,10 @@ class ProcessHandleSensor : public ISensor
 
         do
         {
-            status = g_pNtQuerySystemInformation(SystemHandleInformation, bufferManager.buffer,
-                                                 static_cast<ULONG>(bufferManager.size), nullptr);
+            status = g_pNtQuerySystemInformation
+                             ? g_pNtQuerySystemInformation(SystemHandleInformation, bufferManager.buffer,
+                                                           static_cast<ULONG>(bufferManager.size), nullptr)
+                             : (NTSTATUS)0xC0000002L;  // STATUS_NOT_IMPLEMENTED
 
             if (status == STATUS_INFO_LENGTH_MISMATCH)
             {
@@ -3682,6 +3702,7 @@ bool CheatMonitor::IsCallerLegitimate()
 CheatMonitor::Pimpl::Pimpl()
 {
     m_windowsVersion = SystemUtils::GetWindowsVersion();  // 初始化时检测并缓存Windows版本
+    EnsureNtApisLoaded();                                 // 确保NT API指针已初始化
 }
 
 void CheatMonitor::Pimpl::InitializeSystem()
@@ -3928,7 +3949,7 @@ void CheatMonitor::Pimpl::MonitorLoop()
     {
         // 计算下一次应当唤醒的时间点（最早的调度时间），支持快速关停
         const auto now_before_wait = std::chrono::steady_clock::now();
-        auto earliest = now_before_wait + std::chrono::seconds(1); // 默认1秒检查一次状态
+        auto earliest = now_before_wait + std::chrono::seconds(1);  // 默认1秒检查一次状态
 
         if (m_isSessionActive.load() && m_hasServerConfig.load())
         {
@@ -4258,7 +4279,6 @@ void CheatMonitor::Pimpl::RecordSensorExecutionStats(const char *name, int durat
 
 void CheatMonitor::Pimpl::SendReport(const anti_cheat::Report &report)
 {
-
     std::string serialized_report;
     if (!report.SerializeToString(&serialized_report))
     {
@@ -4831,7 +4851,6 @@ void CheatMonitor::Pimpl::ExecuteLightweightSensors()
     if (m_lightweightSensors.empty())
         return;
 
-
     // 轻量级传感器：依次按index扫描
     m_lightSensorIndex %= m_lightweightSensors.size();
     const auto &sensor = m_lightweightSensors[m_lightSensorIndex];
@@ -4843,7 +4862,6 @@ void CheatMonitor::Pimpl::ExecuteHeavyweightSensors()
 {
     if (m_heavyweightSensors.empty())
         return;
-
 
     // 重量级传感器：依次按index扫描
     m_heavySensorIndex %= m_heavyweightSensors.size();
