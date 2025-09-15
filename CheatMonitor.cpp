@@ -54,6 +54,8 @@
 extern "C" {
 typedef NTSTATUS(WINAPI *NtQueryInformationThread_t)(HANDLE, THREADINFOCLASS, PVOID, ULONG, PULONG);
 typedef NTSTATUS(WINAPI *NtQuerySystemInformation_t)(SYSTEM_INFORMATION_CLASS, PVOID, ULONG, PULONG);
+typedef NTSTATUS(WINAPI *PNtSetInformationThread)(HANDLE ThreadHandle, THREADINFOCLASS ThreadInformationClass,
+                                                  PVOID ThreadInformation, ULONG ThreadInformationLength);
 }
 
 // NT API函数指针将在SystemUtils命名空间中定义
@@ -358,8 +360,6 @@ typedef NTSTATUS(WINAPI *PNtQuerySystemInformation)(ULONG SystemInformationClass
                                                     ULONG SystemInformationLength, PULONG ReturnLength);
 
 // --- 为线程隐藏定义必要的结构体和类型 ---
-typedef NTSTATUS(WINAPI *PNtSetInformationThread)(HANDLE ThreadHandle, THREADINFOCLASS ThreadInformationClass,
-                                                  PVOID ThreadInformation, ULONG ThreadInformationLength);
 
 typedef NTSTATUS(WINAPI *PNtQueryInformationThread)(HANDLE ThreadHandle, THREADINFOCLASS ThreadInformationClass,
                                                     PVOID ThreadInformation, ULONG ThreadInformationLength,
