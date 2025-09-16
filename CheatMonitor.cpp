@@ -1745,8 +1745,27 @@ class ProcessAndWindowMonitorSensor : public ISensor
                 }
                 else
                 {
-                    // OpenProcess失败，记录失败原因
-                    RecordFailure(anti_cheat::PROCESS_WINDOW_OPEN_PROCESS_FAILED);
+                    // OpenProcess失败，检查是否为正常的权限限制
+                    DWORD lastError = GetLastError();
+                    
+                    // 常见的正常失败情况：
+                    // ERROR_ACCESS_DENIED (5) - 权限不足，常见于系统进程
+                    // ERROR_INVALID_PARAMETER (87) - 参数无效
+                    // ERROR_INVALID_HANDLE (6) - 句柄无效
+                    if (lastError == ERROR_ACCESS_DENIED || lastError == ERROR_INVALID_PARAMETER || 
+                        lastError == ERROR_INVALID_HANDLE)
+                    {
+                        // 这些是正常的权限限制，不记录为失败
+                        LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR, 
+                                   "无法打开进程 PID %lu，正常权限限制 (错误码: %lu)", pe.th32ProcessID, lastError);
+                    }
+                    else
+                    {
+                        // 其他错误可能是真正的系统问题
+                        LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR, 
+                                     "OpenProcess失败: PID=%lu, 错误码=%lu", pe.th32ProcessID, lastError);
+                        RecordFailure(anti_cheat::PROCESS_WINDOW_OPEN_PROCESS_FAILED);
+                    }
                 }
 
                 // 检查点 1: 进程名黑名单检查（仅在签名不可信时）
@@ -2783,11 +2802,22 @@ class ThreadAndModuleActivitySensor : public ISensor
             std::unique_ptr<void, decltype(thread_closer)> thread_handle(hThread, thread_closer);
 
             PVOID startAddress = nullptr;
-            if (SystemUtils::g_pNtQueryInformationThread &&
-                NT_SUCCESS(
-                        SystemUtils::g_pNtQueryInformationThread(hThread,
-                                                                 (THREADINFOCLASS)9,  // ThreadQuerySetWin32StartAddress
-                                                                 &startAddress, sizeof(startAddress), nullptr)))
+            
+            // 检查NT API是否可用
+            if (!SystemUtils::g_pNtQueryInformationThread)
+            {
+                // API不可用，这是正常情况，不记录失败
+                LOG_DEBUG(AntiCheatLogger::LogCategory::SENSOR, 
+                         "NtQueryInformationThread API不可用，跳过线程起始地址检测");
+                return;
+            }
+            
+            // 尝试查询线程起始地址
+            NTSTATUS status = SystemUtils::g_pNtQueryInformationThread(hThread,
+                                                                      (THREADINFOCLASS)9,  // ThreadQuerySetWin32StartAddress
+                                                                      &startAddress, sizeof(startAddress), nullptr);
+            
+            if (NT_SUCCESS(status))
             {
                 if (startAddress)
                 {
@@ -2803,8 +2833,19 @@ class ThreadAndModuleActivitySensor : public ISensor
             }
             else
             {
-                // 记录NtQueryInformationThread失败
-                RecordFailure(anti_cheat::THREAD_MODULE_QUERY_THREAD_FAILED);
+                // 只有在真正的API错误时才记录失败，某些NTSTATUS值是正常情况
+                if (status != 0xC000000D && status != 0xC0000022)  // STATUS_INVALID_PARAMETER, STATUS_ACCESS_DENIED
+                {
+                    LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR, 
+                                 "NtQueryInformationThread失败: NTSTATUS=0x%08X, TID=%lu", status, threadId);
+                    RecordFailure(anti_cheat::THREAD_MODULE_QUERY_THREAD_FAILED);
+                }
+                else
+                {
+                    // 参数无效或访问被拒绝是正常情况，不记录失败
+                    LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR, 
+                               "NtQueryInformationThread返回正常状态: NTSTATUS=0x%08X, TID=%lu", status, threadId);
+                }
             }
         }
         else
@@ -3026,44 +3067,59 @@ class MemorySecuritySensor : public ISensor
     void DetectHiddenModule(ScanContext &context, const MEMORY_BASIC_INFORMATION &mbi)
     {
         HMODULE hMod = nullptr;
-        if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                                (LPCWSTR)mbi.BaseAddress, &hMod))
+        DWORD lastError = 0;
+        
+        // 尝试获取模块句柄，区分真正的API失败和正常的"不属于任何模块"情况
+        BOOL result = GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                        (LPCWSTR)mbi.BaseAddress, &hMod);
+        
+        if (!result)
         {
-            // GetModuleHandleExW失败，记录失败原因
-            RecordFailure(anti_cheat::MEMORY_GET_MODULE_HANDLE_FAILED);
-            uintptr_t baseAddr = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
-            SIZE_T regionSize = mbi.RegionSize;
-
-            // 使用配置化的检测阈值
-            const uint32_t minRegionSize = CheatConfigManager::GetInstance().GetMinMemoryRegionSize();
-            const uint32_t maxRegionSize = CheatConfigManager::GetInstance().GetMaxMemoryRegionSize();
-
-            if (baseAddr > 0x10000 && regionSize >= minRegionSize && regionSize <= maxRegionSize)
+            lastError = GetLastError();
+            // 只有在真正的API错误时才记录失败，ERROR_INVALID_ADDRESS是正常情况
+            if (lastError != ERROR_INVALID_ADDRESS)
             {
-                auto peCheckResult = CheckHiddenMemoryRegion(mbi.BaseAddress, regionSize);
-                if (peCheckResult.shouldReport)
-                {
-                    char msgBuffer[256];
-                    if (peCheckResult.accessible)
-                    {
-                        sprintf_s(msgBuffer, sizeof(msgBuffer), "检测到隐藏的可执行内存区域: 0x%p 大小: %zu 字节",
-                                  (void *)baseAddr, regionSize);
-                    }
-                    else
-                    {
-                        sprintf_s(msgBuffer, sizeof(msgBuffer),
-                                  "检测到隐藏的可执行内存区域（无法读取）: 0x%p 大小: %zu 字节", (void *)baseAddr,
-                                  regionSize);
-                    }
-                    context.AddEvidence(anti_cheat::INTEGRITY_MEMORY_PATCH, std::string(msgBuffer));
-                }
+                LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR, 
+                              "GetModuleHandleExW失败: 错误码=%lu, 地址=0x%p", lastError, mbi.BaseAddress);
+                RecordFailure(anti_cheat::MEMORY_GET_MODULE_HANDLE_FAILED);
+                return;
             }
         }
-        else
+        
+        // 如果GetModuleHandleExW成功，说明地址属于已知模块，不是隐藏模块
+        if (result && hMod != nullptr)
         {
-            // GetModuleHandleExW成功，说明地址在已知模块中，不需要进一步检测
-            // 注意：不统计为失败，因为这是正常的检测流程
+            return; // 地址在已知模块中，跳过检测
         }
+        
+        // 地址不属于任何已知模块，继续检测是否为隐藏模块
+        uintptr_t baseAddr = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
+        SIZE_T regionSize = mbi.RegionSize;
+
+        // 使用配置化的检测阈值
+        const uint32_t minRegionSize = CheatConfigManager::GetInstance().GetMinMemoryRegionSize();
+        const uint32_t maxRegionSize = CheatConfigManager::GetInstance().GetMaxMemoryRegionSize();
+
+        if (baseAddr > 0x10000 && regionSize >= minRegionSize && regionSize <= maxRegionSize)
+        {
+            auto peCheckResult = CheckHiddenMemoryRegion(mbi.BaseAddress, regionSize);
+            if (peCheckResult.shouldReport)
+            {
+                char msgBuffer[256];
+                if (peCheckResult.accessible)
+                {
+                    sprintf_s(msgBuffer, sizeof(msgBuffer), "检测到隐藏的可执行内存区域: 0x%p 大小: %zu 字节",
+                        (void *)baseAddr, regionSize);
+                }
+                else
+                {
+                    sprintf_s(msgBuffer, sizeof(msgBuffer),
+                        "检测到隐藏的可执行内存区域（无法读取）: 0x%p 大小: %zu 字节", (void *)baseAddr,
+                        regionSize);
+                }
+                context.AddEvidence(anti_cheat::INTEGRITY_MEMORY_PATCH, std::string(msgBuffer));
+            }
+        }   
     }
 
     // 检测私有可执行内存
@@ -3778,9 +3834,10 @@ void CheatMonitor::Pimpl::InitializeProcessBaseline()
 
     LOG_INFO(AntiCheatLogger::LogCategory::SYSTEM, "Initializing process baseline...");
 
-    // 使用 (LPCWSTR)this 获取一个在当前模块内的有效地址，以修复C2440和C2660错误
-    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                            (LPCWSTR)this, &m_hSelfModule))
+    // 使用GetModuleHandle(NULL)获取当前模块句柄，这是最可靠的方法
+    // 之前的this指针方法会失败，因为this指向堆上的对象，不在代码段中
+    m_hSelfModule = GetModuleHandle(NULL);
+    if (!m_hSelfModule)
     {
         AddEvidence(anti_cheat::RUNTIME_ERROR, "无法获取自身模块句柄以建立完整性基线。");
     }
