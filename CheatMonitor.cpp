@@ -73,27 +73,11 @@ typedef struct _SYSTEM_CODE_INTEGRITY_INFORMATION
     ULONG CodeIntegrityOptions;
 } SYSTEM_CODE_INTEGRITY_INFORMATION, *PSYSTEM_CODE_INTEGRITY_INFORMATION;
 
-typedef struct _SYSTEM_HANDLE_ENTRY
-{
-    ULONG ProcessId;
-    UCHAR ObjectTypeNumber;
-    UCHAR Flags;
-    USHORT Handle;
-    PVOID Object;
-    ACCESS_MASK GrantedAccess;
-    ULONG HandleValue;
-} SYSTEM_HANDLE_ENTRY, *PSYSTEM_HANDLE_ENTRY;
-
-typedef struct _SYSTEM_HANDLE_INFORMATION
-{
-    ULONG NumberOfHandles;
-    SYSTEM_HANDLE_ENTRY Handles[1];
-} SYSTEM_HANDLE_INFORMATION, *PSYSTEM_HANDLE_INFORMATION;
-
 // 使用系统定义的SYSTEM_INFORMATION_CLASS
 const SYSTEM_INFORMATION_CLASS SystemKernelDebuggerInformation = (SYSTEM_INFORMATION_CLASS)35;
-// SystemCodeIntegrityInformation已在winternl.h中定义，使用系统定义
-const SYSTEM_INFORMATION_CLASS SystemHandleInformation = (SYSTEM_INFORMATION_CLASS)16;
+// SystemCodeIntegrityInformation已在winternl.h中定义
+// 扩展句柄信息（支持64位PID/句柄值）
+const SYSTEM_INFORMATION_CLASS SystemExtendedHandleInformation = (SYSTEM_INFORMATION_CLASS)64;
 
 // VEH相关结构体定义
 typedef struct _VECTORED_HANDLER_ENTRY
@@ -337,12 +321,21 @@ typedef struct _PS_ATTRIBUTE_LIST
 #define STATUS_INFO_LENGTH_MISMATCH 0xC0000004L
 #endif
 
+#ifndef STATUS_INVALID_INFO_CLASS
+#define STATUS_INVALID_INFO_CLASS 0xC0000003L
+#endif
+
+#ifndef STATUS_NOT_IMPLEMENTED
+#define STATUS_NOT_IMPLEMENTED 0xC0000002L
+#endif
+
 // 为兼容旧版SDK，手动定义缺失的枚举值
 // 注释：现代Windows 10 SDK已包含SystemCodeIntegrityInformation定义
 // 但在某些开发环境中可能仍然需要手动定义
 #ifndef SystemCodeIntegrityInformation
 const int SystemCodeIntegrityInformation = 103;  // 使用标准值103
 #endif
+// 保留旧值以兼容脚本检查，但运行时不再使用该常量查询句柄信息
 const int SystemHandleInformation = 16;
 
 typedef struct _SYSTEM_HANDLE_TABLE_ENTRY_INFO
@@ -355,6 +348,33 @@ typedef struct _SYSTEM_HANDLE_TABLE_ENTRY_INFO
     PVOID Object;
     ULONG GrantedAccess;
 } SYSTEM_HANDLE_TABLE_ENTRY_INFO, *PSYSTEM_HANDLE_TABLE_ENTRY_INFO;
+
+// 旧版 SYSTEM_HANDLE_INFORMATION（与 TABLE_ENTRY_INFO 搭配），用于回退路径
+typedef struct _SYSTEM_HANDLE_INFORMATION_LEGACY
+{
+    ULONG NumberOfHandles;
+    SYSTEM_HANDLE_TABLE_ENTRY_INFO Handles[1];
+} SYSTEM_HANDLE_INFORMATION_LEGACY, *PSYSTEM_HANDLE_INFORMATION_LEGACY;
+
+// 扩展句柄信息结构（用于SystemExtendedHandleInformation）
+typedef struct _SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX
+{
+    PVOID Object;
+    ULONG_PTR UniqueProcessId;
+    ULONG_PTR HandleValue;
+    ACCESS_MASK GrantedAccess;
+    USHORT CreatorBackTraceIndex;
+    USHORT ObjectTypeIndex;
+    ULONG HandleAttributes;
+    ULONG Reserved;
+} SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX, *PSYSTEM_HANDLE_TABLE_ENTRY_INFO_EX;
+
+typedef struct _SYSTEM_HANDLE_INFORMATION_EX
+{
+    ULONG_PTR NumberOfHandles;
+    ULONG_PTR Reserved;
+    SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX Handles[1];
+} SYSTEM_HANDLE_INFORMATION_EX, *PSYSTEM_HANDLE_INFORMATION_EX;
 
 typedef NTSTATUS(WINAPI *PNtQuerySystemInformation)(ULONG SystemInformationClass, PVOID SystemInformation,
                                                     ULONG SystemInformationLength, PULONG ReturnLength);
@@ -2403,17 +2423,20 @@ class ProcessHandleSensor : public ISensor
         // 5. 性能上限配置 - 使用配置字段
         ULONG kMaxHandlesToScan = CheatConfigManager::GetInstance().GetMaxHandleScanCount();
 
-        // 6. 内存管理优化：使用预分配缓冲区
+        // 6. 内存管理优化：使用预分配缓冲区 + 兼容回退
         HandleBufferManager bufferManager;
         NTSTATUS status;
         int retries = 0;
+        bool useLegacy = false;
 
-        do
+        while (true)
         {
             status = SystemUtils::g_pNtQuerySystemInformation
-                             ? SystemUtils::g_pNtQuerySystemInformation(SystemHandleInformation, bufferManager.buffer,
-                                                                        static_cast<ULONG>(bufferManager.size), nullptr)
-                             : (NTSTATUS)0xC0000002L;  // STATUS_NOT_IMPLEMENTED
+                             ? SystemUtils::g_pNtQuerySystemInformation(
+                                       useLegacy ? (SYSTEM_INFORMATION_CLASS)SystemHandleInformation
+                                                 : SystemExtendedHandleInformation,
+                                       bufferManager.buffer, static_cast<ULONG>(bufferManager.size), nullptr)
+                             : (NTSTATUS)STATUS_NOT_IMPLEMENTED;
 
             if (status == STATUS_INFO_LENGTH_MISMATCH)
             {
@@ -2425,17 +2448,27 @@ class ProcessHandleSensor : public ISensor
                     RecordFailure(anti_cheat::PROCESS_HANDLE_BUFFER_SIZE_EXCEEDED);
                     return SensorExecutionResult::FAILURE;
                 }
+                retries++;
+                if (retries > 3)
+                {
+                    LOG_ERROR_F(AntiCheatLogger::LogCategory::SENSOR,
+                                "ProcessHandleSensor: 获取句柄信息重试过多 (%d次)，跳过扫描", retries);
+                    RecordFailure(anti_cheat::PROCESS_HANDLE_RETRY_EXCEEDED);
+                    return SensorExecutionResult::FAILURE;
+                }
+                continue;
             }
 
-            retries++;
-            if (retries > 3)
+            if (!useLegacy && (status == STATUS_INVALID_INFO_CLASS || status == STATUS_NOT_IMPLEMENTED))
             {
-                LOG_ERROR_F(AntiCheatLogger::LogCategory::SENSOR,
-                            "ProcessHandleSensor: 获取句柄信息重试过多 (%d次)，跳过扫描", retries);
-                RecordFailure(anti_cheat::PROCESS_HANDLE_RETRY_EXCEEDED);
-                return SensorExecutionResult::FAILURE;
+                LOG_DEBUG(AntiCheatLogger::LogCategory::SENSOR, "ProcessHandleSensor: 扩展句柄信息类不可用，回退到旧结构");
+                useLegacy = true;
+                bufferManager.Reset();
+                retries = 0;
+                continue;
             }
-        } while (status == STATUS_INFO_LENGTH_MISMATCH);
+            break;
+        }
 
         if (!NT_SUCCESS(status))
         {
@@ -2445,25 +2478,29 @@ class ProcessHandleSensor : public ISensor
             return SensorExecutionResult::FAILURE;
         }
 
-        // 7. 句柄数量上限检查
-        const auto *pHandleInfo = reinterpret_cast<const SYSTEM_HANDLE_INFORMATION *>(bufferManager.buffer);
-        if (pHandleInfo->NumberOfHandles > kMaxHandlesToScan)
+        // 7. 句柄数量上限检查（支持扩展/回退两种结构）
+        const auto *pHandleInfoEx = reinterpret_cast<const SYSTEM_HANDLE_INFORMATION_EX *>(bufferManager.buffer);
+        const auto *pHandleInfoLegacy =
+                reinterpret_cast<const SYSTEM_HANDLE_INFORMATION_LEGACY *>(bufferManager.buffer);
+        ULONG_PTR totalHandles = useLegacy ? (ULONG_PTR)pHandleInfoLegacy->NumberOfHandles
+                                           : (ULONG_PTR)pHandleInfoEx->NumberOfHandles;
+        if (totalHandles > kMaxHandlesToScan)
         {
             // 提供更详细的上下文信息
-            double handleRatio = static_cast<double>(pHandleInfo->NumberOfHandles) / kMaxHandlesToScan;
+            double handleRatio = static_cast<double>(totalHandles) / kMaxHandlesToScan;
             LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR,
                           "ProcessHandleSensor: 系统句柄数量超过上限 (%lu > %lu, 超出%.1f%%)，跳过扫描以确保系统性能。"
                           "建议：1) 检查系统是否有句柄泄漏 2) 考虑增加max_handle_scan_count配置值",
-                          pHandleInfo->NumberOfHandles, kMaxHandlesToScan, (handleRatio - 1.0) * 100.0);
+                          (ULONG)totalHandles, kMaxHandlesToScan, (handleRatio - 1.0) * 100.0);
             RecordFailure(anti_cheat::PROCESS_HANDLE_HANDLE_COUNT_EXCEEDED);
             return SensorExecutionResult::FAILURE;
         }
 
         // 记录句柄数量统计信息（仅在DEBUG级别）
         LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR,
-                    "ProcessHandleSensor: 开始扫描 %lu 个系统句柄 (上限: %lu, 使用率: %.1f%%)",
-                    pHandleInfo->NumberOfHandles, kMaxHandlesToScan,
-                    static_cast<double>(pHandleInfo->NumberOfHandles) / kMaxHandlesToScan * 100.0);
+                    "ProcessHandleSensor: 开始扫描 %lu 个系统句柄 (上限: %lu, 使用率: %.1f%%)%s",
+                    (ULONG)totalHandles, kMaxHandlesToScan,
+                    static_cast<double>(totalHandles) / kMaxHandlesToScan * 100.0, useLegacy ? " [LEGACY]" : "");
 
         // 8. 主扫描循环
         const DWORD ownPid = GetCurrentProcessId();
@@ -2489,10 +2526,12 @@ class ProcessHandleSensor : public ISensor
         };
         std::unordered_map<std::wstring, PathCacheEntry> pathCache;
 
-        for (ULONG i = 0; i < pHandleInfo->NumberOfHandles; ++i)
+        if (!useLegacy)
         {
-            // 优化：每50个句柄检查一次超时，因为句柄数量巨大
-            if (i % 50 == 0)
+        for (ULONG_PTR i = 0; i < pHandleInfoEx->NumberOfHandles; ++i)
+        {
+            // 优化：每200个句柄检查一次超时，减少微小开销
+            if (i % 200 == 0)
             {
                 auto currentTime = std::chrono::steady_clock::now();
                 auto elapsed_ms =
@@ -2502,16 +2541,17 @@ class ProcessHandleSensor : public ISensor
                 {
                     LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR,
                                   "ProcessHandleSensor: 扫描超时，已处理 %lu/%lu 个句柄，耗时%ldms", handlesProcessed,
-                                  pHandleInfo->NumberOfHandles, elapsed_ms);
+                                  (ULONG)pHandleInfoEx->NumberOfHandles, elapsed_ms);
                     RecordFailure(anti_cheat::PROCESS_HANDLE_SCAN_TIMEOUT);
                     return SensorExecutionResult::FAILURE;
                 }
             }
 
-            const auto &handle = pHandleInfo->Handles[i];
+            const auto &handle = pHandleInfoEx->Handles[i];
 
             // 快速过滤
-            if (handle.ProcessId == ownPid || processedPidsThisScan.count(handle.ProcessId) > 0 ||
+            DWORD ownerPid = static_cast<DWORD>(handle.UniqueProcessId);
+            if (ownerPid == ownPid || processedPidsThisScan.count(ownerPid) > 0 ||
                 !(handle.GrantedAccess &
                   (PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_VM_OPERATION | PROCESS_ALL_ACCESS)))
             {
@@ -2524,7 +2564,7 @@ class ProcessHandleSensor : public ISensor
                 continue;
             }
 
-            processedPidsThisScan.insert(handle.ProcessId);
+            processedPidsThisScan.insert(ownerPid);
             handlesProcessed++;
 
             // 进程路径获取（优化：避免重复获取）
@@ -2533,7 +2573,7 @@ class ProcessHandleSensor : public ISensor
             Utils::SignatureStatus signatureStatus = Utils::SignatureStatus::UNKNOWN;
 
             using UniqueHandle = std::unique_ptr<void, decltype(&::CloseHandle)>;
-            UniqueHandle hOwnerProcess(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, handle.ProcessId),
+            UniqueHandle hOwnerProcess(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, ownerPid),
                                        &::CloseHandle);
 
             if (!hOwnerProcess.get())
@@ -2552,14 +2592,15 @@ class ProcessHandleSensor : public ISensor
                     LOG_DEBUG_F(
                             AntiCheatLogger::LogCategory::SENSOR,
                             "ProcessHandleSensor: 无法打开进程进行句柄验证 PID %lu (%s)，正常权限限制，错误: 0x%08X",
-                            handle.ProcessId, errorType, lastError);
+                            ownerPid, errorType, lastError);
                 }
                 else
+
                 {
                     // 其他错误可能是真正的系统问题
                     LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR,
                                   "ProcessHandleSensor: 无法打开进程进行句柄验证 PID %lu，错误: 0x%08X",
-                                  handle.ProcessId, lastError);
+                                  ownerPid, lastError);
                     RecordFailure(anti_cheat::PROCESS_HANDLE_OPEN_PROCESS_FAILED);
                 }
 
@@ -2572,11 +2613,11 @@ class ProcessHandleSensor : public ISensor
             if (ownerProcessPath.empty())
             {
                 LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR, "ProcessHandleSensor: 无法获取进程路径 PID %lu",
-                              handle.ProcessId);
+                              ownerPid);
                 // 无法获取进程路径本身就是可疑行为，作为证据上报
                 context.AddEvidence(
                         anti_cheat::INTEGRITY_SUSPICIOUS_HANDLE,
-                        "一个无法识别路径的进程持有我们进程的句柄 (PID: " + std::to_string(handle.ProcessId) + ")");
+                        "一个无法识别路径的进程持有我们进程的句柄 (PID: " + std::to_string(ownerPid) + ")");
                 continue;
             }
 
@@ -2592,7 +2633,7 @@ class ProcessHandleSensor : public ISensor
                 if (cacheAge < cacheDuration)
                 {
                     // 检查进程状态是否变化
-                    uint32_t currentCreationTime = GetProcessCreationTime(handle.ProcessId);
+                    uint32_t currentCreationTime = GetProcessCreationTime(ownerPid);
                     if (currentCreationTime == 0)
                     {
                         // GetProcessCreationTime失败，记录失败原因
@@ -2635,7 +2676,7 @@ class ProcessHandleSensor : public ISensor
                                              ? CheatMonitor::Pimpl::ProcessVerdict::SIGNED_AND_TRUSTED
                                              : CheatMonitor::Pimpl::ProcessVerdict::UNSIGNED_OR_UNTRUSTED;
                 cacheEntry.cached_at = now;
-                uint32_t creationTime = GetProcessCreationTime(handle.ProcessId);
+                uint32_t creationTime = GetProcessCreationTime(ownerPid);
                 if (creationTime == 0)
                 {
                     // GetProcessCreationTime失败，记录失败原因
@@ -2672,7 +2713,151 @@ class ProcessHandleSensor : public ISensor
                 // 生成证据
                 context.AddEvidence(anti_cheat::INTEGRITY_SUSPICIOUS_HANDLE,
                                     "可疑进程持有我们进程的句柄: " + Utils::WideToString(ownerProcessPath) +
-                                            " (PID: " + std::to_string(handle.ProcessId) + ")");
+                                            " (PID: " + std::to_string(ownerPid) + ")");
+            }
+        }
+        }
+        else
+        {
+            for (ULONG i = 0; i < pHandleInfoLegacy->NumberOfHandles; ++i)
+            {
+                if (i % 200 == 0)
+                {
+                    auto currentTime = std::chrono::steady_clock::now();
+                    auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(currentTime - startTime).count();
+                    if (elapsed_ms > budget_ms)
+                    {
+                        LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR,
+                                      "ProcessHandleSensor: 扫描超时，已处理 %lu/%lu 个句柄，耗时%ldms", handlesProcessed,
+                                      (ULONG)pHandleInfoLegacy->NumberOfHandles, elapsed_ms);
+                        RecordFailure(anti_cheat::PROCESS_HANDLE_SCAN_TIMEOUT);
+                        return SensorExecutionResult::FAILURE;
+                    }
+                }
+
+                const auto &handle = pHandleInfoLegacy->Handles[i];
+                DWORD ownerPid = static_cast<DWORD>(handle.UniqueProcessId);
+                if (ownerPid == ownPid || processedPidsThisScan.count(ownerPid) > 0 ||
+                    !(handle.GrantedAccess & (PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_VM_OPERATION | PROCESS_ALL_ACCESS)))
+                {
+                    continue;
+                }
+
+                if (!IsHandlePointingToUs_SafeLegacy(handle, ownPid))
+                {
+                    continue;
+                }
+
+                processedPidsThisScan.insert(ownerPid);
+                handlesProcessed++;
+
+                std::wstring ownerProcessPath;
+                std::wstring lowerProcessName;
+                Utils::SignatureStatus signatureStatus = Utils::SignatureStatus::UNKNOWN;
+
+                using UniqueHandle = std::unique_ptr<void, decltype(&::CloseHandle)>;
+                UniqueHandle hOwnerProcess(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, ownerPid), &::CloseHandle);
+                if (!hOwnerProcess.get())
+                {
+                    DWORD lastError = GetLastError();
+                    if (lastError == ERROR_ACCESS_DENIED || lastError == ERROR_INVALID_PARAMETER || lastError == ERROR_INVALID_HANDLE)
+                    {
+                        const char *errorType = (lastError == ERROR_ACCESS_DENIED)       ? "访问被拒绝"
+                                                : (lastError == ERROR_INVALID_PARAMETER) ? "参数无效"
+                                                                                         : "句柄无效";
+                        LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR,
+                                    "ProcessHandleSensor: 无法打开进程进行句柄验证 PID %lu (%s)，正常权限限制，错误: 0x%08X",
+                                    ownerPid, errorType, lastError);
+                    }
+                    else
+                    {
+                        LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR,
+                                      "ProcessHandleSensor: 无法打开进程进行句柄验证 PID %lu，错误: 0x%08X", ownerPid,
+                                      lastError);
+                        RecordFailure(anti_cheat::PROCESS_HANDLE_OPEN_PROCESS_FAILED);
+                    }
+                    continue;
+                }
+
+                ownerProcessPath = Utils::GetProcessFullName(hOwnerProcess.get());
+                if (ownerProcessPath.empty())
+                {
+                    LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR, "ProcessHandleSensor: 无法获取进程路径 PID %lu", ownerPid);
+                    context.AddEvidence(anti_cheat::INTEGRITY_SUSPICIOUS_HANDLE,
+                                        "一个无法识别路径的进程持有我们进程的句柄 (PID: " + std::to_string(ownerPid) + ")");
+                    continue;
+                }
+
+                auto pathCacheIt = pathCache.find(ownerProcessPath);
+                if (pathCacheIt != pathCache.end())
+                {
+                    auto cacheAge = now - pathCacheIt->second.cached_at;
+                    auto cacheDuration = std::chrono::minutes(CheatConfigManager::GetInstance().GetProcessCacheDurationMinutes());
+
+                    if (cacheAge < cacheDuration)
+                    {
+                        uint32_t currentCreationTime = GetProcessCreationTime(ownerPid);
+                        if (currentCreationTime == 0)
+                        {
+                            RecordFailure(anti_cheat::PROCESS_HANDLE_GET_PROCESS_TIMES_FAILED);
+                            pathCache.erase(pathCacheIt);
+                        }
+                        else if (currentCreationTime == pathCacheIt->second.process_creation_time)
+                        {
+                            signatureStatus = pathCacheIt->second.signature_status;
+                            lowerProcessName = pathCacheIt->second.process_name;
+                        }
+                        else
+                        {
+                            pathCache.erase(pathCacheIt);
+                        }
+                    }
+                    else
+                    {
+                        pathCache.erase(pathCacheIt);
+                    }
+                }
+
+                if (signatureStatus == Utils::SignatureStatus::UNKNOWN)
+                {
+                    lowerProcessName = std::filesystem::path(ownerProcessPath).filename().wstring();
+                    std::transform(lowerProcessName.begin(), lowerProcessName.end(), lowerProcessName.begin(), ::towlower);
+                    signatureStatus = Utils::VerifyFileSignature(ownerProcessPath, context.GetWindowsVersion());
+
+                    PathCacheEntry cacheEntry;
+                    cacheEntry.verdict = (signatureStatus == Utils::SignatureStatus::TRUSTED)
+                                                 ? CheatMonitor::Pimpl::ProcessVerdict::SIGNED_AND_TRUSTED
+                                                 : CheatMonitor::Pimpl::ProcessVerdict::UNSIGNED_OR_UNTRUSTED;
+                    cacheEntry.cached_at = now;
+                    uint32_t creationTime = GetProcessCreationTime(ownerPid);
+                    if (creationTime == 0)
+                    {
+                        RecordFailure(anti_cheat::PROCESS_HANDLE_GET_PROCESS_TIMES_FAILED);
+                        creationTime = 0;
+                    }
+                    cacheEntry.process_creation_time = creationTime;
+                    cacheEntry.process_name = lowerProcessName;
+                    cacheEntry.signature_status = signatureStatus;
+                    pathCache[ownerProcessPath] = cacheEntry;
+                }
+
+                const auto &knownGoodProcesses = CheatConfigManager::GetInstance().GetKnownGoodProcesses();
+                CheatMonitor::Pimpl::ProcessVerdict currentVerdict;
+                if (knownGoodProcesses->count(lowerProcessName) > 0 && signatureStatus == Utils::SignatureStatus::TRUSTED)
+                {
+                    currentVerdict = CheatMonitor::Pimpl::ProcessVerdict::SIGNED_AND_TRUSTED;
+                }
+                else if (signatureStatus == Utils::SignatureStatus::TRUSTED)
+                {
+                    currentVerdict = CheatMonitor::Pimpl::ProcessVerdict::SIGNED_AND_TRUSTED;
+                }
+                else
+                {
+                    currentVerdict = CheatMonitor::Pimpl::ProcessVerdict::UNSIGNED_OR_UNTRUSTED;
+                    context.AddEvidence(anti_cheat::INTEGRITY_SUSPICIOUS_HANDLE,
+                                        "可疑进程持有我们进程的句柄: " + Utils::WideToString(ownerProcessPath) +
+                                                " (PID: " + std::to_string(ownerPid) + ")");
+                }
             }
         }
 
@@ -2694,20 +2879,58 @@ class ProcessHandleSensor : public ISensor
     }
 
    private:
-    bool IsHandlePointingToUs_Safe(const SYSTEM_HANDLE_ENTRY &handle, DWORD ownPid)
+    bool IsHandlePointingToUs_SafeLegacy(const SYSTEM_HANDLE_TABLE_ENTRY_INFO &handle, DWORD ownPid)
     {
-        HANDLE hOwnerProcess = OpenProcess(PROCESS_DUP_HANDLE, FALSE, handle.ProcessId);
+        DWORD ownerPid = static_cast<DWORD>(handle.UniqueProcessId);
+        HANDLE hOwnerProcess = OpenProcess(PROCESS_DUP_HANDLE, FALSE, ownerPid);
         if (!hOwnerProcess)
         {
             LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR,
-                        "ProcessHandleSensor: 无法打开进程进行句柄验证 PID %lu，错误: 0x%08X", handle.ProcessId,
+                        "ProcessHandleSensor: 无法打开进程进行句柄验证 PID %lu，错误: 0x%08X", ownerPid, GetLastError());
+            return false;
+        }
+
+        HANDLE hDup = nullptr;
+        BOOL success = DuplicateHandle(hOwnerProcess, (HANDLE)(uintptr_t)handle.HandleValue, GetCurrentProcess(), &hDup,
+                                       0, FALSE, DUPLICATE_SAME_ACCESS);
+        CloseHandle(hOwnerProcess);
+        if (!success || hDup == nullptr)
+        {
+            LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR,
+                        "ProcessHandleSensor: DuplicateHandle失败 PID %lu，句柄值 0x%p，错误: 0x%08X", ownerPid,
+                        (PVOID)(uintptr_t)handle.HandleValue, GetLastError());
+            return false;
+        }
+
+        DWORD dupPid = GetProcessId(hDup);
+        if (dupPid == 0)
+        {
+            LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR,
+                        "ProcessHandleSensor: GetProcessId失败或非进程句柄，句柄值 0x%p，错误: 0x%08X",
+                        (PVOID)(uintptr_t)handle.HandleValue, GetLastError());
+            CloseHandle(hDup);
+            return false;
+        }
+
+        bool pointsToUs = (dupPid == ownPid);
+        CloseHandle(hDup);
+        return pointsToUs;
+    }
+    bool IsHandlePointingToUs_Safe(const SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX &handle, DWORD ownPid)
+    {
+        DWORD ownerPid = static_cast<DWORD>(handle.UniqueProcessId);
+        HANDLE hOwnerProcess = OpenProcess(PROCESS_DUP_HANDLE, FALSE, ownerPid);
+        if (!hOwnerProcess)
+        {
+            LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR,
+                        "ProcessHandleSensor: 无法打开进程进行句柄验证 PID %lu，错误: 0x%08X", ownerPid,
                         GetLastError());
             // 无法打开进程，跳过
             return false;
         }
 
         HANDLE hDup = nullptr;
-        BOOL success = DuplicateHandle(hOwnerProcess, (HANDLE)(uintptr_t)handle.Handle, GetCurrentProcess(), &hDup, 0,
+        BOOL success = DuplicateHandle(hOwnerProcess, (HANDLE)(uintptr_t)handle.HandleValue, GetCurrentProcess(), &hDup, 0,
                                        FALSE, DUPLICATE_SAME_ACCESS);
 
         CloseHandle(hOwnerProcess);
@@ -2715,8 +2938,8 @@ class ProcessHandleSensor : public ISensor
         if (!success || hDup == nullptr)
         {
             LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR,
-                        "ProcessHandleSensor: DuplicateHandle失败 PID %lu，句柄值 0x%p，错误: 0x%08X", handle.ProcessId,
-                        (PVOID)(uintptr_t)handle.Handle, GetLastError());
+                        "ProcessHandleSensor: DuplicateHandle失败 PID %lu，句柄值 0x%p，错误: 0x%08X", ownerPid,
+                        (PVOID)(uintptr_t)handle.HandleValue, GetLastError());
             // DuplicateHandle失败
             return false;
         }
@@ -2724,9 +2947,10 @@ class ProcessHandleSensor : public ISensor
         DWORD dupPid = GetProcessId(hDup);
         if (dupPid == 0)
         {
-            LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR,
-                          "ProcessHandleSensor: GetProcessId失败，句柄值 0x%08X，错误: 0x%08X", handle.HandleValue,
-                          GetLastError());
+            // 对非进程对象或权限不足等，GetProcessId返回0是预期情况，不作为警告
+            LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR,
+                        "ProcessHandleSensor: GetProcessId失败或非进程句柄，句柄值 0x%p，错误: 0x%08X",
+                        (PVOID)(uintptr_t)handle.HandleValue, GetLastError());
             CloseHandle(hDup);
             return false;
         }
