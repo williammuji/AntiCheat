@@ -754,6 +754,14 @@ std::wstring GetProcessFullName(HANDLE hProcess)
 // 通用的文件签名验证辅助函数
 SignatureStatus VerifyFileSignature(const std::wstring &filePath, SystemUtils::WindowsVersion winVer)
 {
+    auto to_lower = [](std::wstring s) {
+        std::transform(s.begin(), s.end(), s.begin(), ::towlower);
+        return s;
+    };
+    auto ensure_trailing_bs = [](std::wstring &s) {
+        if (!s.empty() && s.back() != L'\\') s.push_back(L'\\');
+    };
+
     WINTRUST_FILE_INFO fileInfo = {};
     fileInfo.cbStruct = sizeof(WINTRUST_FILE_INFO);
     fileInfo.pcwszFilePath = filePath.c_str();
@@ -782,18 +790,39 @@ SignatureStatus VerifyFileSignature(const std::wstring &filePath, SystemUtils::W
         return SignatureStatus::TRUSTED;
     }
 
-    // 容错：对系统目录中的文件，尝试一次更宽松（仍离线）的二次验证，降低误报
-    // 例如某些系统DLL仅有目录签名或离线吊销信息缺失
-    if (result == TRUST_E_NOSIGNATURE || result == CERT_E_CHAINING)
+    // 系统目录判断（用于离线误报降级）
+    bool isInWindowsSystemDir = false;
     {
-        WINTRUST_DATA winTrustData2 = winTrustData;
-        winTrustData2.dwStateAction = WTD_STATEACTION_VERIFY;
-        LONG fallback = WinVerifyTrust(NULL, &guid, &winTrustData2);
-        winTrustData2.dwStateAction = WTD_STATEACTION_CLOSE;
-        WinVerifyTrust(NULL, &guid, &winTrustData2);
-        if (fallback == ERROR_SUCCESS)
+        wchar_t winDirBuf[MAX_PATH] = {0};
+        if (GetWindowsDirectoryW(winDirBuf, MAX_PATH) > 0)
         {
-            return SignatureStatus::TRUSTED;
+            std::wstring winDir = to_lower(winDirBuf);
+            ensure_trailing_bs(winDir);
+            std::wstring sys32 = winDir + L"system32\\";
+            std::wstring syswow64 = winDir + L"syswow64\\";
+            std::wstring winsxs = winDir + L"winsxs\\";
+            std::wstring drivers = winDir + L"system32\\drivers\\";
+
+            std::wstring pathLower = to_lower(filePath);
+            if (pathLower.rfind(sys32, 0) == 0 || pathLower.rfind(syswow64, 0) == 0 ||
+                pathLower.rfind(winsxs, 0) == 0 || pathLower.rfind(drivers, 0) == 0)
+            {
+                isInWindowsSystemDir = true;
+            }
+        }
+    }
+
+    // 离线降噪策略：系统目录中的文件若返回以下错误，降级为“无法判断”（不当作未签名）：
+    // - TRUST_E_NOSIGNATURE: 无嵌入签名（很多系统DLL走catalog签名，离线/无catalog场景易触发）
+    // - CERT_E_CHAINING / CERT_E_UNTRUSTEDROOT: 链构建失败/不受信根（离线/企业策略常见）
+    // - TRUST_E_SYSTEM_ERROR: WinVerifyTrust内部策略/组件出错
+    // - CRYPT_E_NO_MATCH: 本地catalog未匹配（离线时常见）
+    if (isInWindowsSystemDir)
+    {
+        if (result == TRUST_E_NOSIGNATURE || result == CERT_E_CHAINING || result == CERT_E_UNTRUSTEDROOT ||
+            result == TRUST_E_SYSTEM_ERROR || result == CRYPT_E_NO_MATCH)
+        {
+            return SignatureStatus::FAILED_TO_VERIFY;
         }
     }
 
