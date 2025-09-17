@@ -2563,6 +2563,9 @@ class ProcessHandleSensor : public ISensor
         const auto now = std::chrono::steady_clock::now();
         std::unordered_set<DWORD> processedPidsThisScan;
         ULONG handlesProcessed = 0;
+        ULONG openProcDeniedCount = 0;       // ERROR_ACCESS_DENIED
+        ULONG openProcInvalidCount = 0;      // ERROR_INVALID_PARAMETER/ERROR_INVALID_HANDLE
+        ULONG openProcOtherFailCount = 0;    // 其他错误
 
         // 智能缓存：使用路径作为键（移到SEH块外）
         struct PathCacheEntry
@@ -2628,32 +2631,22 @@ class ProcessHandleSensor : public ISensor
             if (!hOwnerProcess.get())
             {
                 DWORD lastError = GetLastError();
-
-                // 检查是否为正常的权限限制或参数无效情况
-                if (lastError == ERROR_ACCESS_DENIED || lastError == ERROR_INVALID_PARAMETER ||
-                    lastError == ERROR_INVALID_HANDLE)
+                if (lastError == ERROR_ACCESS_DENIED)
                 {
-                    // 这些是正常的权限限制或参数无效情况，不记录为失败
-                    const char *errorType = (lastError == ERROR_ACCESS_DENIED)       ? "访问被拒绝"
-                                            : (lastError == ERROR_INVALID_PARAMETER) ? "参数无效"
-                                                                                     : "句柄无效";
-
-                    LOG_DEBUG_F(
-                            AntiCheatLogger::LogCategory::SENSOR,
-                            "ProcessHandleSensor: 无法打开进程进行句柄验证 PID %lu (%s)，正常权限限制，错误: 0x%08X",
-                            ownerPid, errorType, lastError);
+                    ++openProcDeniedCount;      // 常见且预期，不单独记录日志
+                }
+                else if (lastError == ERROR_INVALID_PARAMETER || lastError == ERROR_INVALID_HANDLE)
+                {
+                    ++openProcInvalidCount;     // 常见且预期，不单独记录日志
                 }
                 else
-
                 {
-                    // 其他错误可能是真正的系统问题
+                    ++openProcOtherFailCount;
                     LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR,
                                   "ProcessHandleSensor: 无法打开进程进行句柄验证 PID %lu，错误: 0x%08X",
                                   ownerPid, lastError);
                     RecordFailure(anti_cheat::PROCESS_HANDLE_OPEN_PROCESS_FAILED);
                 }
-
-                // 无法打开进程，跳过
                 continue;
             }
 
@@ -2809,17 +2802,17 @@ class ProcessHandleSensor : public ISensor
                 if (!hOwnerProcess.get())
                 {
                     DWORD lastError = GetLastError();
-                    if (lastError == ERROR_ACCESS_DENIED || lastError == ERROR_INVALID_PARAMETER || lastError == ERROR_INVALID_HANDLE)
+                    if (lastError == ERROR_ACCESS_DENIED)
                     {
-                        const char *errorType = (lastError == ERROR_ACCESS_DENIED)       ? "访问被拒绝"
-                                                : (lastError == ERROR_INVALID_PARAMETER) ? "参数无效"
-                                                                                         : "句柄无效";
-                        LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR,
-                                    "ProcessHandleSensor: 无法打开进程进行句柄验证 PID %lu (%s)，正常权限限制，错误: 0x%08X",
-                                    ownerPid, errorType, lastError);
+                        ++openProcDeniedCount;
+                    }
+                    else if (lastError == ERROR_INVALID_PARAMETER || lastError == ERROR_INVALID_HANDLE)
+                    {
+                        ++openProcInvalidCount;
                     }
                     else
                     {
+                        ++openProcOtherFailCount;
                         LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR,
                                       "ProcessHandleSensor: 无法打开进程进行句柄验证 PID %lu，错误: 0x%08X", ownerPid,
                                       lastError);
@@ -2914,8 +2907,9 @@ class ProcessHandleSensor : public ISensor
         auto endTime = std::chrono::steady_clock::now();
         auto scanDuration = std::chrono::duration_cast<std::chrono::milliseconds>(endTime - startTime).count();
 
-        LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR, "ProcessHandleSensor: 扫描完成，处理 %lu 个句柄，耗时 %lldms",
-                    handlesProcessed, scanDuration);
+        LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR,
+                    "ProcessHandleSensor: 扫描完成，处理 %lu 个句柄，耗时 %lldms; OpenProcess统计 -> 拒绝: %lu, 参数/句柄无效: %lu, 其他失败: %lu",
+                    handlesProcessed, scanDuration, openProcDeniedCount, openProcInvalidCount, openProcOtherFailCount);
 
         // 根据统计数据判断执行结果
         // 注意：如果检测到作弊（AddEvidence），即使有系统级失败也应该返回SUCCESS
@@ -2934,8 +2928,6 @@ class ProcessHandleSensor : public ISensor
         HANDLE hOwnerProcess = OpenProcess(PROCESS_DUP_HANDLE, FALSE, ownerPid);
         if (!hOwnerProcess)
         {
-            LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR,
-                        "ProcessHandleSensor: 无法打开进程进行句柄验证 PID %lu，错误: 0x%08X", ownerPid, GetLastError());
             return false;
         }
 
@@ -2944,18 +2936,12 @@ class ProcessHandleSensor : public ISensor
         CloseHandle(hOwnerProcess);
         if (!success || hDup == nullptr)
         {
-            LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR,
-                        "ProcessHandleSensor: DuplicateHandle失败 PID %lu，句柄值 0x%p，错误: 0x%08X", ownerPid,
-                        (PVOID)(uintptr_t)((const SYSTEM_HANDLE_TABLE_ENTRY_INFO *)handle)->HandleValue, GetLastError());
             return false;
         }
 
         DWORD dupPid = GetProcessId(hDup);
         if (dupPid == 0)
         {
-            LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR,
-                        "ProcessHandleSensor: GetProcessId失败或非进程句柄，句柄值 0x%p，错误: 0x%08X",
-                        (PVOID)(uintptr_t)((const SYSTEM_HANDLE_TABLE_ENTRY_INFO *)handle)->HandleValue, GetLastError());
             CloseHandle(hDup);
             return false;
         }
@@ -2970,9 +2956,6 @@ class ProcessHandleSensor : public ISensor
         HANDLE hOwnerProcess = OpenProcess(PROCESS_DUP_HANDLE, FALSE, ownerPid);
         if (!hOwnerProcess)
         {
-            LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR,
-                        "ProcessHandleSensor: 无法打开进程进行句柄验证 PID %lu，错误: 0x%08X", ownerPid,
-                        GetLastError());
             // 无法打开进程，跳过
             return false;
         }
@@ -2984,9 +2967,6 @@ class ProcessHandleSensor : public ISensor
 
         if (!success || hDup == nullptr)
         {
-            LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR,
-                        "ProcessHandleSensor: DuplicateHandle失败 PID %lu，句柄值 0x%p，错误: 0x%08X", ownerPid,
-                        (PVOID)(uintptr_t)((const SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX *)handle)->HandleValue, GetLastError());
             // DuplicateHandle失败
             return false;
         }
@@ -2994,10 +2974,6 @@ class ProcessHandleSensor : public ISensor
         DWORD dupPid = GetProcessId(hDup);
         if (dupPid == 0)
         {
-            // 对非进程对象或权限不足等，GetProcessId返回0是预期情况，不作为警告
-            LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR,
-                        "ProcessHandleSensor: GetProcessId失败或非进程句柄，句柄值 0x%p，错误: 0x%08X",
-                        (PVOID)(uintptr_t)((const SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX *)handle)->HandleValue, GetLastError());
             CloseHandle(hDup);
             return false;
         }
