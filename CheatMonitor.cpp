@@ -3105,13 +3105,22 @@ class MemorySecuritySensor : public ISensor
         if (!result)
         {
             lastError = GetLastError();
-            // 只有在真正的API错误时才记录失败，ERROR_INVALID_ADDRESS是正常情况
-            if (lastError != ERROR_INVALID_ADDRESS)
+            // 只有在真正的API错误时才记录失败，以下错误码是正常情况：
+            // ERROR_INVALID_ADDRESS (487) - 地址无效
+            // ERROR_MOD_NOT_FOUND (126) - 找不到模块（地址不属于任何已加载模块）
+            if (lastError != ERROR_INVALID_ADDRESS && lastError != ERROR_MOD_NOT_FOUND)
             {
                 LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR, "GetModuleHandleExW失败: 错误码=%lu, 地址=0x%p",
                               lastError, mbi.BaseAddress);
                 RecordFailure(anti_cheat::MEMORY_GET_MODULE_HANDLE_FAILED);
                 return;
+            }
+            else
+            {
+                // 记录调试信息，说明这是正常的"地址不属于任何模块"情况
+                LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR,
+                            "GetModuleHandleExW: 地址0x%p不属于任何已加载模块 (错误码=%lu)，继续检测隐藏模块",
+                            mbi.BaseAddress, lastError);
             }
         }
 
