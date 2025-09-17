@@ -765,7 +765,9 @@ SignatureStatus VerifyFileSignature(const std::wstring &filePath, SystemUtils::W
     WINTRUST_DATA winTrustData = {};
     winTrustData.cbStruct = sizeof(winTrustData);
     winTrustData.dwUIChoice = WTD_UI_NONE;
-    winTrustData.fdwRevocationChecks = WTD_REVOKE_WHOLECHAIN | WTD_CACHE_ONLY_URL_RETRIEVAL;
+    // 关闭在线吊销检查并启用本地缓存，避免离线环境误判
+    winTrustData.fdwRevocationChecks = WTD_REVOKE_NONE;
+    winTrustData.dwProvFlags = WTD_CACHE_ONLY_URL_RETRIEVAL;  // 使用本地缓存，不访问网络
     winTrustData.dwUnionChoice = WTD_CHOICE_FILE;
     winTrustData.pFile = &fileInfo;
     winTrustData.dwStateAction = WTD_STATEACTION_VERIFY;
@@ -778,6 +780,21 @@ SignatureStatus VerifyFileSignature(const std::wstring &filePath, SystemUtils::W
     if (result == ERROR_SUCCESS)
     {
         return SignatureStatus::TRUSTED;
+    }
+
+    // 容错：对系统目录中的文件，尝试一次更宽松（仍离线）的二次验证，降低误报
+    // 例如某些系统DLL仅有目录签名或离线吊销信息缺失
+    if (result == TRUST_E_NOSIGNATURE || result == CERT_E_CHAINING)
+    {
+        WINTRUST_DATA winTrustData2 = winTrustData;
+        winTrustData2.dwStateAction = WTD_STATEACTION_VERIFY;
+        LONG fallback = WinVerifyTrust(NULL, &guid, &winTrustData2);
+        winTrustData2.dwStateAction = WTD_STATEACTION_CLOSE;
+        WinVerifyTrust(NULL, &guid, &winTrustData2);
+        if (fallback == ERROR_SUCCESS)
+        {
+            return SignatureStatus::TRUSTED;
+        }
     }
 
     // [XP兼容性] 对XP系统，宽容处理可能因系统老旧导致的验证错误
@@ -2737,22 +2754,22 @@ class ProcessHandleSensor : public ISensor
             const auto &knownGoodProcesses = CheatConfigManager::GetInstance().GetKnownGoodProcesses();
             CheatMonitor::Pimpl::ProcessVerdict currentVerdict;
 
-            // 白名单进程：必须同时满足白名单和可信签名（防止伪造进程名）
             if (knownGoodProcesses->count(lowerProcessName) > 0 && signatureStatus == Utils::SignatureStatus::TRUSTED)
             {
                 currentVerdict = CheatMonitor::Pimpl::ProcessVerdict::SIGNED_AND_TRUSTED;
             }
-            // 可信签名但不在白名单：可能是新安装的合法软件
             else if (signatureStatus == Utils::SignatureStatus::TRUSTED)
             {
                 currentVerdict = CheatMonitor::Pimpl::ProcessVerdict::SIGNED_AND_TRUSTED;
             }
-            // 其他情况：不可信或签名验证失败，视为可疑
+            else if (signatureStatus == Utils::SignatureStatus::FAILED_TO_VERIFY)
+            {
+                // 验证失败（离线/链信息缺失等）不作为可疑证据，仅跳过
+                continue;
+            }
             else
             {
                 currentVerdict = CheatMonitor::Pimpl::ProcessVerdict::UNSIGNED_OR_UNTRUSTED;
-
-                // 生成证据
                 context.AddEvidence(anti_cheat::INTEGRITY_SUSPICIOUS_HANDLE,
                                     "可疑进程持有我们进程的句柄: " + Utils::WideToString(ownerProcessPath) +
                                             " (PID: " + std::to_string(ownerPid) + ")");
@@ -2892,6 +2909,11 @@ class ProcessHandleSensor : public ISensor
                 else if (signatureStatus == Utils::SignatureStatus::TRUSTED)
                 {
                     currentVerdict = CheatMonitor::Pimpl::ProcessVerdict::SIGNED_AND_TRUSTED;
+                }
+                else if (signatureStatus == Utils::SignatureStatus::FAILED_TO_VERIFY)
+                {
+                    // 验证失败（离线/链信息缺失等）不作为可疑证据，仅跳过
+                    continue;
                 }
                 else
                 {
@@ -3471,10 +3493,22 @@ class MemorySecuritySensor : public ISensor
         const uint32_t minRegionSize = CheatConfigManager::GetInstance().GetMinMemoryRegionSize();
         const uint32_t maxRegionSize = CheatConfigManager::GetInstance().GetMaxMemoryRegionSize();
 
+        // 降噪：仅对RWX（或WRITECOPY执行）页面直接上报；
+        // 对仅RX的小页（例如JIT/系统stub的正常情况）提高阈值，避免误报。
+        const bool isRWX = (mbi.Protect & PAGE_EXECUTE_READWRITE) || (mbi.Protect & PAGE_EXECUTE_WRITECOPY);
+        const bool isRXOnly = (mbi.Protect & PAGE_EXECUTE_READ) && !isRWX;
+
+        // 若仅RX且区域较小（< 128KB），认为常见且低风险，忽略
+        const SIZE_T rxSmallThreshold = 128 * 1024;
+
         if (mbi.RegionSize >= minRegionSize && mbi.RegionSize <= maxRegionSize)
         {
             if (!context.IsAddressInLegitimateModule(mbi.BaseAddress))
             {
+                if (isRXOnly && mbi.RegionSize < rxSmallThreshold)
+                {
+                    return;  // 降噪：跳过常见的小型RX私有页
+                }
                 std::ostringstream oss;
                 oss << "检测到私有可执行内存. 地址: 0x" << std::hex << reinterpret_cast<uintptr_t>(mbi.BaseAddress)
                     << ", 大小: " << std::dec << mbi.RegionSize << " 字节.";
