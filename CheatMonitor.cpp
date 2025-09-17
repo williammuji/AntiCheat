@@ -26,6 +26,38 @@
 #include <winternl.h>  // 包含 NTSTATUS 等定义
 #include <wintrust.h>  // 为 WinVerifyTrust 添加头文件
 
+// 定义未公开的 Windows 系统句柄相关类型
+#ifndef SystemHandleInformation
+#define SystemHandleInformation 16
+#endif
+
+#ifndef SystemExtendedHandleInformation
+#define SystemExtendedHandleInformation 64
+#endif
+
+// SYSTEM_HANDLE_TABLE_ENTRY_INFO 结构定义
+typedef struct _SYSTEM_HANDLE_TABLE_ENTRY_INFO {
+    USHORT UniqueProcessId;
+    USHORT CreatorBackTraceIndex;
+    UCHAR ObjectTypeIndex;
+    UCHAR HandleAttributes;
+    USHORT HandleValue;
+    PVOID Object;
+    ULONG GrantedAccess;
+} SYSTEM_HANDLE_TABLE_ENTRY_INFO, *PSYSTEM_HANDLE_TABLE_ENTRY_INFO;
+
+// SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX 结构定义
+typedef struct _SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX {
+    PVOID Object;
+    ULONG_PTR UniqueProcessId;
+    ULONG_PTR HandleValue;
+    ULONG GrantedAccess;
+    USHORT CreatorBackTraceIndex;
+    USHORT ObjectTypeIndex;
+    ULONG HandleAttributes;
+    ULONG Reserved;
+} SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX, *PSYSTEM_HANDLE_TABLE_ENTRY_INFO_EX;
+
 #include <algorithm>
 #include <array>
 #include <deque>
@@ -76,8 +108,6 @@ typedef struct _SYSTEM_CODE_INTEGRITY_INFORMATION
 // 使用系统定义的SYSTEM_INFORMATION_CLASS
 const SYSTEM_INFORMATION_CLASS SystemKernelDebuggerInformation = (SYSTEM_INFORMATION_CLASS)35;
 // SystemCodeIntegrityInformation已在winternl.h中定义
-// 扩展句柄信息（支持64位PID/句柄值）
-const SYSTEM_INFORMATION_CLASS SystemExtendedHandleInformation = (SYSTEM_INFORMATION_CLASS)64;
 
 // VEH相关结构体定义
 typedef struct _VECTORED_HANDLER_ENTRY
@@ -336,7 +366,6 @@ typedef struct _PS_ATTRIBUTE_LIST
 const int SystemCodeIntegrityInformation = 103;  // 使用标准值103
 #endif
 // 保留旧值以兼容脚本检查，但运行时不再使用该常量查询句柄信息
-const int SystemHandleInformation = 16;
 
 typedef struct _SYSTEM_HANDLE_TABLE_ENTRY_INFO
 {
@@ -362,19 +391,22 @@ typedef struct _SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX
     PVOID Object;
     ULONG_PTR UniqueProcessId;
     ULONG_PTR HandleValue;
-    ACCESS_MASK GrantedAccess;
+    ULONG GrantedAccess;
     USHORT CreatorBackTraceIndex;
     USHORT ObjectTypeIndex;
     ULONG HandleAttributes;
     ULONG Reserved;
 } SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX, *PSYSTEM_HANDLE_TABLE_ENTRY_INFO_EX;
 
+// 扩展句柄信息容器结构
 typedef struct _SYSTEM_HANDLE_INFORMATION_EX
 {
     ULONG_PTR NumberOfHandles;
     ULONG_PTR Reserved;
     SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX Handles[1];
 } SYSTEM_HANDLE_INFORMATION_EX, *PSYSTEM_HANDLE_INFORMATION_EX;
+
+// 类型定义验证完成
 
 typedef NTSTATUS(WINAPI *PNtQuerySystemInformation)(ULONG SystemInformationClass, PVOID SystemInformation,
                                                     ULONG SystemInformationLength, PULONG ReturnLength);
@@ -1945,13 +1977,31 @@ class IatHookSensor : public ISensor
             return SensorExecutionResult::FAILURE;
         }
 
-        if (mbi.State != MEM_COMMIT || !(mbi.Protect & PAGE_EXECUTE_READ))
+        // 检查内存状态
+        if (mbi.State != MEM_COMMIT)
         {
             LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR,
-                          "IatHookSensor: 模块内存状态异常 (State=0x%08X, Protect=0x%08X)", mbi.State, mbi.Protect);
+                          "IatHookSensor: 模块内存状态异常 (State=0x%08X)", mbi.State);
             RecordFailure(anti_cheat::IAT_MEMORY_STATE_ABNORMAL);
             return SensorExecutionResult::FAILURE;
         }
+
+        // 检查内存保护属性 - 模块基地址可能是数据段，不一定是可执行段
+        // 只要内存是可访问的（可读或可执行），就认为是有效的模块内存
+        bool hasValidAccess = (mbi.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_EXECUTE_READ |
+                                             PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) != 0;
+
+        if (!hasValidAccess)
+        {
+            LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR,
+                          "IatHookSensor: 模块内存访问权限异常 (Protect=0x%08X)", mbi.Protect);
+            RecordFailure(anti_cheat::IAT_MEMORY_STATE_ABNORMAL);
+            return SensorExecutionResult::FAILURE;
+        }
+
+        // 记录调试信息
+        LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR,
+                   "IatHookSensor: 模块内存状态正常 (State=0x%08X, Protect=0x%08X)", mbi.State, mbi.Protect);
 
         // 执行IAT钩子检测
         bool checkResult = PerformIatIntegrityCheck(context, hSelf);
@@ -2434,7 +2484,7 @@ class ProcessHandleSensor : public ISensor
             status = SystemUtils::g_pNtQuerySystemInformation
                              ? SystemUtils::g_pNtQuerySystemInformation(
                                        useLegacy ? (SYSTEM_INFORMATION_CLASS)SystemHandleInformation
-                                                 : SystemExtendedHandleInformation,
+                                                 : (SYSTEM_INFORMATION_CLASS)SystemExtendedHandleInformation,
                                        bufferManager.buffer, static_cast<ULONG>(bufferManager.size), nullptr)
                              : (NTSTATUS)STATUS_NOT_IMPLEMENTED;
 
@@ -2479,11 +2529,10 @@ class ProcessHandleSensor : public ISensor
         }
 
         // 7. 句柄数量上限检查（支持扩展/回退两种结构）
-        const auto *pHandleInfoEx = reinterpret_cast<const SYSTEM_HANDLE_INFORMATION_EX *>(bufferManager.buffer);
-        const auto *pHandleInfoLegacy =
-                reinterpret_cast<const SYSTEM_HANDLE_INFORMATION_LEGACY *>(bufferManager.buffer);
-        ULONG_PTR totalHandles = useLegacy ? (ULONG_PTR)pHandleInfoLegacy->NumberOfHandles
-                                           : (ULONG_PTR)pHandleInfoEx->NumberOfHandles;
+        const void *pHandleInfoEx = reinterpret_cast<const void *>(bufferManager.buffer);
+        const void *pHandleInfoLegacy = reinterpret_cast<const void *>(bufferManager.buffer);
+        ULONG_PTR totalHandles = useLegacy ? (ULONG_PTR)((const ULONG *)pHandleInfoLegacy)[0]
+                                           : (ULONG_PTR)((const ULONG_PTR *)pHandleInfoEx)[0];
         if (totalHandles > kMaxHandlesToScan)
         {
             // 提供更详细的上下文信息
@@ -2528,7 +2577,7 @@ class ProcessHandleSensor : public ISensor
 
         if (!useLegacy)
         {
-        for (ULONG_PTR i = 0; i < pHandleInfoEx->NumberOfHandles; ++i)
+        for (ULONG_PTR i = 0; i < ((const ULONG_PTR *)pHandleInfoEx)[0]; ++i)
         {
             // 优化：每200个句柄检查一次超时，减少微小开销
             if (i % 200 == 0)
@@ -2541,13 +2590,13 @@ class ProcessHandleSensor : public ISensor
                 {
                     LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR,
                                   "ProcessHandleSensor: 扫描超时，已处理 %lu/%lu 个句柄，耗时%ldms", handlesProcessed,
-                                  (ULONG)pHandleInfoEx->NumberOfHandles, elapsed_ms);
+                                  (ULONG)((const ULONG_PTR *)pHandleInfoEx)[0], elapsed_ms);
                     RecordFailure(anti_cheat::PROCESS_HANDLE_SCAN_TIMEOUT);
                     return SensorExecutionResult::FAILURE;
                 }
             }
 
-            const auto &handle = pHandleInfoEx->Handles[i];
+            const SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX &handle = ((const SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX *)((const BYTE *)pHandleInfoEx + sizeof(ULONG_PTR) * 2))[i];
 
             // 快速过滤
             DWORD ownerPid = static_cast<DWORD>(handle.UniqueProcessId);
@@ -2559,7 +2608,7 @@ class ProcessHandleSensor : public ISensor
             }
 
             // 句柄指向性验证
-            if (!IsHandlePointingToUs_Safe(handle, ownPid))
+            if (!IsHandlePointingToUs_Safe((const void *)&handle, ownPid))
             {
                 continue;
             }
@@ -2719,7 +2768,7 @@ class ProcessHandleSensor : public ISensor
         }
         else
         {
-            for (ULONG i = 0; i < pHandleInfoLegacy->NumberOfHandles; ++i)
+            for (ULONG i = 0; i < ((const ULONG *)pHandleInfoLegacy)[0]; ++i)
             {
                 if (i % 200 == 0)
                 {
@@ -2729,13 +2778,13 @@ class ProcessHandleSensor : public ISensor
                     {
                         LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR,
                                       "ProcessHandleSensor: 扫描超时，已处理 %lu/%lu 个句柄，耗时%ldms", handlesProcessed,
-                                      (ULONG)pHandleInfoLegacy->NumberOfHandles, elapsed_ms);
+                                      (ULONG)((const ULONG *)pHandleInfoLegacy)[0], elapsed_ms);
                         RecordFailure(anti_cheat::PROCESS_HANDLE_SCAN_TIMEOUT);
                         return SensorExecutionResult::FAILURE;
                     }
                 }
 
-                const auto &handle = pHandleInfoLegacy->Handles[i];
+                const SYSTEM_HANDLE_TABLE_ENTRY_INFO &handle = ((const SYSTEM_HANDLE_TABLE_ENTRY_INFO *)((const BYTE *)pHandleInfoLegacy + sizeof(ULONG)))[i];
                 DWORD ownerPid = static_cast<DWORD>(handle.UniqueProcessId);
                 if (ownerPid == ownPid || processedPidsThisScan.count(ownerPid) > 0 ||
                     !(handle.GrantedAccess & (PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_VM_OPERATION | PROCESS_ALL_ACCESS)))
@@ -2743,7 +2792,7 @@ class ProcessHandleSensor : public ISensor
                     continue;
                 }
 
-                if (!IsHandlePointingToUs_SafeLegacy(handle, ownPid))
+                if (!IsHandlePointingToUs_SafeLegacy((const void *)&handle, ownPid))
                 {
                     continue;
                 }
@@ -2879,9 +2928,9 @@ class ProcessHandleSensor : public ISensor
     }
 
    private:
-    bool IsHandlePointingToUs_SafeLegacy(const SYSTEM_HANDLE_TABLE_ENTRY_INFO &handle, DWORD ownPid)
+    bool IsHandlePointingToUs_SafeLegacy(const void *handle, DWORD ownPid)
     {
-        DWORD ownerPid = static_cast<DWORD>(handle.UniqueProcessId);
+        DWORD ownerPid = static_cast<DWORD>(((const SYSTEM_HANDLE_TABLE_ENTRY_INFO *)handle)->UniqueProcessId);
         HANDLE hOwnerProcess = OpenProcess(PROCESS_DUP_HANDLE, FALSE, ownerPid);
         if (!hOwnerProcess)
         {
@@ -2891,14 +2940,13 @@ class ProcessHandleSensor : public ISensor
         }
 
         HANDLE hDup = nullptr;
-        BOOL success = DuplicateHandle(hOwnerProcess, (HANDLE)(uintptr_t)handle.HandleValue, GetCurrentProcess(), &hDup,
-                                       0, FALSE, DUPLICATE_SAME_ACCESS);
+        BOOL success = DuplicateHandle(hOwnerProcess, (HANDLE)(uintptr_t)((const SYSTEM_HANDLE_TABLE_ENTRY_INFO *)handle)->HandleValue, GetCurrentProcess(), &hDup, 0, FALSE, DUPLICATE_SAME_ACCESS);
         CloseHandle(hOwnerProcess);
         if (!success || hDup == nullptr)
         {
             LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR,
                         "ProcessHandleSensor: DuplicateHandle失败 PID %lu，句柄值 0x%p，错误: 0x%08X", ownerPid,
-                        (PVOID)(uintptr_t)handle.HandleValue, GetLastError());
+                        (PVOID)(uintptr_t)((const SYSTEM_HANDLE_TABLE_ENTRY_INFO *)handle)->HandleValue, GetLastError());
             return false;
         }
 
@@ -2907,7 +2955,7 @@ class ProcessHandleSensor : public ISensor
         {
             LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR,
                         "ProcessHandleSensor: GetProcessId失败或非进程句柄，句柄值 0x%p，错误: 0x%08X",
-                        (PVOID)(uintptr_t)handle.HandleValue, GetLastError());
+                        (PVOID)(uintptr_t)((const SYSTEM_HANDLE_TABLE_ENTRY_INFO *)handle)->HandleValue, GetLastError());
             CloseHandle(hDup);
             return false;
         }
@@ -2916,9 +2964,9 @@ class ProcessHandleSensor : public ISensor
         CloseHandle(hDup);
         return pointsToUs;
     }
-    bool IsHandlePointingToUs_Safe(const SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX &handle, DWORD ownPid)
+    bool IsHandlePointingToUs_Safe(const void *handle, DWORD ownPid)
     {
-        DWORD ownerPid = static_cast<DWORD>(handle.UniqueProcessId);
+        DWORD ownerPid = static_cast<DWORD>(((const SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX *)handle)->UniqueProcessId);
         HANDLE hOwnerProcess = OpenProcess(PROCESS_DUP_HANDLE, FALSE, ownerPid);
         if (!hOwnerProcess)
         {
@@ -2930,8 +2978,7 @@ class ProcessHandleSensor : public ISensor
         }
 
         HANDLE hDup = nullptr;
-        BOOL success = DuplicateHandle(hOwnerProcess, (HANDLE)(uintptr_t)handle.HandleValue, GetCurrentProcess(), &hDup, 0,
-                                       FALSE, DUPLICATE_SAME_ACCESS);
+        BOOL success = DuplicateHandle(hOwnerProcess, (HANDLE)(uintptr_t)((const SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX *)handle)->HandleValue, GetCurrentProcess(), &hDup, 0, FALSE, DUPLICATE_SAME_ACCESS);
 
         CloseHandle(hOwnerProcess);
 
@@ -2939,7 +2986,7 @@ class ProcessHandleSensor : public ISensor
         {
             LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR,
                         "ProcessHandleSensor: DuplicateHandle失败 PID %lu，句柄值 0x%p，错误: 0x%08X", ownerPid,
-                        (PVOID)(uintptr_t)handle.HandleValue, GetLastError());
+                        (PVOID)(uintptr_t)((const SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX *)handle)->HandleValue, GetLastError());
             // DuplicateHandle失败
             return false;
         }
@@ -2950,7 +2997,7 @@ class ProcessHandleSensor : public ISensor
             // 对非进程对象或权限不足等，GetProcessId返回0是预期情况，不作为警告
             LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR,
                         "ProcessHandleSensor: GetProcessId失败或非进程句柄，句柄值 0x%p，错误: 0x%08X",
-                        (PVOID)(uintptr_t)handle.HandleValue, GetLastError());
+                        (PVOID)(uintptr_t)((const SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX *)handle)->HandleValue, GetLastError());
             CloseHandle(hDup);
             return false;
         }
