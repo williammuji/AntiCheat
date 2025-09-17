@@ -2538,11 +2538,31 @@ class ProcessHandleSensor : public ISensor
 
             if (!hOwnerProcess.get())
             {
-                LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR,
-                            "ProcessHandleSensor: 无法打开进程 PID %lu，错误: 0x%08X", handle.ProcessId,
-                            GetLastError());
-                // 统计OpenProcess失败
-                RecordFailure(anti_cheat::PROCESS_HANDLE_OPEN_PROCESS_FAILED);
+                DWORD lastError = GetLastError();
+
+                // 检查是否为正常的权限限制或参数无效情况
+                if (lastError == ERROR_ACCESS_DENIED || lastError == ERROR_INVALID_PARAMETER ||
+                    lastError == ERROR_INVALID_HANDLE)
+                {
+                    // 这些是正常的权限限制或参数无效情况，不记录为失败
+                    const char *errorType = (lastError == ERROR_ACCESS_DENIED)       ? "访问被拒绝"
+                                            : (lastError == ERROR_INVALID_PARAMETER) ? "参数无效"
+                                                                                     : "句柄无效";
+
+                    LOG_DEBUG_F(
+                            AntiCheatLogger::LogCategory::SENSOR,
+                            "ProcessHandleSensor: 无法打开进程进行句柄验证 PID %lu (%s)，正常权限限制，错误: 0x%08X",
+                            handle.ProcessId, errorType, lastError);
+                }
+                else
+                {
+                    // 其他错误可能是真正的系统问题
+                    LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR,
+                                  "ProcessHandleSensor: 无法打开进程进行句柄验证 PID %lu，错误: 0x%08X",
+                                  handle.ProcessId, lastError);
+                    RecordFailure(anti_cheat::PROCESS_HANDLE_OPEN_PROCESS_FAILED);
+                }
+
                 // 无法打开进程，跳过
                 continue;
             }
