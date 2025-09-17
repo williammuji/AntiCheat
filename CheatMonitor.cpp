@@ -493,27 +493,41 @@ bool GetModuleCodeSectionInfo(HMODULE hModule, PVOID &outBase, DWORD &outSize)
         const auto *pDosHeader = reinterpret_cast<const IMAGE_DOS_HEADER *>(baseAddress);
         if (pDosHeader->e_magic != IMAGE_DOS_SIGNATURE)
         {
+            LOG_DEBUG_F(AntiCheatLogger::LogCategory::SYSTEM,
+                        "GetModuleCodeSectionInfo: DOS签名无效, hModule=0x%p, magic=0x%04X", hModule,
+                        pDosHeader->e_magic);
             return false;
         }
 
         const auto *pNtHeaders = reinterpret_cast<const IMAGE_NT_HEADERS *>(baseAddress + pDosHeader->e_lfanew);
         if (pNtHeaders->Signature != IMAGE_NT_SIGNATURE)
         {
+            LOG_DEBUG_F(AntiCheatLogger::LogCategory::SYSTEM,
+                        "GetModuleCodeSectionInfo: NT签名无效, hModule=0x%p, signature=0x%08X", hModule,
+                        pNtHeaders->Signature);
             return false;
         }
 
         PIMAGE_SECTION_HEADER pSectionHeader = IMAGE_FIRST_SECTION(pNtHeaders);
+        int codeSectionCount = 0;
         for (int i = 0; i < pNtHeaders->FileHeader.NumberOfSections; i++, pSectionHeader++)
         {
             // 寻找第一个可执行代码节 (通常是 .text)
             if (pSectionHeader->Characteristics & IMAGE_SCN_CNT_CODE)
             {
-                outBase = (PVOID)(baseAddress + pSectionHeader->VirtualAddress);
-                outSize = pSectionHeader->Misc.VirtualSize;
-                return true;
+                codeSectionCount++;
+                if (codeSectionCount == 1)  // 只取第一个代码节
+                {
+                    outBase = (PVOID)(baseAddress + pSectionHeader->VirtualAddress);
+                    outSize = pSectionHeader->Misc.VirtualSize;
+                    return true;
+                }
             }
         }
 
+        LOG_DEBUG_F(AntiCheatLogger::LogCategory::SYSTEM,
+                    "GetModuleCodeSectionInfo: 未找到代码节, hModule=0x%p, 总节数=%d, 代码节数=%d", hModule,
+                    pNtHeaders->FileHeader.NumberOfSections, codeSectionCount);
         return false;  // 没找到代码节
     }
     __except (EXCEPTION_EXECUTE_HANDLER)
@@ -2138,11 +2152,34 @@ class ModuleIntegritySensor : public ISensor
         DWORD codeSize = 0;
         if (!SystemUtils::GetModuleCodeSectionInfo(hModule, codeBase, codeSize))
         {
-            RecordFailure(anti_cheat::MODULE_INTEGRITY_GET_CODE_SECTION_FAILED);
-            LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR,
-                          "ModuleIntegritySensor: 获取代码节信息失败, 模块=%s, hModule=0x%p",
-                          Utils::WideToString(modulePath_w).c_str(), hModule);
-            return;
+            // 对于某些特殊模块（如音频库、驱动等），获取代码节失败可能是正常的
+            std::wstring moduleName = modulePath_w;
+            std::transform(moduleName.begin(), moduleName.end(), moduleName.begin(), ::towlower);
+
+            // 检查是否为已知的特殊模块类型
+            bool isSpecialModule = (moduleName.find(L"fmodex") != std::wstring::npos) ||
+                                   (moduleName.find(L"fmod") != std::wstring::npos) ||
+                                   (moduleName.find(L"audio") != std::wstring::npos) ||
+                                   (moduleName.find(L"sound") != std::wstring::npos) ||
+                                   (moduleName.find(L"driver") != std::wstring::npos);
+
+            if (isSpecialModule)
+            {
+                // 特殊模块的代码节获取失败是正常情况，记录调试信息
+                LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR,
+                            "ModuleIntegritySensor: 特殊模块代码节获取失败（正常情况）, 模块=%s, hModule=0x%p",
+                            Utils::WideToString(modulePath_w).c_str(), hModule);
+                return;
+            }
+            else
+            {
+                // 普通模块的代码节获取失败需要记录
+                RecordFailure(anti_cheat::MODULE_INTEGRITY_GET_CODE_SECTION_FAILED);
+                LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR,
+                              "ModuleIntegritySensor: 获取代码节信息失败, 模块=%s, hModule=0x%p",
+                              Utils::WideToString(modulePath_w).c_str(), hModule);
+                return;
+            }
         }
 
         // 检查代码节大小是否超过限制
