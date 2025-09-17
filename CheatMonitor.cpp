@@ -1747,23 +1747,43 @@ class ProcessAndWindowMonitorSensor : public ISensor
                 {
                     // OpenProcess失败，检查是否为正常的权限限制
                     DWORD lastError = GetLastError();
-                    
+
                     // 常见的正常失败情况：
-                    // ERROR_ACCESS_DENIED (5) - 权限不足，常见于系统进程
+                    // ERROR_ACCESS_DENIED (5) - 访问被拒绝，通常是由于：
+                    //   1. 目标进程运行在更高权限级别（如SYSTEM进程）
+                    //   2. 目标进程受到保护（如受保护的进程）
+                    //   3. 当前进程权限不足（需要管理员权限）
                     // ERROR_INVALID_PARAMETER (87) - 参数无效
                     // ERROR_INVALID_HANDLE (6) - 句柄无效
-                    if (lastError == ERROR_ACCESS_DENIED || lastError == ERROR_INVALID_PARAMETER || 
+                    if (lastError == ERROR_ACCESS_DENIED || lastError == ERROR_INVALID_PARAMETER ||
                         lastError == ERROR_INVALID_HANDLE)
                     {
                         // 这些是正常的权限限制，不记录为失败
-                        LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR, 
-                                   "无法打开进程 PID %lu，正常权限限制 (错误码: %lu)", pe.th32ProcessID, lastError);
+                        // 提供更详细的错误信息以便调试
+                        const char *errorType = (lastError == ERROR_ACCESS_DENIED)       ? "访问被拒绝(权限不足)"
+                                                : (lastError == ERROR_INVALID_PARAMETER) ? "参数无效"
+                                                                                         : "句柄无效";
+
+                        // 为ERROR_ACCESS_DENIED提供更详细的解释
+                        if (lastError == ERROR_ACCESS_DENIED)
+                        {
+                            LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR,
+                                        "无法打开进程 PID %lu (%s)，正常权限限制 (错误码: %lu) - 进程名: %s | "
+                                        "可能原因: 1)系统进程 2)受保护进程 3)权限级别不足",
+                                        pe.th32ProcessID, errorType, lastError, processName.c_str());
+                        }
+                        else
+                        {
+                            LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR,
+                                        "无法打开进程 PID %lu (%s)，正常权限限制 (错误码: %lu) - 进程名: %s",
+                                        pe.th32ProcessID, errorType, lastError, processName.c_str());
+                        }
                     }
                     else
                     {
                         // 其他错误可能是真正的系统问题
-                        LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR, 
-                                     "OpenProcess失败: PID=%lu, 错误码=%lu", pe.th32ProcessID, lastError);
+                        LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR, "OpenProcess失败: PID=%lu, 错误码=%lu",
+                                      pe.th32ProcessID, lastError);
                         RecordFailure(anti_cheat::PROCESS_WINDOW_OPEN_PROCESS_FAILED);
                     }
                 }
@@ -2343,10 +2363,8 @@ class ProcessHandleSensor : public ISensor
             return SensorExecutionResult::FAILURE;
         }
 
-        // 5. 性能上限配置 - ProcessHandleSensor需要扫描所有系统句柄
-        // 但设置合理上限以避免系统性能问题
-        ULONG kMaxHandlesToScan =
-                CheatConfigManager::GetInstance().GetMaxHandleScanCount();  // 配置化句柄上限，平衡检测覆盖率和性能
+        // 5. 性能上限配置 - 使用配置字段
+        ULONG kMaxHandlesToScan = CheatConfigManager::GetInstance().GetMaxHandleScanCount();
 
         // 6. 内存管理优化：使用预分配缓冲区
         HandleBufferManager bufferManager;
@@ -2394,12 +2412,21 @@ class ProcessHandleSensor : public ISensor
         const auto *pHandleInfo = reinterpret_cast<const SYSTEM_HANDLE_INFORMATION *>(bufferManager.buffer);
         if (pHandleInfo->NumberOfHandles > kMaxHandlesToScan)
         {
+            // 提供更详细的上下文信息
+            double handleRatio = static_cast<double>(pHandleInfo->NumberOfHandles) / kMaxHandlesToScan;
             LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR,
-                          "ProcessHandleSensor: 系统句柄数量超过上限 (%lu > %lu)，跳过扫描以确保系统性能",
-                          pHandleInfo->NumberOfHandles, kMaxHandlesToScan);
+                          "ProcessHandleSensor: 系统句柄数量超过上限 (%lu > %lu, 超出%.1f%%)，跳过扫描以确保系统性能。"
+                          "建议：1) 检查系统是否有句柄泄漏 2) 考虑增加max_handle_scan_count配置值",
+                          pHandleInfo->NumberOfHandles, kMaxHandlesToScan, (handleRatio - 1.0) * 100.0);
             RecordFailure(anti_cheat::PROCESS_HANDLE_HANDLE_COUNT_EXCEEDED);
             return SensorExecutionResult::FAILURE;
         }
+
+        // 记录句柄数量统计信息（仅在DEBUG级别）
+        LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR,
+                    "ProcessHandleSensor: 开始扫描 %lu 个系统句柄 (上限: %lu, 使用率: %.1f%%)",
+                    pHandleInfo->NumberOfHandles, kMaxHandlesToScan,
+                    static_cast<double>(pHandleInfo->NumberOfHandles) / kMaxHandlesToScan * 100.0);
 
         // 8. 主扫描循环
         const DWORD ownPid = GetCurrentProcessId();
@@ -2802,21 +2829,22 @@ class ThreadAndModuleActivitySensor : public ISensor
             std::unique_ptr<void, decltype(thread_closer)> thread_handle(hThread, thread_closer);
 
             PVOID startAddress = nullptr;
-            
+
             // 检查NT API是否可用
             if (!SystemUtils::g_pNtQueryInformationThread)
             {
                 // API不可用，这是正常情况，不记录失败
-                LOG_DEBUG(AntiCheatLogger::LogCategory::SENSOR, 
-                         "NtQueryInformationThread API不可用，跳过线程起始地址检测");
+                LOG_DEBUG(AntiCheatLogger::LogCategory::SENSOR,
+                          "NtQueryInformationThread API不可用，跳过线程起始地址检测");
                 return;
             }
-            
+
             // 尝试查询线程起始地址
-            NTSTATUS status = SystemUtils::g_pNtQueryInformationThread(hThread,
-                                                                      (THREADINFOCLASS)9,  // ThreadQuerySetWin32StartAddress
-                                                                      &startAddress, sizeof(startAddress), nullptr);
-            
+            NTSTATUS status =
+                    SystemUtils::g_pNtQueryInformationThread(hThread,
+                                                             (THREADINFOCLASS)9,  // ThreadQuerySetWin32StartAddress
+                                                             &startAddress, sizeof(startAddress), nullptr);
+
             if (NT_SUCCESS(status))
             {
                 if (startAddress)
@@ -2836,15 +2864,15 @@ class ThreadAndModuleActivitySensor : public ISensor
                 // 只有在真正的API错误时才记录失败，某些NTSTATUS值是正常情况
                 if (status != 0xC000000D && status != 0xC0000022)  // STATUS_INVALID_PARAMETER, STATUS_ACCESS_DENIED
                 {
-                    LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR, 
-                                 "NtQueryInformationThread失败: NTSTATUS=0x%08X, TID=%lu", status, threadId);
+                    LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR,
+                                  "NtQueryInformationThread失败: NTSTATUS=0x%08X, TID=%lu", status, threadId);
                     RecordFailure(anti_cheat::THREAD_MODULE_QUERY_THREAD_FAILED);
                 }
                 else
                 {
                     // 参数无效或访问被拒绝是正常情况，不记录失败
-                    LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR, 
-                               "NtQueryInformationThread返回正常状态: NTSTATUS=0x%08X, TID=%lu", status, threadId);
+                    LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR,
+                                "NtQueryInformationThread返回正常状态: NTSTATUS=0x%08X, TID=%lu", status, threadId);
                 }
             }
         }
@@ -3068,30 +3096,31 @@ class MemorySecuritySensor : public ISensor
     {
         HMODULE hMod = nullptr;
         DWORD lastError = 0;
-        
+
         // 尝试获取模块句柄，区分真正的API失败和正常的"不属于任何模块"情况
-        BOOL result = GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                                        (LPCWSTR)mbi.BaseAddress, &hMod);
-        
+        BOOL result = GetModuleHandleExW(
+                GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                (LPCWSTR)mbi.BaseAddress, &hMod);
+
         if (!result)
         {
             lastError = GetLastError();
             // 只有在真正的API错误时才记录失败，ERROR_INVALID_ADDRESS是正常情况
             if (lastError != ERROR_INVALID_ADDRESS)
             {
-                LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR, 
-                              "GetModuleHandleExW失败: 错误码=%lu, 地址=0x%p", lastError, mbi.BaseAddress);
+                LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR, "GetModuleHandleExW失败: 错误码=%lu, 地址=0x%p",
+                              lastError, mbi.BaseAddress);
                 RecordFailure(anti_cheat::MEMORY_GET_MODULE_HANDLE_FAILED);
                 return;
             }
         }
-        
+
         // 如果GetModuleHandleExW成功，说明地址属于已知模块，不是隐藏模块
         if (result && hMod != nullptr)
         {
-            return; // 地址在已知模块中，跳过检测
+            return;  // 地址在已知模块中，跳过检测
         }
-        
+
         // 地址不属于任何已知模块，继续检测是否为隐藏模块
         uintptr_t baseAddr = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
         SIZE_T regionSize = mbi.RegionSize;
@@ -3109,17 +3138,17 @@ class MemorySecuritySensor : public ISensor
                 if (peCheckResult.accessible)
                 {
                     sprintf_s(msgBuffer, sizeof(msgBuffer), "检测到隐藏的可执行内存区域: 0x%p 大小: %zu 字节",
-                        (void *)baseAddr, regionSize);
+                              (void *)baseAddr, regionSize);
                 }
                 else
                 {
                     sprintf_s(msgBuffer, sizeof(msgBuffer),
-                        "检测到隐藏的可执行内存区域（无法读取）: 0x%p 大小: %zu 字节", (void *)baseAddr,
-                        regionSize);
+                              "检测到隐藏的可执行内存区域（无法读取）: 0x%p 大小: %zu 字节", (void *)baseAddr,
+                              regionSize);
                 }
                 context.AddEvidence(anti_cheat::INTEGRITY_MEMORY_PATCH, std::string(msgBuffer));
             }
-        }   
+        }
     }
 
     // 检测私有可执行内存

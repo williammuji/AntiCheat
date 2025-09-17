@@ -2,17 +2,19 @@
   // --- Editor Settings ---
   "editor.tabSize": 4,
   "editor.insertSpaces": true,
-
+  // --- Cross-platform compatibility ---
+  "files.eol": "\n", // 统一使用LF换行符，避免macOS/Windows差异
+  "files.encoding": "utf8", // 统一使用UTF-8编码
+  "files.trimTrailingWhitespace": true, // 自动删除行尾空格
+  "files.insertFinalNewline": true, // 文件末尾自动插入换行符
   // --- C/C++ Formatting ---
   // Enable format on save for all files
   "editor.formatOnSave": true,
-
   // Specify that for C++ files ([cpp]), the default formatter
   // should be the one from the Microsoft C/C++ extension.
   "[cpp]": {
     "editor.defaultFormatter": "ms-vscode.cpptools"
   },
-
   // If you also have .h files you want to format as C++, you can add this:
   "files.associations": {
     "*.h": "cpp",
