@@ -241,16 +241,15 @@ int32_t CheatConfigManager::GetSensorStatsUploadIntervalMinutes() const
     return GetCurrentConfig()->config->sensor_stats_upload_interval_minutes();
 }
 
-
 // --- 私有辅助函数 ---
 
 void CheatConfigManager::SetDefaultValues(ConfigData& configData)
 {
     // 生产环境优化：调整扫描和上报间隔，平衡性能与安全
-    configData.config->set_base_scan_interval_seconds(45);             // 轻量级扫描间隔45秒
-    configData.config->set_heavy_scan_interval_minutes(8);             // 重量级扫描间隔8分钟
-    configData.config->set_report_upload_interval_minutes(30);         // 证据上报间隔30分钟
-    configData.config->set_sensor_stats_upload_interval_minutes(60);   // 传感器统计上报间隔60分钟
+    configData.config->set_base_scan_interval_seconds(45);            // 轻量级扫描间隔45秒
+    configData.config->set_heavy_scan_interval_minutes(8);            // 重量级扫描间隔8分钟
+    configData.config->set_report_upload_interval_minutes(30);        // 证据上报间隔30分钟
+    configData.config->set_sensor_stats_upload_interval_minutes(60);  // 传感器统计上报间隔60分钟
 
     // 1. 有害进程名 (Harmful Process Names)
     configData.config->clear_harmful_process_names();
@@ -685,7 +684,7 @@ void CheatConfigManager::SetDefaultValues(ConfigData& configData)
 
     // --- 通用配置参数（所有Sensor共用） ---
     configData.config->set_max_code_section_size(50 * 1024 * 1024);  // 最大代码节大小(50MB)
-    configData.config->set_heavy_scan_budget_ms(500);                 // 重量级扫描预算(毫秒)
+    configData.config->set_heavy_scan_budget_ms(500);                // 重量级扫描预算(毫秒)
 
     // [新增] MemorySecuritySensor配置参数
     configData.config->set_min_memory_region_size(4 * 1024);  // 最小内存区域大小(4KB)
@@ -697,16 +696,15 @@ void CheatConfigManager::SetDefaultValues(ConfigData& configData)
     configData.config->set_max_processes_to_scan(1000);  // 最大进程扫描数量(1000个)
 
     // [新增] 性能调优参数
-    configData.config->set_max_window_count(100);         // 最大窗口数量限制(100个)
-    configData.config->set_max_handle_scan_count(50000);  // 最大句柄扫描数量(50K个)
-    configData.config->set_initial_buffer_size_mb(1);     // 初始缓冲区大小(1MB)
-    configData.config->set_max_buffer_size_mb(4);         // 最大缓冲区大小(4MB)
+    configData.config->set_max_window_count(100);          // 最大窗口数量限制(100个)
+    configData.config->set_max_handle_scan_count(150000);  // 最大句柄扫描数量(150K个)
+    configData.config->set_initial_buffer_size_mb(1);      // 初始缓冲区大小(1MB)
+    configData.config->set_max_buffer_size_mb(4);          // 最大缓冲区大小(4MB)
 
     // 新增：最低OS版本要求
     configData.config->set_min_os_version(anti_cheat::OS_WIN10);  // 默认要求Windows 10+
 
     // 不再在客户端生成/校验配置签名：配置下发已在传输层加密与鉴权
-
 
     UpdateWideStringCaches(configData);
 }
