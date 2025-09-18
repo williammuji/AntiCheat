@@ -2607,6 +2607,46 @@ class ProcessHandleSensor : public ISensor
         }
 
         const auto now = std::chrono::steady_clock::now();
+        // 跨扫描缓存：进程路径签名结果（减少 WinVerifyTrust 调用）
+        static std::unordered_map<std::wstring, std::pair<Utils::SignatureStatus, std::chrono::steady_clock::time_point>>
+                s_processSigCache;
+        static std::unordered_map<std::wstring, std::chrono::steady_clock::time_point> s_processSigThrottleUntil;
+
+        // 系统目录前缀缓存（小工具）
+        struct SysDirs
+        {
+            std::wstring sys32, syswow64, winsxs, drivers;
+            bool initialized = false;
+        };
+        static SysDirs s_sysDirs;
+        auto ensureSysDirs = [&]() {
+            if (!s_sysDirs.initialized)
+            {
+                wchar_t winDirBuf[MAX_PATH] = {0};
+                if (GetWindowsDirectoryW(winDirBuf, MAX_PATH) > 0)
+                {
+                    std::wstring winDir = winDirBuf;
+                    std::transform(winDir.begin(), winDir.end(), winDir.begin(), ::towlower);
+                    if (!winDir.empty() && winDir.back() != L'\\')
+                        winDir.push_back(L'\\');
+                    s_sysDirs.sys32 = winDir + L"system32\\";
+                    s_sysDirs.syswow64 = winDir + L"syswow64\\";
+                    s_sysDirs.winsxs = winDir + L"winsxs\\";
+                    s_sysDirs.drivers = winDir + L"system32\\drivers\\";
+                }
+                s_sysDirs.initialized = true;
+            }
+        };
+        auto isSystemDirPath = [&](const std::wstring &path) -> bool {
+            ensureSysDirs();
+            std::wstring lower = path;
+            std::transform(lower.begin(), lower.end(), lower.begin(), ::towlower);
+            if (lower.rfind(s_sysDirs.sys32, 0) == 0) return true;
+            if (lower.rfind(s_sysDirs.syswow64, 0) == 0) return true;
+            if (lower.rfind(s_sysDirs.winsxs, 0) == 0) return true;
+            if (lower.rfind(s_sysDirs.drivers, 0) == 0) return true;
+            return false;
+        };
         std::unordered_set<DWORD> processedPidsThisScan;
         ULONG handlesProcessed = 0;
         ULONG openProcDeniedCount = 0;       // ERROR_ACCESS_DENIED
@@ -2709,7 +2749,7 @@ class ProcessHandleSensor : public ISensor
                 continue;
             }
 
-            // 智能缓存：使用路径作为键
+            // 智能缓存：使用路径作为键（单次扫描）
             auto pathCacheIt = pathCache.find(ownerProcessPath);
             if (pathCacheIt != pathCache.end())
             {
@@ -2755,8 +2795,47 @@ class ProcessHandleSensor : public ISensor
                 lowerProcessName = std::filesystem::path(ownerProcessPath).filename().wstring();
                 std::transform(lowerProcessName.begin(), lowerProcessName.end(), lowerProcessName.begin(), ::towlower);
 
-                // 签名验证
-                signatureStatus = Utils::VerifyFileSignature(ownerProcessPath, context.GetWindowsVersion());
+                // 白名单或系统目录：直接视为可信，无需签名验证
+                const auto &knownGoodProcesses = CheatConfigManager::GetInstance().GetKnownGoodProcesses();
+                if (knownGoodProcesses->count(lowerProcessName) > 0 || isSystemDirPath(ownerProcessPath))
+                {
+                    signatureStatus = Utils::SignatureStatus::TRUSTED;
+                }
+                else
+                {
+                    // 跨扫描缓存 + 节流（避免频繁 WinVerifyTrust）
+                    const auto ttl = std::chrono::minutes(CheatConfigManager::GetInstance().GetSignatureCacheDurationMinutes());
+                    auto thrIt = s_processSigThrottleUntil.find(ownerProcessPath);
+                    if (thrIt != s_processSigThrottleUntil.end() && now < thrIt->second)
+                    {
+                        // 节流期内，维持UNKNOWN，稍后会被视为FAILED_TO_VERIFY跳过
+                        signatureStatus = Utils::SignatureStatus::FAILED_TO_VERIFY;
+                    }
+                    else
+                    {
+                        auto it = s_processSigCache.find(ownerProcessPath);
+                        bool cacheHit = (it != s_processSigCache.end()) && (now < it->second.second + ttl);
+                        if (cacheHit)
+                        {
+                            signatureStatus = it->second.first;
+                        }
+                        else
+                        {
+                            signatureStatus = Utils::VerifyFileSignature(ownerProcessPath, context.GetWindowsVersion());
+                            if (signatureStatus == Utils::SignatureStatus::FAILED_TO_VERIFY)
+                            {
+                                s_processSigThrottleUntil[ownerProcessPath] =
+                                        now + std::chrono::milliseconds(
+                                                      CheatConfigManager::GetInstance().GetSignatureVerificationFailureThrottleMs());
+                            }
+                            else
+                            {
+                                s_processSigCache[ownerProcessPath] = {signatureStatus, now};
+                                s_processSigThrottleUntil.erase(ownerProcessPath);
+                            }
+                        }
+                    }
+                }
 
                 // 更新智能缓存
                 PathCacheEntry cacheEntry;
@@ -2959,8 +3038,8 @@ class ProcessHandleSensor : public ISensor
         auto scanDuration = std::chrono::duration_cast<std::chrono::milliseconds>(endTime - startTime).count();
 
         LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR,
-                    "ProcessHandleSensor: 扫描完成，处理 %lu 个句柄，耗时 %lldms; OpenProcess统计 -> 拒绝: %lu, 参数/句柄无效: %lu, 其他失败: %lu",
-                    handlesProcessed, scanDuration, openProcDeniedCount, openProcInvalidCount, openProcOtherFailCount);
+                    "ProcessHandleSensor: 扫描完成，处理 %lu/%lu 个命中进程/系统句柄，耗时 %lldms; OpenProcess统计 -> 拒绝: %lu, 参数/句柄无效: %lu, 其他失败: %lu",
+                    handlesProcessed, (ULONG)totalHandles, scanDuration, openProcDeniedCount, openProcInvalidCount, openProcOtherFailCount);
 
         // 根据统计数据判断执行结果
         // 注意：如果检测到作弊（AddEvidence），即使有系统级失败也应该返回SUCCESS

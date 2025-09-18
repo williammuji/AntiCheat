@@ -684,10 +684,10 @@ void CheatConfigManager::SetDefaultValues(ConfigData& configData)
 
     // --- 通用配置参数（所有Sensor共用） ---
     configData.config->set_max_code_section_size(50 * 1024 * 1024);  // 最大代码节大小(50MB)
-    configData.config->set_heavy_scan_budget_ms(500);                // 重量级扫描预算(毫秒)
+    configData.config->set_heavy_scan_budget_ms(1000);               // 重量级扫描预算(毫秒)
 
     // [新增] MemorySecuritySensor配置参数
-    configData.config->set_min_memory_region_size(4 * 1024);  // 最小内存区域大小(4KB)
+    configData.config->set_min_memory_region_size(128 * 1024);  // 最小内存区域大小(128KB)
     configData.config->set_max_memory_region_size(16 * 1024 *
                                                   1024);  // 最大内存区域大小(16MB)
                                                           // 移除maxScannedRegions相关配置，依赖budget_ms机制
