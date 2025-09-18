@@ -1047,6 +1047,8 @@ struct CheatMonitor::Pimpl
                                     anti_cheat::SensorFailureReason failureReason = anti_cheat::UNKNOWN_FAILURE);
     // 统一传感器统计批量上报方法
     void UploadSensorExecutionStatsReport();
+    // 记录传感器工作量计数器
+    void RecordSensorWorkloadCounters(const std::string &name, uint64_t snapshot_size, uint64_t attempts, uint64_t hits);
 
     void AddEvidence(anti_cheat::CheatCategory category, const std::string &description);
 
@@ -2283,7 +2285,7 @@ class ModuleIntegritySensor : public ISensor
         }
 
         // 检查模块枚举是否成功
-        if (moduleCount == 0)
+        if (index == 0)
         {
             // 检查是否是系统级失败（EnumProcessModules失败）
             std::vector<HMODULE> hMods(1);
