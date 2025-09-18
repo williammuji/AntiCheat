@@ -278,6 +278,14 @@ message SensorExecutionStats {
   
   // 失败原因统计
   map<int32, uint32> failure_reasons = 12; // 失败原因enum -> 次数
+
+  // 运行期计数（用于调参观测）
+  uint64 workload_snapshot_size_total = 13;   // 累积：快照规模总和（工作量）
+  uint64 workload_attempts_total = 14;        // 累积：尝试数总和（工作量）
+  uint64 workload_hits_total = 15;            // 累积：命中数总和（工作量）
+  uint64 workload_last_snapshot_size = 16;    // 最近一轮：快照规模
+  uint64 workload_last_attempts = 17;         // 最近一轮：尝试数
+  uint64 workload_last_hits = 18;             // 最近一轮：命中数
 }
 
 // LightweightSensorStats已删除，统一使用SensorExecutionStats
@@ -334,5 +342,9 @@ message ClientConfig {
 
   // --- 通用配置参数（所有Sensor共用） ---
   optional int32 heavy_scan_budget_ms = 28;          // 重量级扫描预算时间(毫秒)  
+
+  // --- 时间片扫描限额（游标式遍历） ---
+  optional int32 max_pid_attempts_per_scan = 29;     // 每次句柄扫描最多尝试的新PID数量
+  optional int32 max_modules_per_scan = 30;          // 每次模块完整性扫描最多处理的模块数量
 
 }
