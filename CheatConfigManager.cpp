@@ -241,6 +241,16 @@ int32_t CheatConfigManager::GetSensorStatsUploadIntervalMinutes() const
     return GetCurrentConfig()->config->sensor_stats_upload_interval_minutes();
 }
 
+int32_t CheatConfigManager::GetMaxPidAttemptsPerScan() const
+{
+    return GetCurrentConfig()->config->max_pid_attempts_per_scan();
+}
+
+int32_t CheatConfigManager::GetMaxModulesPerScan() const
+{
+    return GetCurrentConfig()->config->max_modules_per_scan();
+}
+
 // --- 私有辅助函数 ---
 
 void CheatConfigManager::SetDefaultValues(ConfigData& configData)
@@ -700,6 +710,10 @@ void CheatConfigManager::SetDefaultValues(ConfigData& configData)
     configData.config->set_max_handle_scan_count(150000);  // 最大句柄扫描数量(150K个)
     configData.config->set_initial_buffer_size_mb(1);      // 初始缓冲区大小(1MB)
     configData.config->set_max_buffer_size_mb(4);          // 最大缓冲区大小(4MB)
+
+    // --- 时间片扫描限额（游标式遍历） ---
+    configData.config->set_max_pid_attempts_per_scan(300);  // 单次句柄扫描最多尝试的新PID数量
+    configData.config->set_max_modules_per_scan(150);       // 单次模块完整性扫描最多处理的模块数量
 
     // 新增：最低OS版本要求
     configData.config->set_min_os_version(anti_cheat::OS_WIN10);  // 默认要求Windows 10+
