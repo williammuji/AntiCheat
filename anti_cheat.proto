@@ -346,5 +346,6 @@ message ClientConfig {
   // --- 时间片扫描限额（游标式遍历） ---
   optional int32 max_pid_attempts_per_scan = 29;     // 每次句柄扫描最多尝试的新PID数量
   optional int32 max_modules_per_scan = 30;          // 每次模块完整性扫描最多处理的模块数量
+  optional int32 pid_throttle_minutes = 31;          // PID节流时长（分钟）
 
 }
