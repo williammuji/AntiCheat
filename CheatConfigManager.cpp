@@ -251,6 +251,11 @@ int32_t CheatConfigManager::GetMaxModulesPerScan() const
     return GetCurrentConfig()->config->max_modules_per_scan();
 }
 
+int32_t CheatConfigManager::GetPidThrottleMinutes() const
+{
+    return GetCurrentConfig()->config->pid_throttle_minutes();
+}
+
 // --- 私有辅助函数 ---
 
 void CheatConfigManager::SetDefaultValues(ConfigData& configData)
@@ -714,6 +719,7 @@ void CheatConfigManager::SetDefaultValues(ConfigData& configData)
     // --- 时间片扫描限额（游标式遍历） ---
     configData.config->set_max_pid_attempts_per_scan(300);  // 单次句柄扫描最多尝试的新PID数量
     configData.config->set_max_modules_per_scan(150);       // 单次模块完整性扫描最多处理的模块数量
+    configData.config->set_pid_throttle_minutes(5);         // PID节流时长（分钟）
 
     // 新增：最低OS版本要求
     configData.config->set_min_os_version(anti_cheat::OS_WIN10);  // 默认要求Windows 10+

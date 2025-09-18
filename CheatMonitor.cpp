@@ -2811,15 +2811,15 @@ class ProcessHandleSensor : public ISensor
             // 句柄指向性验证
             if (!IsHandlePointingToUs_Safe((const void *)&handle, ownPid))
             {
-                pidTtlMap[ownerPid] = now + std::chrono::minutes(
-                                                CheatConfigManager::GetInstance().GetProcessCacheDurationMinutes());
+                pidTtlMap[ownerPid] =
+                        now + std::chrono::minutes(CheatConfigManager::GetInstance().GetPidThrottleMinutes());
                 entriesVisited++;
                 continue;
             }
 
             processedPidsThisScan.insert(ownerPid);
-            pidTtlMap[ownerPid] = now + std::chrono::minutes(
-                                            CheatConfigManager::GetInstance().GetProcessCacheDurationMinutes());
+            pidTtlMap[ownerPid] =
+                    now + std::chrono::minutes(CheatConfigManager::GetInstance().GetPidThrottleMinutes());
             handlesProcessed++;
             entriesVisited++;
 
@@ -3047,16 +3047,16 @@ class ProcessHandleSensor : public ISensor
 
                 if (!IsHandlePointingToUs_SafeLegacy((const void *)&handle, ownPid))
                 {
-                    pidTtlMap[ownerPid] = now + std::chrono::minutes(
-                                                    CheatConfigManager::GetInstance().GetProcessCacheDurationMinutes());
+                    pidTtlMap[ownerPid] =
+                            now + std::chrono::minutes(CheatConfigManager::GetInstance().GetPidThrottleMinutes());
                     entriesVisited++;
                     continue;
                 }
 
                 processedPidsThisScan.insert(ownerPid);
                 handlesProcessed++;
-                pidTtlMap[ownerPid] = now + std::chrono::minutes(
-                                                CheatConfigManager::GetInstance().GetProcessCacheDurationMinutes());
+                pidTtlMap[ownerPid] =
+                        now + std::chrono::minutes(CheatConfigManager::GetInstance().GetPidThrottleMinutes());
                 entriesVisited++;
 
                 std::wstring ownerProcessPath;
@@ -3529,9 +3529,10 @@ class ThreadAndModuleActivitySensor : public ISensor
 
         // 检查线程起始地址
         PVOID startAddress = nullptr;
-        if (NT_SUCCESS(SystemUtils::g_pNtQueryInformationThread(hThread,
-                                                                (THREADINFOCLASS)9,  // ThreadQuerySetWin32StartAddress
-                                                                &startAddress, sizeof(startAddress), nullptr)))
+        NTSTATUS qsaStatus = SystemUtils::g_pNtQueryInformationThread(
+                hThread, (THREADINFOCLASS)9,  // ThreadQuerySetWin32StartAddress
+                &startAddress, sizeof(startAddress), nullptr);
+        if (NT_SUCCESS(qsaStatus))
         {
             if (startAddress)
             {
@@ -3547,15 +3548,31 @@ class ThreadAndModuleActivitySensor : public ISensor
         }
         else
         {
-            // 记录NtQueryInformationThread失败
-            RecordFailure(anti_cheat::THREAD_MODULE_QUERY_THREAD_FAILED);
+            // 对常见可容忍状态不记失败
+            if (qsaStatus != 0xC000000D &&  // STATUS_INVALID_PARAMETER
+                qsaStatus != 0xC0000022 &&  // STATUS_ACCESS_DENIED
+                qsaStatus != 0xC0000003 &&  // STATUS_INVALID_INFO_CLASS
+                qsaStatus != 0xC0000002)    // STATUS_NOT_IMPLEMENTED
+            {
+                RecordFailure(anti_cheat::THREAD_MODULE_QUERY_THREAD_FAILED);
+                LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR,
+                            "NtQueryInformationThread(start) 失败且计为失败: NTSTATUS=0x%08X, TID=%lu", qsaStatus,
+                            threadId);
+            }
+            else
+            {
+                LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR,
+                            "NtQueryInformationThread(start) 返回可容忍状态: NTSTATUS=0x%08X, TID=%lu", qsaStatus,
+                            threadId);
+            }
         }
 
         // 检查线程是否隐藏调试器
         ULONG isHidden = 0;
-        if (NT_SUCCESS(SystemUtils::g_pNtQueryInformationThread(hThread,
-                                                                (THREADINFOCLASS)17,  // ThreadHideFromDebugger
-                                                                &isHidden, sizeof(isHidden), nullptr)))
+        NTSTATUS hideStatus = SystemUtils::g_pNtQueryInformationThread(
+                hThread, (THREADINFOCLASS)17,  // ThreadHideFromDebugger
+                &isHidden, sizeof(isHidden), nullptr);
+        if (NT_SUCCESS(hideStatus))
         {
             if (isHidden)
             {
@@ -3566,8 +3583,22 @@ class ThreadAndModuleActivitySensor : public ISensor
         }
         else
         {
-            // 记录NtQueryInformationThread失败
-            RecordFailure(anti_cheat::THREAD_MODULE_QUERY_THREAD_FAILED);
+            if (hideStatus != 0xC000000D &&  // STATUS_INVALID_PARAMETER
+                hideStatus != 0xC0000022 &&  // STATUS_ACCESS_DENIED
+                hideStatus != 0xC0000003 &&  // STATUS_INVALID_INFO_CLASS
+                hideStatus != 0xC0000002)    // STATUS_NOT_IMPLEMENTED
+            {
+                RecordFailure(anti_cheat::THREAD_MODULE_QUERY_THREAD_FAILED);
+                LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR,
+                            "NtQueryInformationThread(hide) 失败且计为失败: NTSTATUS=0x%08X, TID=%lu", hideStatus,
+                            threadId);
+            }
+            else
+            {
+                LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR,
+                            "NtQueryInformationThread(hide) 返回可容忍状态: NTSTATUS=0x%08X, TID=%lu", hideStatus,
+                            threadId);
+            }
         }
     }
 
@@ -4943,7 +4974,21 @@ void CheatMonitor::Pimpl::UploadSensorExecutionStatsReport()
         {
             const std::string &name = kv.first;
             const auto &stats = kv.second;
-
+            // 跳过全0统计，避免后台出现大量0字段
+            bool nonEmpty = false;
+            if (stats.success_count() > 0 || stats.failure_count() > 0 || stats.timeout_count() > 0 ||
+                stats.total_success_time_ms() > 0 || stats.total_failure_time_ms() > 0 ||
+                stats.avg_success_time_ms() > 0 || stats.avg_failure_time_ms() > 0 ||
+                stats.max_success_time_ms() > 0 || stats.min_success_time_ms() > 0 ||
+                stats.max_failure_time_ms() > 0 || stats.min_failure_time_ms() > 0 ||
+                stats.workload_snapshot_size_total() > 0 || stats.workload_attempts_total() > 0 ||
+                stats.workload_hits_total() > 0 || stats.workload_last_snapshot_size() > 0 ||
+                stats.workload_last_attempts() > 0 || stats.workload_last_hits() > 0)
+            {
+                nonEmpty = true;
+            }
+            if (!nonEmpty)
+                continue;
             // 添加到metrics中
             (*metrics.mutable_sensor_execution_stats())[name] = stats;
         }
@@ -5019,12 +5064,22 @@ void CheatMonitor::Pimpl::RecordSensorWorkloadCounters(const std::string &name, 
 {
     std::lock_guard<std::mutex> lock(m_sensorStatsMutex);
     auto &stats = m_sensorExecutionStats[name];
-    stats.set_workload_snapshot_size_total(stats.workload_snapshot_size_total() + snapshot_size);
-    stats.set_workload_attempts_total(stats.workload_attempts_total() + attempts);
-    stats.set_workload_hits_total(stats.workload_hits_total() + hits);
-    stats.set_workload_last_snapshot_size(snapshot_size);
-    stats.set_workload_last_attempts(attempts);
-    stats.set_workload_last_hits(hits);
+    // 仅在非零时赋值，避免上报全0字段
+    if (snapshot_size)
+    {
+        stats.set_workload_snapshot_size_total(stats.workload_snapshot_size_total() + snapshot_size);
+        stats.set_workload_last_snapshot_size(snapshot_size);
+    }
+    if (attempts)
+    {
+        stats.set_workload_attempts_total(stats.workload_attempts_total() + attempts);
+        stats.set_workload_last_attempts(attempts);
+    }
+    if (hits)
+    {
+        stats.set_workload_hits_total(stats.workload_hits_total() + hits);
+        stats.set_workload_last_hits(hits);
+    }
 }
 
 void CheatMonitor::Pimpl::SendReport(const anti_cheat::Report &report)
