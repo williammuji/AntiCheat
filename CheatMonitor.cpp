@@ -3552,7 +3552,8 @@ class ThreadAndModuleActivitySensor : public ISensor
             if (qsaStatus != 0xC000000D &&  // STATUS_INVALID_PARAMETER
                 qsaStatus != 0xC0000022 &&  // STATUS_ACCESS_DENIED
                 qsaStatus != 0xC0000003 &&  // STATUS_INVALID_INFO_CLASS
-                qsaStatus != 0xC0000002)    // STATUS_NOT_IMPLEMENTED
+                qsaStatus != 0xC0000002 &&  // STATUS_NOT_IMPLEMENTED
+                qsaStatus != 0xC0000004)    // STATUS_INFO_LENGTH_MISMATCH（长度不匹配，部分系统正常）
             {
                 RecordFailure(anti_cheat::THREAD_MODULE_QUERY_THREAD_FAILED);
                 LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR,
@@ -3586,7 +3587,8 @@ class ThreadAndModuleActivitySensor : public ISensor
             if (hideStatus != 0xC000000D &&  // STATUS_INVALID_PARAMETER
                 hideStatus != 0xC0000022 &&  // STATUS_ACCESS_DENIED
                 hideStatus != 0xC0000003 &&  // STATUS_INVALID_INFO_CLASS
-                hideStatus != 0xC0000002)    // STATUS_NOT_IMPLEMENTED
+                hideStatus != 0xC0000002 &&  // STATUS_NOT_IMPLEMENTED
+                hideStatus != 0xC0000004)    // STATUS_INFO_LENGTH_MISMATCH（长度不匹配，部分系统正常）
             {
                 RecordFailure(anti_cheat::THREAD_MODULE_QUERY_THREAD_FAILED);
                 LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR,
