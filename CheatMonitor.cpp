@@ -547,18 +547,34 @@ bool GetModuleCodeSectionInfo(HMODULE hModule, PVOID &outBase, DWORD &outSize)
         const auto *pDosHeader = reinterpret_cast<const IMAGE_DOS_HEADER *>(baseAddress);
         if (pDosHeader->e_magic != IMAGE_DOS_SIGNATURE)
         {
+            // 获取模块路径用于调试
+            wchar_t modulePath[MAX_PATH] = {0};
+            std::string modulePathStr = "未知模块";
+            if (GetModuleFileNameW(hModule, modulePath, MAX_PATH) > 0)
+            {
+                modulePathStr = Utils::WideToString(modulePath);
+            }
+
             LOG_DEBUG_F(AntiCheatLogger::LogCategory::SYSTEM,
-                        "GetModuleCodeSectionInfo: DOS签名无效, hModule=0x%p, magic=0x%04X", hModule,
-                        pDosHeader->e_magic);
+                        "GetModuleCodeSectionInfo: DOS签名无效, hModule=0x%p, 模块路径=%s, magic=0x%04X", hModule,
+                        modulePathStr.c_str(), pDosHeader->e_magic);
             return false;
         }
 
         const auto *pNtHeaders = reinterpret_cast<const IMAGE_NT_HEADERS *>(baseAddress + pDosHeader->e_lfanew);
         if (pNtHeaders->Signature != IMAGE_NT_SIGNATURE)
         {
+            // 获取模块路径用于调试
+            wchar_t modulePath[MAX_PATH] = {0};
+            std::string modulePathStr = "未知模块";
+            if (GetModuleFileNameW(hModule, modulePath, MAX_PATH) > 0)
+            {
+                modulePathStr = Utils::WideToString(modulePath);
+            }
+
             LOG_DEBUG_F(AntiCheatLogger::LogCategory::SYSTEM,
-                        "GetModuleCodeSectionInfo: NT签名无效, hModule=0x%p, signature=0x%08X", hModule,
-                        pNtHeaders->Signature);
+                        "GetModuleCodeSectionInfo: NT签名无效, hModule=0x%p, 模块路径=%s, signature=0x%08X", hModule,
+                        modulePathStr.c_str(), pNtHeaders->Signature);
             return false;
         }
 
@@ -579,9 +595,24 @@ bool GetModuleCodeSectionInfo(HMODULE hModule, PVOID &outBase, DWORD &outSize)
             }
         }
 
+        // 获取模块路径用于调试
+        wchar_t modulePath[MAX_PATH] = {0};
+        std::string modulePathStr = "未知模块";
+        if (GetModuleFileNameW(hModule, modulePath, MAX_PATH) > 0)
+        {
+            modulePathStr = Utils::WideToString(modulePath);
+        }
+
         LOG_DEBUG_F(AntiCheatLogger::LogCategory::SYSTEM,
-                    "GetModuleCodeSectionInfo: 未找到代码节, hModule=0x%p, 总节数=%d, 代码节数=%d", hModule,
-                    pNtHeaders->FileHeader.NumberOfSections, codeSectionCount);
+                    "GetModuleCodeSectionInfo: 未找到代码节, hModule=0x%p, 模块路径=%s, 总节数=%d, 代码节数=%d",
+                    hModule, modulePathStr.c_str(), pNtHeaders->FileHeader.NumberOfSections, codeSectionCount);
+
+        // 使用OutputDebugString记录详细信息
+        std::wostringstream debugMsg;
+        debugMsg << L"[GetModuleCodeSectionInfo] 未找到代码节, hModule=0x" << std::hex << hModule << L", 模块路径: "
+                 << modulePath << L", 总节数=" << std::dec << pNtHeaders->FileHeader.NumberOfSections << L", 代码节数="
+                 << codeSectionCount << std::endl;
+        OutputDebugStringW(debugMsg.str().c_str());
         return false;  // 没找到代码节
     }
     __except (EXCEPTION_EXECUTE_HANDLER)
@@ -1908,7 +1939,15 @@ class ProcessAndWindowMonitorSensor : public ISensor
                     }
                     else
                     {
-                        // 获取进程路径失败，记录失败原因
+                        // 获取进程路径失败，记录失败原因和详细信息
+                        DWORD lastError = GetLastError();
+                        LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR,
+                                      "ProcessAndWindowSensor: 获取进程路径失败, 进程名=%s, PID=%lu, 错误=0x%08X (%s)",
+                                      Utils::WideToString(pe.szExeFile).c_str(), pe.th32ProcessID, lastError,
+                                      lastError == ERROR_ACCESS_DENIED       ? "访问被拒绝"
+                                      : lastError == ERROR_INVALID_PARAMETER ? "参数无效"
+                                      : lastError == ERROR_INVALID_HANDLE    ? "句柄无效"
+                                                                             : "未知错误");
                         RecordFailure(anti_cheat::PROCESS_WINDOW_GET_PROCESS_PATH_FAILED);
                     }
                 }
@@ -5581,11 +5620,49 @@ bool CheatMonitor::Pimpl::IsAddressInLegitimateModule(PVOID address, std::wstrin
         if (GetModuleFileNameW(hModule, modulePath_w, MAX_PATH) > 0)
         {
             outModulePath = modulePath_w;
+            std::wstring originalPath = outModulePath;
             std::transform(outModulePath.begin(), outModulePath.end(), outModulePath.begin(), ::towlower);
 
             std::lock_guard<std::mutex> lock(m_modulePathsMutex);
-            return m_legitimateModulePaths.count(outModulePath) > 0;
+            bool isLegitimate = m_legitimateModulePaths.count(outModulePath) > 0;
+
+            // 添加调试日志：记录模块检查结果
+            if (!isLegitimate)
+            {
+                // 使用OutputDebugString记录详细信息
+                std::wostringstream debugMsg;
+                debugMsg << L"[IsAddressInLegitimateModule] 地址 0x" << std::hex << address
+                         << L" 不在合法模块中. 模块路径: " << originalPath << L" (小写: " << outModulePath << L")"
+                         << std::endl;
+                OutputDebugStringW(debugMsg.str().c_str());
+
+                // 同时记录到日志系统
+                LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR,
+                            "IsAddressInLegitimateModule: 地址 0x%p 不在合法模块中, 模块路径=%s", address,
+                            Utils::WideToString(originalPath).c_str());
+            }
+            else
+            {
+                // 记录成功的匹配（可选，用于验证）
+                LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR,
+                            "IsAddressInLegitimateModule: 地址 0x%p 匹配合法模块, 模块路径=%s", address,
+                            Utils::WideToString(originalPath).c_str());
+            }
+
+            return isLegitimate;
         }
+        else
+        {
+            // GetModuleFileNameW失败
+            LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR,
+                        "IsAddressInLegitimateModule: 地址 0x%p 获取模块路径失败, hModule=0x%p", address, hModule);
+        }
+    }
+    else
+    {
+        // GetModuleHandleExW失败
+        LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR, "IsAddressInLegitimateModule: 地址 0x%p 不属于任何模块",
+                    address);
     }
     return false;
 }
