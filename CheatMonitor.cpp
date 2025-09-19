@@ -536,93 +536,8 @@ bool IsKernelDebuggerPresent_KUserSharedData()
     }
 }
 
-bool GetModuleCodeSectionInfo(HMODULE hModule, PVOID &outBase, DWORD &outSize)
-{
-    if (!hModule)
-        return false;
-
-    const BYTE *baseAddress = reinterpret_cast<const BYTE *>(hModule);
-    __try
-    {
-        const auto *pDosHeader = reinterpret_cast<const IMAGE_DOS_HEADER *>(baseAddress);
-        if (pDosHeader->e_magic != IMAGE_DOS_SIGNATURE)
-        {
-            // 获取模块路径用于调试
-            wchar_t modulePath[MAX_PATH] = {0};
-            std::string modulePathStr = "未知模块";
-            if (GetModuleFileNameW(hModule, modulePath, MAX_PATH) > 0)
-            {
-                modulePathStr = Utils::WideToString(modulePath);
-            }
-
-            LOG_DEBUG_F(AntiCheatLogger::LogCategory::SYSTEM,
-                        "GetModuleCodeSectionInfo: DOS签名无效, hModule=0x%p, 模块路径=%s, magic=0x%04X", hModule,
-                        modulePathStr.c_str(), pDosHeader->e_magic);
-            return false;
-        }
-
-        const auto *pNtHeaders = reinterpret_cast<const IMAGE_NT_HEADERS *>(baseAddress + pDosHeader->e_lfanew);
-        if (pNtHeaders->Signature != IMAGE_NT_SIGNATURE)
-        {
-            // 获取模块路径用于调试
-            wchar_t modulePath[MAX_PATH] = {0};
-            std::string modulePathStr = "未知模块";
-            if (GetModuleFileNameW(hModule, modulePath, MAX_PATH) > 0)
-            {
-                modulePathStr = Utils::WideToString(modulePath);
-            }
-
-            LOG_DEBUG_F(AntiCheatLogger::LogCategory::SYSTEM,
-                        "GetModuleCodeSectionInfo: NT签名无效, hModule=0x%p, 模块路径=%s, signature=0x%08X", hModule,
-                        modulePathStr.c_str(), pNtHeaders->Signature);
-            return false;
-        }
-
-        PIMAGE_SECTION_HEADER pSectionHeader = IMAGE_FIRST_SECTION(pNtHeaders);
-        int codeSectionCount = 0;
-        for (int i = 0; i < pNtHeaders->FileHeader.NumberOfSections; i++, pSectionHeader++)
-        {
-            // 寻找第一个可执行代码节 (通常是 .text)
-            if (pSectionHeader->Characteristics & IMAGE_SCN_CNT_CODE)
-            {
-                codeSectionCount++;
-                if (codeSectionCount == 1)  // 只取第一个代码节
-                {
-                    outBase = (PVOID)(baseAddress + pSectionHeader->VirtualAddress);
-                    outSize = pSectionHeader->Misc.VirtualSize;
-                    return true;
-                }
-            }
-        }
-
-        // 获取模块路径用于调试
-        wchar_t modulePath[MAX_PATH] = {0};
-        std::string modulePathStr = "未知模块";
-        if (GetModuleFileNameW(hModule, modulePath, MAX_PATH) > 0)
-        {
-            modulePathStr = Utils::WideToString(modulePath);
-        }
-
-        LOG_DEBUG_F(AntiCheatLogger::LogCategory::SYSTEM,
-                    "GetModuleCodeSectionInfo: 未找到代码节, hModule=0x%p, 模块路径=%s, 总节数=%d, 代码节数=%d",
-                    hModule, modulePathStr.c_str(), pNtHeaders->FileHeader.NumberOfSections, codeSectionCount);
-
-        // 使用OutputDebugString记录详细信息
-        std::wostringstream debugMsg;
-        debugMsg << L"[GetModuleCodeSectionInfo] 未找到代码节, hModule=0x" << std::hex << hModule << L", 模块路径: "
-                 << modulePath << L", 总节数=" << std::dec << pNtHeaders->FileHeader.NumberOfSections << L", 代码节数="
-                 << codeSectionCount << std::endl;
-        OutputDebugStringW(debugMsg.str().c_str());
-        return false;  // 没找到代码节
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER)
-    {
-        DWORD exceptionCode = GetExceptionCode();
-        LOG_WARNING_F(AntiCheatLogger::LogCategory::SYSTEM,
-                      "GetModuleCodeSectionInfo SEH Exception: hModule=0x%p, code=0x%08X", hModule, exceptionCode);
-        return false;
-    }
-}
+// 前向声明
+bool GetModuleCodeSectionInfo(HMODULE hModule, PVOID &outBase, DWORD &outSize);
 
 // 辅助函数：计算内存块的FNV-1a哈希值
 // 注意：FNV-1a是一种快速非密码学哈希。对于高安全要求，应考虑使用密码学安全哈希（如SHA-256）。
@@ -886,6 +801,91 @@ SignatureStatus VerifyFileSignature(const std::wstring &filePath, SystemUtils::W
 
 // 前向声明
 class ISensor;
+
+// GetModuleCodeSectionInfo 函数实现
+// 内部函数，使用C风格参数避免对象展开问题
+static bool GetModuleCodeSectionInfoInternal(HMODULE hModule, PVOID *outBase, DWORD *outSize)
+{
+    if (!hModule || !outBase || !outSize)
+        return false;
+
+    const BYTE *baseAddress = reinterpret_cast<const BYTE *>(hModule);
+
+    __try
+    {
+        const auto *pDosHeader = reinterpret_cast<const IMAGE_DOS_HEADER *>(baseAddress);
+        if (pDosHeader->e_magic != IMAGE_DOS_SIGNATURE)
+        {
+            return false;
+        }
+
+        const auto *pNtHeaders = reinterpret_cast<const IMAGE_NT_HEADERS *>(baseAddress + pDosHeader->e_lfanew);
+        if (pNtHeaders->Signature != IMAGE_NT_SIGNATURE)
+        {
+            return false;
+        }
+
+        PIMAGE_SECTION_HEADER pSectionHeader = IMAGE_FIRST_SECTION(pNtHeaders);
+        int codeSectionCount = 0;
+        for (int i = 0; i < pNtHeaders->FileHeader.NumberOfSections; i++, pSectionHeader++)
+        {
+            // 寻找第一个可执行代码节 (通常是 .text)
+            if (pSectionHeader->Characteristics & IMAGE_SCN_CNT_CODE)
+            {
+                codeSectionCount++;
+                if (codeSectionCount == 1)  // 只取第一个代码节
+                {
+                    *outBase = (PVOID)(baseAddress + pSectionHeader->VirtualAddress);
+                    *outSize = pSectionHeader->Misc.VirtualSize;
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        DWORD exceptionCode = GetExceptionCode();
+        LOG_WARNING_F(AntiCheatLogger::LogCategory::SYSTEM,
+                      "GetModuleCodeSectionInfo SEH Exception: hModule=0x%p, code=0x%08X", hModule, exceptionCode);
+        return false;
+    }
+}
+
+bool GetModuleCodeSectionInfo(HMODULE hModule, PVOID &outBase, DWORD &outSize)
+{
+    if (!hModule)
+        return false;
+
+    // 预先获取模块路径用于调试
+    wchar_t modulePath[MAX_PATH] = {0};
+    GetModuleFileNameW(hModule, modulePath, MAX_PATH);
+
+    // 调用内部函数
+    PVOID tempBase = nullptr;
+    DWORD tempSize = 0;
+    bool result = GetModuleCodeSectionInfoInternal(hModule, &tempBase, &tempSize);
+
+    if (result)
+    {
+        outBase = tempBase;
+        outSize = tempSize;
+        return true;
+    }
+
+    // 记录调试信息
+    std::string modulePathStr = "未知模块";
+    if (wcslen(modulePath) > 0)
+    {
+        modulePathStr = WideToString(std::wstring(modulePath));
+    }
+
+    LOG_DEBUG_F(AntiCheatLogger::LogCategory::SYSTEM,
+                "GetModuleCodeSectionInfo: 未找到代码节, hModule=0x%p, 模块路径=%s", hModule, modulePathStr.c_str());
+
+    return false;
+}
 
 }  // namespace Utils
 
