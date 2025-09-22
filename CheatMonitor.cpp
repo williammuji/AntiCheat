@@ -1040,11 +1040,7 @@ struct CheatMonitor::Pimpl
     std::vector<std::unique_ptr<ISensor>> m_lightweightSensors;
     std::vector<std::unique_ptr<ISensor>> m_heavyweightSensors;
 
-    // === 线程起始地址缓存（供内存检测决策使用，按轮刷新） ===
-    std::unordered_set<uintptr_t> m_threadStartAddrs;
-
-    // === 进程是否加载CEF（libcef.dll）缓存 ===
-    bool m_hasCef = false;  // 在基线建立时初始化，并作为只读上下文被传感器查询
+    // （回退）移除轻量归因缓存与方法
 
     // 执行状态枚举
     enum class ExecutionStatus : int
@@ -1216,27 +1212,9 @@ class ScanContext
         m_pimpl->RecordSensorWorkloadCounters(name, snapshot_size, attempts, hits);
     }
 
-    // 线程起始地址收集/访问（供内存检测使用）
-    void AddThreadStartAddress(uintptr_t addr)
-    {
-        m_pimpl->m_threadStartAddrs.insert(addr);
-    }
-    const std::unordered_set<uintptr_t> &GetThreadStartAddresses() const
-    {
-        return m_pimpl->m_threadStartAddrs;
-    }
+    // （移除）线程起始地址集合与 CEF 只读标志
 
-    // 本轮线程起始地址清空（用于扫描轮次边界）
-    void ClearThreadStartAddresses()
-    {
-        m_pimpl->m_threadStartAddrs.clear();
-    }
-
-    // 只读：当前进程是否加载了CEF（libcef.dll）
-    bool HasCef() const
-    {
-        return m_pimpl->m_hasCef;
-    }
+    // （回退）移除轻量归因格式化方法
 
     // --- 提供对已知状态的访问 ---
     std::set<DWORD> GetKnownThreadIds() const
@@ -2343,6 +2321,7 @@ class ModuleIntegritySensor : public ISensor
         const int maxModules = std::max(1, CheatConfigManager::GetInstance().GetMaxModulesPerScan());
         bool timeoutOccurred = false;
         bool stopEnumerate = false;
+        std::wstring lastProcessedModuleName;
         ModuleScanner::EnumerateModules([&](HMODULE hModule) {
             if (stopEnumerate)
                 return;
@@ -2356,12 +2335,35 @@ class ModuleIntegritySensor : public ISensor
                 auto now = std::chrono::steady_clock::now();
                 if (std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count() > budget_ms)
                 {
-                    LOG_WARNING(AntiCheatLogger::LogCategory::SENSOR, "ModuleIntegritySensor超时");
+                    // 获取当前即将处理的模块名称（next），以及上一个已处理的模块（last）
+                    wchar_t curNameW[MAX_PATH] = {0};
+                    std::wstring nextModuleName;
+                    if (GetModuleFileNameW(hModule, curNameW, MAX_PATH) != 0)
+                    {
+                        nextModuleName = curNameW;
+                        std::transform(nextModuleName.begin(), nextModuleName.end(), nextModuleName.begin(), ::towlower);
+                    }
+                    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count();
+                    LOG_WARNING_F(
+                            AntiCheatLogger::LogCategory::SENSOR,
+                            "ModuleIntegritySensor超时: elapsed=%lldms budget=%dms processed=%zu index=%zu last='%s' next='%s'",
+                            (long long)elapsed, budget_ms, processed, index,
+                            lastProcessedModuleName.empty() ? "" : Utils::WideToString(lastProcessedModuleName).c_str(),
+                            nextModuleName.empty() ? "" : Utils::WideToString(nextModuleName).c_str());
                     RecordFailure(anti_cheat::MODULE_SCAN_TIMEOUT);
                     timeoutOccurred = true;
                     stopEnumerate = true;
                     return;
                 }
+            }
+
+            // 记录当前处理的模块名（作为 last）
+            wchar_t nameW[MAX_PATH] = {0};
+            if (GetModuleFileNameW(hModule, nameW, MAX_PATH) != 0)
+            {
+                lastProcessedModuleName = nameW;
+                std::transform(lastProcessedModuleName.begin(), lastProcessedModuleName.end(),
+                               lastProcessedModuleName.begin(), ::towlower);
             }
 
             ProcessModuleCodeIntegrity(hModule, context, baselineHashes, MAX_CODE_SECTION_SIZE);
@@ -3537,8 +3539,6 @@ class ThreadAndModuleActivitySensor : public ISensor
     bool ScanThreadsWithTimeout(ScanContext &context, int budget_ms,
                                 const std::chrono::steady_clock::time_point &startTime)
     {
-        // 按轮刷新：清空本轮线程起始地址集合
-        context.ClearThreadStartAddresses();
         int threadCount = 0;
         bool hasSystemFailure = false;
         bool timeoutOccurred = false;
@@ -3641,8 +3641,6 @@ class ThreadAndModuleActivitySensor : public ISensor
             {
                 if (startAddress)
                 {
-                    // 缓存起始地址供其它传感器（如内存检测）使用
-                    context.AddThreadStartAddress(reinterpret_cast<uintptr_t>(startAddress));
                     std::wstring modulePath;
                     if (!context.IsAddressInLegitimateModule(startAddress, modulePath))
                     {
@@ -3707,8 +3705,6 @@ class ThreadAndModuleActivitySensor : public ISensor
         {
             if (startAddress)
             {
-                // 缓存起始地址供其它传感器（如内存检测）使用
-                context.AddThreadStartAddress(reinterpret_cast<uintptr_t>(startAddress));
                 std::wstring modulePath;
                 if (!context.IsAddressInLegitimateModule(startAddress, modulePath))
                 {
@@ -3989,89 +3985,43 @@ class MemorySecuritySensor : public ISensor
         }
     }
 
-    // 检测私有可执行内存
+    // 检测私有可执行内存（回退到改动前的简单规则）
     void DetectPrivateExecutableMemory(ScanContext &context, const MEMORY_BASIC_INFORMATION &mbi)
     {
-        // 使用配置化的检测阈值（仅用于上限控制和RX阈值复用）
+        // 使用配置化的检测阈值
+        const uint32_t minRegionSize = CheatConfigManager::GetInstance().GetMinMemoryRegionSize();
         const uint32_t maxRegionSize = CheatConfigManager::GetInstance().GetMaxMemoryRegionSize();
 
-        // 降噪/强信号：
+        // 降噪：仅对RWX（或WRITECOPY执行）页面直接上报；
+        // 对仅RX的小页（例如JIT/系统stub的正常情况）提高阈值，避免误报。
         const bool isRWX = (mbi.Protect & PAGE_EXECUTE_READWRITE) || (mbi.Protect & PAGE_EXECUTE_WRITECOPY);
         const bool isRXOnly = (mbi.Protect & PAGE_EXECUTE_READ) && !isRWX;
-        const SIZE_T rxSmallThreshold = 128 * 1024;  // RX-only 小页阈值
 
-        // 仅处理非模块的私有可执行页
-        if (context.IsAddressInLegitimateModule(mbi.BaseAddress))
+        // 若仅RX且区域较小（< 128KB），认为常见且低风险，忽略
+        const SIZE_T rxSmallThreshold = 128 * 1024;
+
+        if (mbi.RegionSize >= minRegionSize && mbi.RegionSize <= maxRegionSize)
         {
-            return;
-        }
-
-        const uintptr_t base = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
-        const uintptr_t end = base + mbi.RegionSize;
-
-        // 1) 强信号：RWX/WRITECOPY → 任何大小直接上报
-        if (isRWX)
-        {
-            std::ostringstream oss;
-            oss << "检测到私有可执行内存(RWX). 地址: 0x" << std::hex << base << ", 大小: " << std::dec
-                << mbi.RegionSize << " 字节.";
-            context.AddEvidence(anti_cheat::RUNTIME_MEMORY_EXEC_PRIVATE, oss.str());
-            return;
-        }
-
-        // 仅RX的私有可执行页（弱信号）
-        if (!isRXOnly)
-        {
-            return;  // 其他保护类型不处理
-        }
-
-        // RX-only 小页降噪
-        if (mbi.RegionSize < rxSmallThreshold)
-        {
-            return;
-        }
-
-        // 超过最大上限的区域不处理（性能/安全边界）
-        if (mbi.RegionSize > maxRegionSize)
-        {
-            return;
-        }
-
-        // 线程起始地址是否落在该区域内（区域级强证据）
-        bool threadStartInRegion = false;
-        for (const auto addr : context.GetThreadStartAddresses())
-        {
-            if (addr >= base && addr < end)
+            if (!context.IsAddressInLegitimateModule(mbi.BaseAddress))
             {
-                threadStartInRegion = true;
-                break;
+                if (isRXOnly && mbi.RegionSize < rxSmallThreshold)
+                {
+                    return;  // 降噪：跳过常见的小型RX私有页
+                }
+
+                // 构造可选的归因信息（若有）
+                std::ostringstream oss;
+                const uintptr_t base = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
+                oss << "检测到私有可执行内存. 地址: 0x" << std::hex << base << ", 大小: " << std::dec << mbi.RegionSize
+                    << " 字节.";
+
+                // 轻量归因：查找最近将该区域置为可执行的调用者模块
+                // （回退）不再附加轻量归因信息
+
+                context.AddEvidence(anti_cheat::RUNTIME_MEMORY_EXEC_PRIVATE, oss.str());
+                // 私有可执行内存检测完成
             }
         }
-
-        if (threadStartInRegion)
-        {
-            std::ostringstream oss;
-            oss << "RX私有页命中线程入口. 地址: 0x" << std::hex << base << ", 大小: " << std::dec << mbi.RegionSize
-                << " 字节.";
-            context.AddEvidence(anti_cheat::RUNTIME_MEMORY_EXEC_PRIVATE, oss.str());
-            return;
-        }
-
-        // 没有命中线程入口时，根据是否存在CEF决定上报/降噪
-        if (!context.HasCef())
-        {
-            // 非CEF进程维持当前规则（≥128KB已由前面的阈值满足）
-            std::ostringstream oss;
-            oss << "检测到私有可执行内存(RX-only). 地址: 0x" << std::hex << base << ", 大小: " << std::dec
-                << mbi.RegionSize << " 字节 (非CEF进程)。";
-            context.AddEvidence(anti_cheat::RUNTIME_MEMORY_EXEC_PRIVATE, oss.str());
-            return;
-        }
-
-        // 进程加载了CEF且无线程入口命中 → 仅DEBUG记录，不上报（降噪常见CEF/V8 RX页）
-        LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR,
-                    "MemorySecuritySensor: CEF上下文下的RX私有页降噪: Base=0x%p, Size=%zu",
-                    mbi.BaseAddress, mbi.RegionSize);
     }
 
     // 性能优化：智能安全区域检测
@@ -4844,27 +4794,6 @@ void CheatMonitor::Pimpl::InitializeProcessBaseline()
             }
         }
 
-        // 检查是否加载了CEF (libcef.dll) —— 仅在初始化时计算一次并缓存
-        m_hasCef = false;
-        for (const auto &p : modulePaths)
-        {
-            try
-            {
-                std::filesystem::path fp(p);
-                std::wstring fname = fp.filename().wstring();
-                // modulePaths 已小写化，文件名也应为小写
-                if (fname == L"libcef.dll")
-                {
-                    m_hasCef = true;
-                    break;
-                }
-            }
-            catch (...)
-            {
-                // 忽略解析异常，继续
-            }
-        }
-
         // 一次性加锁更新m_knownModules
         {
             std::lock_guard<std::mutex> lock(m_baselineMutex);
@@ -4881,8 +4810,7 @@ void CheatMonitor::Pimpl::InitializeProcessBaseline()
             }
         }
 
-        LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR, "Process CEF presence cached: %s",
-                    m_hasCef ? "true" : "false");
+        // （移除）不再缓存 CEF 存在性
     }
 
     // 2. 建立已知线程列表
