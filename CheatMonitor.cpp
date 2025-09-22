@@ -1040,6 +1040,12 @@ struct CheatMonitor::Pimpl
     std::vector<std::unique_ptr<ISensor>> m_lightweightSensors;
     std::vector<std::unique_ptr<ISensor>> m_heavyweightSensors;
 
+    // === 线程起始地址缓存（供内存检测决策使用，按轮刷新） ===
+    std::unordered_set<uintptr_t> m_threadStartAddrs;
+
+    // === 进程是否加载CEF（libcef.dll）缓存 ===
+    bool m_hasCef = false;  // 在基线建立时初始化，并作为只读上下文被传感器查询
+
     // 执行状态枚举
     enum class ExecutionStatus : int
     {
@@ -1208,6 +1214,28 @@ class ScanContext
     void RecordSensorWorkloadCounters(const std::string &name, uint64_t snapshot_size, uint64_t attempts, uint64_t hits)
     {
         m_pimpl->RecordSensorWorkloadCounters(name, snapshot_size, attempts, hits);
+    }
+
+    // 线程起始地址收集/访问（供内存检测使用）
+    void AddThreadStartAddress(uintptr_t addr)
+    {
+        m_pimpl->m_threadStartAddrs.insert(addr);
+    }
+    const std::unordered_set<uintptr_t> &GetThreadStartAddresses() const
+    {
+        return m_pimpl->m_threadStartAddrs;
+    }
+
+    // 本轮线程起始地址清空（用于扫描轮次边界）
+    void ClearThreadStartAddresses()
+    {
+        m_pimpl->m_threadStartAddrs.clear();
+    }
+
+    // 只读：当前进程是否加载了CEF（libcef.dll）
+    bool HasCef() const
+    {
+        return m_pimpl->m_hasCef;
     }
 
     // --- 提供对已知状态的访问 ---
@@ -1941,13 +1969,38 @@ class ProcessAndWindowMonitorSensor : public ISensor
                     {
                         // 获取进程路径失败，记录失败原因和详细信息
                         DWORD lastError = GetLastError();
-                        LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR,
-                                      "ProcessAndWindowSensor: 获取进程路径失败, 进程名=%s, PID=%lu, 错误=0x%08X (%s)",
-                                      Utils::WideToString(pe.szExeFile).c_str(), pe.th32ProcessID, lastError,
-                                      lastError == ERROR_ACCESS_DENIED       ? "访问被拒绝"
-                                      : lastError == ERROR_INVALID_PARAMETER ? "参数无效"
-                                      : lastError == ERROR_INVALID_HANDLE    ? "句柄无效"
-                                                                             : "未知错误");
+                        // 对于Memory Compression等系统进程，这是正常现象
+                        std::wstring processName = pe.szExeFile;
+                        std::transform(processName.begin(), processName.end(), processName.begin(), ::towlower);
+
+                        if (processName == L"memory compression" || processName == L"memorycompression.exe" ||
+                            processName == L"system" || processName == L"registry" || processName == L"idle" ||
+                            processName == L"csrss.exe" || processName == L"wininit.exe" ||
+                            processName == L"winlogon.exe" || processName == L"smss.exe" ||
+                            processName == L"lsass.exe" || processName == L"services.exe" ||
+                            processName == L"spoolsv.exe" || processName == L"svchost.exe" ||
+                            processName == L"dwm.exe" || processName == L"explorer.exe" ||
+                            processName == L"audiodg.exe" || processName == L"conhost.exe")
+                        {
+                            // 系统进程的路径获取失败是正常现象，记录调试信息
+                            LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR,
+                                        "ProcessAndWindowSensor: 系统进程路径获取失败（正常现象）, 进程名=%s, PID=%lu, "
+                                        "错误=0x%08X",
+                                        Utils::WideToString(pe.szExeFile).c_str(), pe.th32ProcessID, lastError);
+                        }
+                        else
+                        {
+                            // 其他进程的路径获取失败需要记录
+                            LOG_WARNING_F(
+                                    AntiCheatLogger::LogCategory::SENSOR,
+                                    "ProcessAndWindowSensor: 获取进程路径失败, 进程名=%s, PID=%lu, 错误=0x%08X (%s)",
+                                    Utils::WideToString(pe.szExeFile).c_str(), pe.th32ProcessID, lastError,
+                                    lastError == ERROR_ACCESS_DENIED       ? "访问被拒绝"
+                                    : lastError == ERROR_INVALID_PARAMETER ? "参数无效"
+                                    : lastError == ERROR_INVALID_HANDLE    ? "句柄无效"
+                                    : lastError == 0x0000001F              ? "STATUS_INVALID_PARAMETER"
+                                                                           : "未知错误");
+                        }
                         RecordFailure(anti_cheat::PROCESS_WINDOW_GET_PROCESS_PATH_FAILED);
                     }
                 }
@@ -2417,7 +2470,9 @@ class ModuleIntegritySensor : public ISensor
                                    (moduleName.find(L"shell32.dll") != std::wstring::npos) ||
                                    (moduleName.find(L"comctl32.dll") != std::wstring::npos) ||
                                    (moduleName.find(L"msvcrt.dll") != std::wstring::npos) ||
-                                   (moduleName.find(L"ucrtbase.dll") != std::wstring::npos);
+                                   (moduleName.find(L"ucrtbase.dll") != std::wstring::npos) ||
+                                   (moduleName.find(L"sppc.dll") != std::wstring::npos) ||
+                                   (moduleName.find(L"slc.dll") != std::wstring::npos);
 
             if (isSpecialModule)
             {
@@ -3482,6 +3537,8 @@ class ThreadAndModuleActivitySensor : public ISensor
     bool ScanThreadsWithTimeout(ScanContext &context, int budget_ms,
                                 const std::chrono::steady_clock::time_point &startTime)
     {
+        // 按轮刷新：清空本轮线程起始地址集合
+        context.ClearThreadStartAddresses();
         int threadCount = 0;
         bool hasSystemFailure = false;
         bool timeoutOccurred = false;
@@ -3584,6 +3641,8 @@ class ThreadAndModuleActivitySensor : public ISensor
             {
                 if (startAddress)
                 {
+                    // 缓存起始地址供其它传感器（如内存检测）使用
+                    context.AddThreadStartAddress(reinterpret_cast<uintptr_t>(startAddress));
                     std::wstring modulePath;
                     if (!context.IsAddressInLegitimateModule(startAddress, modulePath))
                     {
@@ -3648,6 +3707,8 @@ class ThreadAndModuleActivitySensor : public ISensor
         {
             if (startAddress)
             {
+                // 缓存起始地址供其它传感器（如内存检测）使用
+                context.AddThreadStartAddress(reinterpret_cast<uintptr_t>(startAddress));
                 std::wstring modulePath;
                 if (!context.IsAddressInLegitimateModule(startAddress, modulePath))
                 {
@@ -3931,34 +3992,86 @@ class MemorySecuritySensor : public ISensor
     // 检测私有可执行内存
     void DetectPrivateExecutableMemory(ScanContext &context, const MEMORY_BASIC_INFORMATION &mbi)
     {
-        // 使用配置化的检测阈值
-        const uint32_t minRegionSize = CheatConfigManager::GetInstance().GetMinMemoryRegionSize();
+        // 使用配置化的检测阈值（仅用于上限控制和RX阈值复用）
         const uint32_t maxRegionSize = CheatConfigManager::GetInstance().GetMaxMemoryRegionSize();
 
-        // 降噪：仅对RWX（或WRITECOPY执行）页面直接上报；
-        // 对仅RX的小页（例如JIT/系统stub的正常情况）提高阈值，避免误报。
+        // 降噪/强信号：
         const bool isRWX = (mbi.Protect & PAGE_EXECUTE_READWRITE) || (mbi.Protect & PAGE_EXECUTE_WRITECOPY);
         const bool isRXOnly = (mbi.Protect & PAGE_EXECUTE_READ) && !isRWX;
+        const SIZE_T rxSmallThreshold = 128 * 1024;  // RX-only 小页阈值
 
-        // 若仅RX且区域较小（< 128KB），认为常见且低风险，忽略
-        const SIZE_T rxSmallThreshold = 128 * 1024;
-
-        if (mbi.RegionSize >= minRegionSize && mbi.RegionSize <= maxRegionSize)
+        // 仅处理非模块的私有可执行页
+        if (context.IsAddressInLegitimateModule(mbi.BaseAddress))
         {
-            if (!context.IsAddressInLegitimateModule(mbi.BaseAddress))
-            {
-                if (isRXOnly && mbi.RegionSize < rxSmallThreshold)
-                {
-                    return;  // 降噪：跳过常见的小型RX私有页
-                }
-                std::ostringstream oss;
-                oss << "检测到私有可执行内存. 地址: 0x" << std::hex << reinterpret_cast<uintptr_t>(mbi.BaseAddress)
-                    << ", 大小: " << std::dec << mbi.RegionSize << " 字节.";
+            return;
+        }
 
-                context.AddEvidence(anti_cheat::RUNTIME_MEMORY_EXEC_PRIVATE, oss.str());
-                // 私有可执行内存检测完成
+        const uintptr_t base = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
+        const uintptr_t end = base + mbi.RegionSize;
+
+        // 1) 强信号：RWX/WRITECOPY → 任何大小直接上报
+        if (isRWX)
+        {
+            std::ostringstream oss;
+            oss << "检测到私有可执行内存(RWX). 地址: 0x" << std::hex << base << ", 大小: " << std::dec
+                << mbi.RegionSize << " 字节.";
+            context.AddEvidence(anti_cheat::RUNTIME_MEMORY_EXEC_PRIVATE, oss.str());
+            return;
+        }
+
+        // 仅RX的私有可执行页（弱信号）
+        if (!isRXOnly)
+        {
+            return;  // 其他保护类型不处理
+        }
+
+        // RX-only 小页降噪
+        if (mbi.RegionSize < rxSmallThreshold)
+        {
+            return;
+        }
+
+        // 超过最大上限的区域不处理（性能/安全边界）
+        if (mbi.RegionSize > maxRegionSize)
+        {
+            return;
+        }
+
+        // 线程起始地址是否落在该区域内（区域级强证据）
+        bool threadStartInRegion = false;
+        for (const auto addr : context.GetThreadStartAddresses())
+        {
+            if (addr >= base && addr < end)
+            {
+                threadStartInRegion = true;
+                break;
             }
         }
+
+        if (threadStartInRegion)
+        {
+            std::ostringstream oss;
+            oss << "RX私有页命中线程入口. 地址: 0x" << std::hex << base << ", 大小: " << std::dec << mbi.RegionSize
+                << " 字节.";
+            context.AddEvidence(anti_cheat::RUNTIME_MEMORY_EXEC_PRIVATE, oss.str());
+            return;
+        }
+
+        // 没有命中线程入口时，根据是否存在CEF决定上报/降噪
+        if (!context.HasCef())
+        {
+            // 非CEF进程维持当前规则（≥128KB已由前面的阈值满足）
+            std::ostringstream oss;
+            oss << "检测到私有可执行内存(RX-only). 地址: 0x" << std::hex << base << ", 大小: " << std::dec
+                << mbi.RegionSize << " 字节 (非CEF进程)。";
+            context.AddEvidence(anti_cheat::RUNTIME_MEMORY_EXEC_PRIVATE, oss.str());
+            return;
+        }
+
+        // 进程加载了CEF且无线程入口命中 → 仅DEBUG记录，不上报（降噪常见CEF/V8 RX页）
+        LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR,
+                    "MemorySecuritySensor: CEF上下文下的RX私有页降噪: Base=0x%p, Size=%zu",
+                    mbi.BaseAddress, mbi.RegionSize);
     }
 
     // 性能优化：智能安全区域检测
@@ -4731,6 +4844,27 @@ void CheatMonitor::Pimpl::InitializeProcessBaseline()
             }
         }
 
+        // 检查是否加载了CEF (libcef.dll) —— 仅在初始化时计算一次并缓存
+        m_hasCef = false;
+        for (const auto &p : modulePaths)
+        {
+            try
+            {
+                std::filesystem::path fp(p);
+                std::wstring fname = fp.filename().wstring();
+                // modulePaths 已小写化，文件名也应为小写
+                if (fname == L"libcef.dll")
+                {
+                    m_hasCef = true;
+                    break;
+                }
+            }
+            catch (...)
+            {
+                // 忽略解析异常，继续
+            }
+        }
+
         // 一次性加锁更新m_knownModules
         {
             std::lock_guard<std::mutex> lock(m_baselineMutex);
@@ -4746,6 +4880,9 @@ void CheatMonitor::Pimpl::InitializeProcessBaseline()
                 m_legitimateModulePaths.insert(path);
             }
         }
+
+        LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR, "Process CEF presence cached: %s",
+                    m_hasCef ? "true" : "false");
     }
 
     // 2. 建立已知线程列表
