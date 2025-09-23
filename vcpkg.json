@@ -5,7 +5,7 @@
     "homepage": "https://github.com/your-org/AntiCheat",
     "license": "MIT",
     "supports": "windows",
-    "builtin-baseline": "f7423ee180c4b7f40d43402c2feb3859161ef625",
+    "builtin-baseline": "7e19f3c64cb636ee21f41bfe8558a6dfaae6236f",
     "dependencies": [
         {
             "name": "protobuf",
