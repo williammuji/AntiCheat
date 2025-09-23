@@ -37,10 +37,8 @@ Anti-cheat system for MMORPG games with multi-layered detection and sensor-based
 - **Suspicious Launch Detection**: Identifies cheat tool startup patterns
 
 ### ModuleIntegritySensor
-- **Module Hash Verification**: Validates module integrity using CRC32
-- **Hidden Module Detection**: Finds modules not in standard process lists
-- **Module Injection**: Detects code injection into legitimate processes
-- **DLL Hijacking**: Identifies DLL replacement attacks
+- **Code-Section Baseline**: Computes and compares a baseline hash of the first executable code section to detect tampering.
+- **Self/Third‑Party Tampering**: Reports integrity violations for both the anti‑cheat itself and other loaded modules.
 
 ### ProcessHandleSensor
 - **Handle Enumeration**: Scans process handles for suspicious access
@@ -49,16 +47,13 @@ Anti-cheat system for MMORPG games with multi-layered detection and sensor-based
 - **Privilege Escalation**: Identifies privilege escalation attempts
 
 ### ThreadAndModuleActivitySensor
-- **Thread Creation Monitoring**: Tracks new thread creation patterns
-- **Module Loading Detection**: Monitors dynamic module loading
-- **Activity Correlation**: Correlates thread and module activities
-- **Suspicious Patterns**: Identifies cheat-related activity patterns
+- **Thread Start Address Validation**: Reports threads whose Win32 start address resides outside any legitimate module (strong indicator of shellcode).
+- **New Module Verification**: On newly observed modules, verifies their signatures and records results.
+- **Time‑Budgeted Scanning**: Enumerates threads/modules with rotating cursors and budget checks; logs tolerant NTSTATUS cases.
 
 ### MemorySecuritySensor
-- **Private Executable Memory**: Scans for executable code in private memory
-- **Memory Protection**: Monitors memory protection changes
-- **Code Injection**: Detects runtime code injection
-- **Memory Tampering**: Identifies memory modification attempts
+- **Private Exec (Non‑Module)**: Flags non‑module exec regions (configurable size bounds).
+- **Hidden Exec Heuristic**: Lightweight MZ/access probe for PE‑like regions.
 
 ### VehHookSensor
 - **Vector Exception Handling**: Monitors exception handling mechanisms
