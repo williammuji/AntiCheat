@@ -10,12 +10,12 @@ on:
 jobs:
   build-windows:
     runs-on: windows-latest
-    
+
     strategy:
       matrix:
         platform: [x86, x64]
         config: [Debug, Release]
-    
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -29,7 +29,7 @@ jobs:
         uses: lukka/run-vcpkg@v11
         with:
           vcpkgDirectory: '${{ github.workspace }}/vcpkg'
-          vcpkgGitCommitId: 'f7423ee180c4b7f40d43402c2feb3859161ef625'
+          vcpkgGitCommitId: '7e19f3c64cb636ee21f41bfe8558a6dfaae6236f'
           vcpkgJsonGlob: 'vcpkg.json'
           runVcpkgInstall: true
 
@@ -39,41 +39,41 @@ jobs:
           Write-Host "=== Windows Smoke Build ==="
           Write-Host "Platform: ${{ matrix.platform }}"
           Write-Host "Config: ${{ matrix.config }}"
-          
+
           # Configure and build using CMake directly (consistent with other workflows)
           Write-Host "=== Configure CMake ==="
           $arch = if ("${{ matrix.platform }}" -eq "x86") { "Win32" } else { "x64" }
-          
+
           cmake -B build -S . `
             -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake" `
             -DVCPKG_TARGET_TRIPLET="${{ matrix.platform }}-windows" `
             -DVCPKG_HOST_TRIPLET="${{ matrix.platform }}-windows" `
             -A $arch `
             -DCMAKE_VERBOSE_MAKEFILE=ON
-            
+
           if ($LASTEXITCODE -ne 0) {
             Write-Error "CMake configuration failed"
             exit 1
           }
-          
+
           Write-Host "=== Build AntiCheat ==="
           cmake --build build --config ${{ matrix.config }} --parallel 4
-          
+
           if ($LASTEXITCODE -ne 0) {
             Write-Error "Build failed"
             exit 1
           }
-          
+
           # Verify build artifacts
           Write-Host "=== Verifying Build Artifacts ==="
           $buildDir = "build"
           Write-Host "Looking for artifacts in: $buildDir"
-          
+
           # Check if build directory exists
           if (Test-Path $buildDir) {
             $artifacts = Get-ChildItem -Path $buildDir -Recurse -Include "*.obj", "*.lib", "*.exe", "*.pdb" -ErrorAction SilentlyContinue
             Write-Host "Found $($artifacts.Count) build artifacts in $buildDir"
-            
+
             # List some artifacts for debugging
             if ($artifacts.Count -gt 0) {
               Write-Host "Sample artifacts:"
@@ -83,7 +83,7 @@ jobs:
             Write-Host "Build directory $buildDir does not exist"
             $artifacts = @()
           }
-          
+
           if ($artifacts.Count -eq 0) {
             Write-Error "No build artifacts found - build may have failed"
             exit 1

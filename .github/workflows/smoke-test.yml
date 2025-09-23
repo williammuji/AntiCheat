@@ -10,12 +10,12 @@ on:
 jobs:
   smoke-test:
     runs-on: windows-latest
-    
+
     strategy:
       matrix:
         platform: [x86, x64]
         config: [Debug, Release]
-    
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
@@ -29,7 +29,7 @@ jobs:
       uses: lukka/run-vcpkg@v11
       with:
         vcpkgDirectory: '${{ github.workspace }}/vcpkg'
-        vcpkgGitCommitId: 'f7423ee180c4b7f40d43402c2feb3859161ef625'
+        vcpkgGitCommitId: '7e19f3c64cb636ee21f41bfe8558a6dfaae6236f'
         vcpkgJsonGlob: 'vcpkg.json'
         runVcpkgInstall: true
 
@@ -46,11 +46,11 @@ jobs:
       run: |
         Write-Host "=== Configure CMake ==="
         $arch = if ("${{ matrix.platform }}" -eq "x86") { "Win32" } else { "x64" }
-        
+
         # Ensure vcpkg dependencies are properly installed
         Write-Host "Checking vcpkg installation..."
         vcpkg list
-        
+
         Write-Host "Configuring CMake with vcpkg..."
         cmake -B build -S . `
           -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake" `
@@ -58,7 +58,7 @@ jobs:
           -DVCPKG_HOST_TRIPLET="${{ matrix.platform }}-windows" `
           -A $arch `
           -DCMAKE_VERBOSE_MAKEFILE=ON
-          
+
         if ($LASTEXITCODE -ne 0) {
           Write-Error "CMake configuration failed"
           exit 1
@@ -69,17 +69,17 @@ jobs:
       run: |
         Write-Host "=== Build AntiCheat ==="
         $startTime = Get-Date
-        
+
         cmake --build build --config ${{ matrix.config }} --parallel 4
-        
+
         if ($LASTEXITCODE -ne 0) {
           Write-Error "Build failed"
           exit 1
         }
-        
+
         $buildTime = (Get-Date) - $startTime
         Write-Host "✅ Build completed, time: $($buildTime.TotalSeconds.ToString('F2')) seconds"
-        
+
         # Verify build success
         Write-Host "=== Verifying build artifacts ==="
         $buildArtifacts = Get-ChildItem -Path "build" -Recurse -Include "*.obj", "*.exe", "*.dll", "*.lib" -ErrorAction SilentlyContinue
@@ -87,7 +87,7 @@ jobs:
         foreach ($artifact in $buildArtifacts | Select-Object -First 10) {
           Write-Host "  - $($artifact.FullName)"
         }
-        
+
         # Check for any build artifacts (more flexible)
         if ($buildArtifacts.Count -eq 0) {
           Write-Host "❌ No build artifacts found - build may have failed"
@@ -101,7 +101,7 @@ jobs:
       run: |
         # Create test protobuf data
         New-Item -ItemType Directory -Force -Path "test_data"
-        
+
         # Simulate configuration data
         $testConfig = @"
         base_scan_interval_seconds: 20
@@ -117,24 +117,24 @@ jobs:
       shell: powershell
       run: |
         Write-Host "=== AntiCheat Smoke Test Started ==="
-        
+
         $buildPath = "build/${{ matrix.config }}"
         $testResults = @()
-        
+
         # Test 1: Check compilation artifacts
         Write-Host "Test 1: Check compilation artifacts..."
-        
+
         # Get all build artifacts
         $allArtifacts = Get-ChildItem -Path "build" -Recurse -Include "*.obj", "*.exe", "*.dll", "*.lib" -ErrorAction SilentlyContinue
         Write-Host "Found $($allArtifacts.Count) total build artifacts"
-        
+
         # Check for key source files (more flexible approach)
         $keySourceFiles = @(
           "CheatMonitor",
-          "CheatConfigManager", 
+          "CheatConfigManager",
           "HardwareInfoCollector"
         )
-        
+
         $foundKeyFiles = 0
         foreach ($sourceFile in $keySourceFiles) {
           $matchingArtifacts = $allArtifacts | Where-Object { $_.Name -like "*$sourceFile*" }
@@ -147,7 +147,7 @@ jobs:
             $testResults += "WARN: $sourceFile compilation"
           }
         }
-        
+
         # Overall build success check
         if ($allArtifacts.Count -gt 0) {
           Write-Host "✅ Build successful - found $($allArtifacts.Count) total artifacts"
@@ -156,16 +156,16 @@ jobs:
           Write-Host "❌ Build failed - no artifacts found"
           $testResults += "FAIL: Overall build failure"
         }
-        
+
         # Test 2: Check header files
         Write-Host "`nTest 2: Check header files..."
         $headerFiles = @(
           "CheatMonitor.h",
-          "CheatConfigManager.h", 
+          "CheatConfigManager.h",
           "HardwareInfoCollector.h",
           "Logger.h"
         )
-        
+
         foreach ($header in $headerFiles) {
           if (Test-Path $header) {
             $content = Get-Content $header -Raw
@@ -181,19 +181,19 @@ jobs:
             $testResults += "FAIL: $header does not exist"
           }
         }
-        
+
         # Test 3: Check configuration integrity
         Write-Host "`nTest 3: Check configuration list integrity..."
         $configContent = Get-Content "CheatConfigManager.cpp" -Raw
-        
+
         $configChecks = @{
           "Harmful Process Detection" = "add_harmful_process_names"
-          "Harmful Keyword Detection" = "add_harmful_keywords" 
+          "Harmful Keyword Detection" = "add_harmful_keywords"
           "Window Whitelist" = "add_whitelisted_window_keywords"
           "VEH Module Whitelist" = "add_whitelisted_veh_modules"
           "Good Process Whitelist" = "add_known_good_processes"
         }
-        
+
         foreach ($check in $configChecks.GetEnumerator()) {
           $pattern = $check.Value
           $matches = ([regex]::Matches($configContent, $pattern)).Count
@@ -205,18 +205,18 @@ jobs:
             $testResults += "WARN: $($check.Key) ($matches entries)"
           }
         }
-        
+
         # Test 4: Check sensor weight implementation
         Write-Host "`nTest 4: Check sensor weight classification..."
         $monitorContent = Get-Content "CheatMonitor.cpp" -Raw
-        
+
         $sensorChecks = @(
           "SensorWeight::LIGHT",
-          "SensorWeight::MEDIUM", 
+          "SensorWeight::MEDIUM",
           "SensorWeight::HEAVY",
           "SensorWeight::CRITICAL"
         )
-        
+
         foreach ($weight in $sensorChecks) {
           $matches = ([regex]::Matches($monitorContent, [regex]::Escape($weight))).Count
           if ($matches -gt 0) {
@@ -227,7 +227,7 @@ jobs:
             $testResults += "FAIL: $weight not found"
           }
         }
-        
+
         # Test 5: Check performance telemetry fix
         Write-Host "`nTest 5: Check performance telemetry fix..."
         if ($monitorContent -match "RecordSensorExecutionStats.*elapsed_ms" -or $monitorContent -match "RecordSensorExecutionStats.*duration_ms") {
@@ -237,18 +237,18 @@ jobs:
           Write-Host "❌ Performance telemetry data recording not fixed"
           $testResults += "FAIL: Performance telemetry fix"
         }
-        
+
         # Output test results summary
         Write-Host "`n=== Test Results Summary ==="
         $passCount = ($testResults | Where-Object { $_ -like "PASS:*" }).Count
-        $failCount = ($testResults | Where-Object { $_ -like "FAIL:*" }).Count  
+        $failCount = ($testResults | Where-Object { $_ -like "FAIL:*" }).Count
         $warnCount = ($testResults | Where-Object { $_ -like "WARN:*" }).Count
-        
+
         Write-Host "Passed: $passCount"
-        Write-Host "Failed: $failCount" 
+        Write-Host "Failed: $failCount"
         Write-Host "Warnings: $warnCount"
         Write-Host "Total: $($testResults.Count)"
-        
+
         foreach ($result in $testResults) {
           if ($result -like "FAIL:*") {
             Write-Host $result -ForegroundColor Red
@@ -258,7 +258,7 @@ jobs:
             Write-Host $result -ForegroundColor Green
           }
         }
-        
+
         # Set exit code
         if ($failCount -gt 0) {
           Write-Host "`n❌ Smoke test failed: $failCount critical tests failed"
@@ -297,35 +297,35 @@ jobs:
       run: |
         $report = @"
         # AntiCheat Smoke Test Report
-        
+
         **Platform**: ${{ matrix.platform }}
         **Configuration**: ${{ matrix.config }}
         **Time**: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
         **Commit**: ${{ github.sha }}
-        
+
         ## Test Scope
         1. ✅ Compilation artifact check
         2. ✅ Header file integrity
-        3. ✅ Configuration list integrity 
+        3. ✅ Configuration list integrity
         4. ✅ Sensor weight classification
         5. ✅ Performance telemetry fix
-        
+
         ## Configuration List Statistics
         - Harmful processes: 50+ entries
-        - Harmful keywords: 60+ entries 
+        - Harmful keywords: 60+ entries
         - Window whitelist: 30+ entries
         - VEH module whitelist: 40+ entries
         - Good process whitelist: 40+ entries
-        
+
         ## Sensor Weight Classification
         - LIGHT level: 2 sensors (< 1ms)
         - MEDIUM level: 4 sensors (1-10ms)
-        - HEAVY level: 7 sensors (10-100ms) 
+        - HEAVY level: 7 sensors (10-100ms)
         - CRITICAL level: 1 sensor (> 100ms)
-        
+
         Test passed ✅
         "@
-        
+
         Set-Content -Path "smoke-test-report.md" -Value $report
 
     - name: Comment PR
