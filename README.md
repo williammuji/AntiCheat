@@ -37,8 +37,8 @@ Anti-cheat system for MMORPG games with multi-layered detection and sensor-based
 - **Suspicious Launch Detection**: Identifies cheat tool startup patterns
 
 ### ModuleIntegritySensor
-- **Code-Section Baseline**: Computes and compares a baseline hash of the first executable code section to detect tampering.
-- **Self/Third‑Party Tampering**: Reports integrity violations for both the anti‑cheat itself and other loaded modules.
+- **Code-Section Baseline**: Computes and compares baseline hash of executable code sections to detect tampering
+- **Self/Third-Party Tampering**: Reports integrity violations for both anti-cheat and other loaded modules
 
 ### ProcessHandleSensor
 - **Handle Enumeration**: Scans process handles for suspicious access
@@ -47,13 +47,13 @@ Anti-cheat system for MMORPG games with multi-layered detection and sensor-based
 - **Privilege Escalation**: Identifies privilege escalation attempts
 
 ### ThreadAndModuleActivitySensor
-- **Thread Start Address Validation**: Reports threads whose Win32 start address resides outside any legitimate module (strong indicator of shellcode).
-- **New Module Verification**: On newly observed modules, verifies their signatures and records results.
-- **Time‑Budgeted Scanning**: Enumerates threads/modules with rotating cursors and budget checks; logs tolerant NTSTATUS cases.
+- **Thread Start Address Validation**: Reports threads whose start address resides outside legitimate modules
+- **New Module Verification**: Verifies signatures of newly observed modules and records results
+- **Time-Budgeted Scanning**: Enumerates threads/modules with rotating cursors and budget checks
 
 ### MemorySecuritySensor
-- **Private Exec (Non‑Module)**: Flags non‑module exec regions (configurable size bounds).
-- **Hidden Exec Heuristic**: Lightweight MZ/access probe for PE‑like regions.
+- **Private Exec (Non-Module)**: Flags non-module exec regions with configurable size bounds
+- **Hidden Exec Heuristic**: Lightweight MZ/access probe for PE-like regions
 
 ### VehHookSensor
 - **Vector Exception Handling**: Monitors exception handling mechanisms
