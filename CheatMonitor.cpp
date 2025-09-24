@@ -671,6 +671,32 @@ std::string GenerateUuid()
     return "";
 }
 
+// 获取进程名（仅进程名，不包含路径）
+std::wstring GetProcessNameByPid(DWORD pid)
+{
+    HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (hSnapshot == INVALID_HANDLE_VALUE)
+        return L"";
+
+    PROCESSENTRY32W pe;
+    pe.dwSize = sizeof(pe);
+
+    if (Process32FirstW(hSnapshot, &pe))
+    {
+        do
+        {
+            if (pe.th32ProcessID == pid)
+            {
+                CloseHandle(hSnapshot);
+                return pe.szExeFile;
+            }
+        } while (Process32NextW(hSnapshot, &pe));
+    }
+
+    CloseHandle(hSnapshot);
+    return L"";
+}
+
 // 为兼容旧版Windows（Vista之前），提供一个QueryFullProcessImageNameW的安全替代方案。
 std::wstring GetProcessFullName(HANDLE hProcess)
 {
@@ -1947,39 +1973,52 @@ class ProcessAndWindowMonitorSensor : public ISensor
                     {
                         // 获取进程路径失败，记录失败原因和详细信息
                         DWORD lastError = GetLastError();
-                        // 对于Memory Compression等系统进程，这是正常现象
+                        // 检查是否为已知的系统进程
                         std::wstring processName = pe.szExeFile;
                         std::transform(processName.begin(), processName.end(), processName.begin(), ::towlower);
 
-                        if (processName == L"memory compression" || processName == L"memorycompression.exe" ||
-                            processName == L"system" || processName == L"registry" || processName == L"idle" ||
-                            processName == L"csrss.exe" || processName == L"wininit.exe" ||
-                            processName == L"winlogon.exe" || processName == L"smss.exe" ||
-                            processName == L"lsass.exe" || processName == L"services.exe" ||
-                            processName == L"spoolsv.exe" || processName == L"svchost.exe" ||
-                            processName == L"dwm.exe" || processName == L"explorer.exe" ||
-                            processName == L"audiodg.exe" || processName == L"conhost.exe")
+                        // 使用配置中的白名单检查
+                        bool isKnownGoodProcess = knownGoodProcesses->count(processName) > 0;
+
+                        // 额外的系统进程检查（硬编码的特殊情况）
+                        bool isSystemProcess =
+                                (processName == L"memory compression" || processName == L"memorycompression.exe" ||
+                                 processName == L"system" || processName == L"registry" || processName == L"idle" ||
+                                 processName == L"smss.exe" || processName == L"spoolsv.exe" ||
+                                 processName == L"audiodg.exe" || processName == L"conhost.exe");
+
+                        if (isKnownGoodProcess || isSystemProcess)
                         {
-                            // 系统进程的路径获取失败是正常现象，记录调试信息
+                            // 已知安全进程的路径获取失败是正常现象，记录调试信息
                             LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR,
-                                        "ProcessAndWindowSensor: 系统进程路径获取失败（正常现象）, 进程名=%s, PID=%lu, "
+                                        "ProcessAndWindowSensor: 安全进程路径获取失败（正常现象）, 进程名=%s, PID=%lu, "
                                         "错误=0x%08X",
                                         Utils::WideToString(pe.szExeFile).c_str(), pe.th32ProcessID, lastError);
                         }
                         else
                         {
-                            // 其他进程的路径获取失败需要记录
-                            LOG_WARNING_F(
-                                    AntiCheatLogger::LogCategory::SENSOR,
-                                    "ProcessAndWindowSensor: 获取进程路径失败, 进程名=%s, PID=%lu, 错误=0x%08X (%s)",
-                                    Utils::WideToString(pe.szExeFile).c_str(), pe.th32ProcessID, lastError,
-                                    lastError == ERROR_ACCESS_DENIED       ? "访问被拒绝"
-                                    : lastError == ERROR_INVALID_PARAMETER ? "参数无效"
-                                    : lastError == ERROR_INVALID_HANDLE    ? "句柄无效"
-                                    : lastError == 0x0000001F              ? "STATUS_INVALID_PARAMETER"
-                                                                           : "未知错误");
+                            // 未知进程的路径获取失败需要记录
+                            if (lastError == ERROR_ACCESS_DENIED)
+                            {
+                                // 访问被拒绝，记录为INFO级别
+                                LOG_INFO_F(AntiCheatLogger::LogCategory::SENSOR,
+                                           "ProcessAndWindowSensor: 无法访问进程路径(权限不足), 进程名=%s, PID=%lu",
+                                           Utils::WideToString(pe.szExeFile).c_str(), pe.th32ProcessID);
+                            }
+                            else
+                            {
+                                // 其他错误，记录为WARNING级别
+                                LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR,
+                                              "ProcessAndWindowSensor: 获取进程路径失败, 进程名=%s, PID=%lu, "
+                                              "错误=0x%08X (%s)",
+                                              Utils::WideToString(pe.szExeFile).c_str(), pe.th32ProcessID, lastError,
+                                              lastError == ERROR_INVALID_PARAMETER ? "参数无效"
+                                              : lastError == ERROR_INVALID_HANDLE  ? "句柄无效"
+                                              : lastError == 0x0000001F            ? "STATUS_INVALID_PARAMETER"
+                                                                                   : "未知错误");
+                                RecordFailure(anti_cheat::PROCESS_WINDOW_GET_PROCESS_PATH_FAILED);
+                            }
                         }
-                        RecordFailure(anti_cheat::PROCESS_WINDOW_GET_PROCESS_PATH_FAILED);
                     }
                 }
                 else
@@ -2341,12 +2380,14 @@ class ModuleIntegritySensor : public ISensor
                     if (GetModuleFileNameW(hModule, curNameW, MAX_PATH) != 0)
                     {
                         nextModuleName = curNameW;
-                        std::transform(nextModuleName.begin(), nextModuleName.end(), nextModuleName.begin(), ::towlower);
+                        std::transform(nextModuleName.begin(), nextModuleName.end(), nextModuleName.begin(),
+                                       ::towlower);
                     }
                     const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count();
                     LOG_WARNING_F(
                             AntiCheatLogger::LogCategory::SENSOR,
-                            "ModuleIntegritySensor超时: elapsed=%lldms budget=%dms processed=%zu index=%zu last='%s' next='%s'",
+                            "ModuleIntegritySensor超时: elapsed=%lldms budget=%dms processed=%zu index=%zu last='%s' "
+                            "next='%s'",
                             (long long)elapsed, budget_ms, processed, index,
                             lastProcessedModuleName.empty() ? "" : Utils::WideToString(lastProcessedModuleName).c_str(),
                             nextModuleName.empty() ? "" : Utils::WideToString(nextModuleName).c_str());
@@ -3005,13 +3046,33 @@ class ProcessHandleSensor : public ISensor
                 ownerProcessPath = Utils::GetProcessFullName(hOwnerProcess.get());
                 if (ownerProcessPath.empty())
                 {
-                    LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR, "ProcessHandleSensor: 无法获取进程路径 PID %lu",
-                                  ownerPid);
-                    // 无法获取进程路径本身就是可疑行为，作为证据上报
-                    context.AddEvidence(
-                            anti_cheat::INTEGRITY_SUSPICIOUS_HANDLE,
-                            "一个无法识别路径的进程持有我们进程的句柄 (PID: " + std::to_string(ownerPid) + ")");
-                    continue;
+                    // 先获取进程名，检查是否在安全白名单中
+                    std::wstring processName = Utils::GetProcessNameByPid(ownerPid);
+                    std::transform(processName.begin(), processName.end(), processName.begin(), ::towlower);
+
+                    auto knownGoodProcesses = CheatConfigManager::GetInstance().GetKnownGoodProcesses();
+                    bool isKnownGoodProcess = knownGoodProcesses && knownGoodProcesses->count(processName) > 0;
+
+                    if (isKnownGoodProcess)
+                    {
+                        // 已知安全进程，记录调试信息
+                        LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR,
+                                    "ProcessHandleSensor: 安全进程无法获取路径（正常现象）, 进程名=%s, PID=%lu",
+                                    Utils::WideToString(processName).c_str(), ownerPid);
+                        continue;
+                    }
+                    else
+                    {
+                        // 未知进程，记录警告并作为可疑行为上报
+                        LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR,
+                                      "ProcessHandleSensor: 无法获取进程路径 PID %lu, 进程名=%s", ownerPid,
+                                      Utils::WideToString(processName).c_str());
+                        context.AddEvidence(
+                                anti_cheat::INTEGRITY_SUSPICIOUS_HANDLE,
+                                "一个无法识别路径的进程持有我们进程的句柄 (PID: " + std::to_string(ownerPid) +
+                                        ", 进程名: " + Utils::WideToString(processName) + ")");
+                        continue;
+                    }
                 }
 
                 // 智能缓存：使用路径作为键（单次扫描）
@@ -3246,12 +3307,33 @@ class ProcessHandleSensor : public ISensor
                 ownerProcessPath = Utils::GetProcessFullName(hOwnerProcess.get());
                 if (ownerProcessPath.empty())
                 {
-                    LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR, "ProcessHandleSensor: 无法获取进程路径 PID %lu",
-                                  ownerPid);
-                    context.AddEvidence(
-                            anti_cheat::INTEGRITY_SUSPICIOUS_HANDLE,
-                            "一个无法识别路径的进程持有我们进程的句柄 (PID: " + std::to_string(ownerPid) + ")");
-                    continue;
+                    // 先获取进程名，检查是否在安全白名单中
+                    std::wstring processName = Utils::GetProcessNameByPid(ownerPid);
+                    std::transform(processName.begin(), processName.end(), processName.begin(), ::towlower);
+
+                    auto knownGoodProcesses = CheatConfigManager::GetInstance().GetKnownGoodProcesses();
+                    bool isKnownGoodProcess = knownGoodProcesses && knownGoodProcesses->count(processName) > 0;
+
+                    if (isKnownGoodProcess)
+                    {
+                        // 已知安全进程，记录调试信息
+                        LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR,
+                                    "ProcessHandleSensor: 安全进程无法获取路径（正常现象）, 进程名=%s, PID=%lu",
+                                    Utils::WideToString(processName).c_str(), ownerPid);
+                        continue;
+                    }
+                    else
+                    {
+                        // 未知进程，记录警告并作为可疑行为上报
+                        LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR,
+                                      "ProcessHandleSensor: 无法获取进程路径 PID %lu, 进程名=%s", ownerPid,
+                                      Utils::WideToString(processName).c_str());
+                        context.AddEvidence(
+                                anti_cheat::INTEGRITY_SUSPICIOUS_HANDLE,
+                                "一个无法识别路径的进程持有我们进程的句柄 (PID: " + std::to_string(ownerPid) +
+                                        ", 进程名: " + Utils::WideToString(processName) + ")");
+                        continue;
+                    }
                 }
 
                 auto pathCacheIt = pathCache.find(ownerProcessPath);

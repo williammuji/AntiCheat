@@ -620,6 +620,16 @@ void CheatConfigManager::SetDefaultValues(ConfigData& configData)
     configData.config->add_known_good_processes("lsass.exe");
     configData.config->add_known_good_processes("explorer.exe");
     configData.config->add_known_good_processes("dwm.exe");
+    // 系统服务进程
+    configData.config->add_known_good_processes("taskhostw.exe");
+    configData.config->add_known_good_processes("sppsvc.exe");
+    configData.config->add_known_good_processes("tracker.exe");
+    // 开发工具进程
+    configData.config->add_known_good_processes("cl.exe");
+    configData.config->add_known_good_processes("winmergeu.exe");
+    // 第三方软件进程
+    configData.config->add_known_good_processes("tqupdate.exe");
+    configData.config->add_known_good_processes("ksnproxy.exe");
     // 国内常见输入法
     configData.config->add_known_good_processes("sogouinput.exe");
     configData.config->add_known_good_processes("qqpinyin.exe");
@@ -698,7 +708,7 @@ void CheatConfigManager::SetDefaultValues(ConfigData& configData)
     configData.config->set_max_veh_handlers_to_scan(32);
 
     // --- 通用配置参数（所有Sensor共用） ---
-    configData.config->set_max_code_section_size(100 * 1024 * 1024);  // 最大代码节大小(100MB) - 支持大型游戏客户端
+    configData.config->set_max_code_section_size(100 * 1024 * 1024);  // 最大代码节大小(100MB) - 覆盖大部分游戏模块
     configData.config->set_heavy_scan_budget_ms(1000);                // 重量级扫描预算(毫秒)
 
     // [新增] MemorySecuritySensor配置参数
@@ -718,7 +728,7 @@ void CheatConfigManager::SetDefaultValues(ConfigData& configData)
 
     // --- 时间片扫描限额（游标式遍历） ---
     configData.config->set_max_pid_attempts_per_scan(300);  // 单次句柄扫描最多尝试的新PID数量
-    configData.config->set_max_modules_per_scan(150);       // 单次模块完整性扫描最多处理的模块数量
+    configData.config->set_max_modules_per_scan(100);       // 单次模块完整性扫描最多处理的模块数量（平衡性能与覆盖）
     configData.config->set_pid_throttle_minutes(5);         // PID节流时长（分钟）
 
     // 新增：最低OS版本要求
