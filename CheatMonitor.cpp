@@ -1813,8 +1813,28 @@ class SystemCodeIntegritySensor : public ISensor
             }
             if (sci.CodeIntegrityOptions & 0x01)
             {
-                context.AddEvidence(anti_cheat::ENVIRONMENT_DEBUGGER_DETECTED,
-                                    "系统开启了内核调试模式 (Kernel Debugging Enabled)");
+                // 合取判定：仅当 NtQuerySystemInformation 确认 KD 存在时才上报
+                bool kdPresent = false;
+                __try
+                {
+                    SYSTEM_KERNEL_DEBUGGER_INFORMATION kdInfo = {};
+                    if (SystemUtils::g_pNtQuerySystemInformation &&
+                        NT_SUCCESS(SystemUtils::g_pNtQuerySystemInformation(SystemKernelDebuggerInformation, &kdInfo,
+                                                                            sizeof(kdInfo), nullptr)))
+                    {
+                        kdPresent = (kdInfo.KernelDebuggerEnabled && !kdInfo.KernelDebuggerNotPresent);
+                    }
+                }
+                __except (EXCEPTION_EXECUTE_HANDLER)
+                {
+                    kdPresent = false;
+                }
+
+                if (kdPresent)
+                {
+                    context.AddEvidence(anti_cheat::ENVIRONMENT_DEBUGGER_DETECTED,
+                                        "系统开启了内核调试模式 (Kernel Debugging Enabled)");
+                }
             }
         }
         else
@@ -5301,41 +5321,47 @@ void CheatMonitor::Pimpl::RecordSensorExecutionStats(const char *name, int durat
 
     auto &stats = m_sensorExecutionStats[name];
 
-    // 更新执行次数和时间统计
+    // 更新执行次数和时间统计（抑制为0的时间字段赋值）
     switch (result)
     {
         case SensorExecutionResult::SUCCESS:
             stats.set_success_count(stats.success_count() + 1);
-            stats.set_total_success_time_ms(stats.total_success_time_ms() + duration_ms);
-            if (stats.success_count() > 0)
+            if (duration_ms > 0)
             {
-                stats.set_avg_success_time_ms(stats.total_success_time_ms() / stats.success_count());
-            }
-            // 更新最大/最小成功执行时间
-            if (stats.max_success_time_ms() == 0 || duration_ms > stats.max_success_time_ms())
-            {
-                stats.set_max_success_time_ms(duration_ms);
-            }
-            if (stats.min_success_time_ms() == 0 || duration_ms < stats.min_success_time_ms())
-            {
-                stats.set_min_success_time_ms(duration_ms);
+                stats.set_total_success_time_ms(stats.total_success_time_ms() + duration_ms);
+                if (stats.total_success_time_ms() > 0 && stats.success_count() > 0)
+                {
+                    stats.set_avg_success_time_ms(stats.total_success_time_ms() / stats.success_count());
+                }
+                // 更新最大/最小成功执行时间
+                if (stats.max_success_time_ms() == 0 || duration_ms > stats.max_success_time_ms())
+                {
+                    stats.set_max_success_time_ms(duration_ms);
+                }
+                if (stats.min_success_time_ms() == 0 || duration_ms < stats.min_success_time_ms())
+                {
+                    stats.set_min_success_time_ms(duration_ms);
+                }
             }
             break;
         case SensorExecutionResult::FAILURE:
             stats.set_failure_count(stats.failure_count() + 1);
-            stats.set_total_failure_time_ms(stats.total_failure_time_ms() + duration_ms);
-            if (stats.failure_count() > 0)
+            if (duration_ms > 0)
             {
-                stats.set_avg_failure_time_ms(stats.total_failure_time_ms() / stats.failure_count());
-            }
-            // 更新最大/最小失败执行时间
-            if (stats.max_failure_time_ms() == 0 || duration_ms > stats.max_failure_time_ms())
-            {
-                stats.set_max_failure_time_ms(duration_ms);
-            }
-            if (stats.min_failure_time_ms() == 0 || duration_ms < stats.min_failure_time_ms())
-            {
-                stats.set_min_failure_time_ms(duration_ms);
+                stats.set_total_failure_time_ms(stats.total_failure_time_ms() + duration_ms);
+                if (stats.total_failure_time_ms() > 0 && stats.failure_count() > 0)
+                {
+                    stats.set_avg_failure_time_ms(stats.total_failure_time_ms() / stats.failure_count());
+                }
+                // 更新最大/最小失败执行时间
+                if (stats.max_failure_time_ms() == 0 || duration_ms > stats.max_failure_time_ms())
+                {
+                    stats.set_max_failure_time_ms(duration_ms);
+                }
+                if (stats.min_failure_time_ms() == 0 || duration_ms < stats.min_failure_time_ms())
+                {
+                    stats.set_min_failure_time_ms(duration_ms);
+                }
             }
             break;
         case SensorExecutionResult::TIMEOUT:
