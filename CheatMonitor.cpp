@@ -1776,6 +1776,26 @@ class AdvancedAntiDebugSensor : public ISensor
     }
 };
 
+// 静态辅助函数：检查内核调试器是否存在
+static bool CheckKernelDebuggerPresent() {
+    bool kdPresent = false;
+    __try
+    {
+        SYSTEM_KERNEL_DEBUGGER_INFORMATION kdInfo = {};
+        if (SystemUtils::g_pNtQuerySystemInformation &&
+            NT_SUCCESS(SystemUtils::g_pNtQuerySystemInformation(SystemKernelDebuggerInformation, &kdInfo,
+                                                                sizeof(kdInfo), nullptr)))
+        {
+            kdPresent = (kdInfo.KernelDebuggerEnabled && !kdInfo.KernelDebuggerNotPresent);
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        kdPresent = false;
+    }
+    return kdPresent;
+}
+
 class SystemCodeIntegritySensor : public ISensor
 {
    public:
@@ -1814,23 +1834,7 @@ class SystemCodeIntegritySensor : public ISensor
             if (sci.CodeIntegrityOptions & 0x01)
             {
                 // 合取判定：仅当 NtQuerySystemInformation 确认 KD 存在时才上报
-                bool kdPresent = false;
-                __try
-                {
-                    SYSTEM_KERNEL_DEBUGGER_INFORMATION kdInfo = {};
-                    if (SystemUtils::g_pNtQuerySystemInformation &&
-                        NT_SUCCESS(SystemUtils::g_pNtQuerySystemInformation(SystemKernelDebuggerInformation, &kdInfo,
-                                                                            sizeof(kdInfo), nullptr)))
-                    {
-                        kdPresent = (kdInfo.KernelDebuggerEnabled && !kdInfo.KernelDebuggerNotPresent);
-                    }
-                }
-                __except (EXCEPTION_EXECUTE_HANDLER)
-                {
-                    kdPresent = false;
-                }
-
-                if (kdPresent)
+                if (CheckKernelDebuggerPresent())
                 {
                     context.AddEvidence(anti_cheat::ENVIRONMENT_DEBUGGER_DETECTED,
                                         "系统开启了内核调试模式 (Kernel Debugging Enabled)");
