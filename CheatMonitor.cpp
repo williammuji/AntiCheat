@@ -1323,10 +1323,10 @@ bool ISensor::IsOsSupported(ScanContext &context) const
 class MemoryScanner
 {
    public:
-    // 内存区域扫描回调函数类型
-    using MemoryRegionCallback = std::function<void(const MEMORY_BASIC_INFORMATION &)>;
+    // 内存区域扫描回调函数类型（返回 bool：true=继续，false=停止）
+    using MemoryRegionCallback = std::function<bool(const MEMORY_BASIC_INFORMATION &)>;
 
-    // 扫描所有内存区域
+    // 扫描所有内存区域（支持提前退出）
     static void ScanMemoryRegions(MemoryRegionCallback callback)
     {
         LPBYTE address = nullptr;
@@ -1337,8 +1337,11 @@ class MemoryScanner
 
         while (VirtualQuery(address, &mbi, sizeof(mbi)))
         {
-            // 调用回调函数处理内存区域
-            callback(mbi);
+            // 调用回调函数处理内存区域，如果返回 false 则提前退出
+            if (!callback(mbi))
+            {
+                break;
+            }
 
             address = reinterpret_cast<LPBYTE>(mbi.BaseAddress) + mbi.RegionSize;
 
@@ -1354,24 +1357,26 @@ class MemoryScanner
     // 扫描私有可执行内存区域
     static void ScanPrivateExecutableMemory(MemoryRegionCallback callback)
     {
-        ScanMemoryRegions([&callback](const MEMORY_BASIC_INFORMATION &mbi) {
+        ScanMemoryRegions([&callback](const MEMORY_BASIC_INFORMATION &mbi) -> bool {
             if (mbi.State == MEM_COMMIT && mbi.Type == MEM_PRIVATE &&
                 (mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)))
             {
-                callback(mbi);
+                return callback(mbi);
             }
+            return true;  // 继续扫描
         });
     }
 
     // 扫描可执行内存区域
     static void ScanExecutableMemory(MemoryRegionCallback callback)
     {
-        ScanMemoryRegions([&callback](const MEMORY_BASIC_INFORMATION &mbi) {
+        ScanMemoryRegions([&callback](const MEMORY_BASIC_INFORMATION &mbi) -> bool {
             if (mbi.State == MEM_COMMIT &&
                 (mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)))
             {
-                callback(mbi);
+                return callback(mbi);
             }
+            return true;  // 继续扫描
         });
     }
 };
@@ -1777,7 +1782,8 @@ class AdvancedAntiDebugSensor : public ISensor
 };
 
 // 静态辅助函数：检查内核调试器是否存在
-static bool CheckKernelDebuggerPresent() {
+static bool CheckKernelDebuggerPresent()
+{
     bool kdPresent = false;
     __try
     {
@@ -3967,9 +3973,9 @@ class MemorySecuritySensor : public ISensor
         const int budget_ms = CheatConfigManager::GetInstance().GetHeavyScanBudgetMs();
         const auto startTime = std::chrono::steady_clock::now();
 
-        // 4. 使用公共扫描器进行内存遍历
+        // 4. 使用公共扫描器进行内存遍历（支持超时提前退出）
         bool timeoutOccurred = false;
-        MemoryScanner::ScanMemoryRegions([&](const MEMORY_BASIC_INFORMATION &mbi) {
+        MemoryScanner::ScanMemoryRegions([&](const MEMORY_BASIC_INFORMATION &mbi) -> bool {
             // 检查超时
             auto now = std::chrono::steady_clock::now();
             if (std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count() > budget_ms)
@@ -3977,14 +3983,14 @@ class MemorySecuritySensor : public ISensor
                 LOG_WARNING(AntiCheatLogger::LogCategory::SENSOR, "MemorySecuritySensor: 内存扫描超时");
                 RecordFailure(anti_cheat::MEMORY_SCAN_TIMEOUT);
                 timeoutOccurred = true;
-                return;
+                return false;  // 返回 false 立即停止扫描
             }
 
             // 性能优化：跳过已知安全区域
             uintptr_t currentAddr = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
             if (IsKnownSafeRegion(currentAddr, mbi.RegionSize))
             {
-                return;
+                return true;  // 继续扫描
             }
 
             // 核心检测逻辑：专注于内存安全检测，不重复模块完整性检测
@@ -4003,6 +4009,8 @@ class MemorySecuritySensor : public ISensor
                     DetectPrivateExecutableMemory(context, mbi);
                 }
             }
+
+            return true;  // 继续扫描
         });
 
         // 如果发生超时，直接返回失败
@@ -4074,19 +4082,19 @@ class MemorySecuritySensor : public ISensor
             auto peCheckResult = CheckHiddenMemoryRegion(mbi.BaseAddress, regionSize);
             if (peCheckResult.shouldReport)
             {
-                char msgBuffer[256];
+                // 使用 std::ostringstream 替代 sprintf_s，避免格式化问题和缓冲区溢出风险
+                std::ostringstream oss;
                 if (peCheckResult.accessible)
                 {
-                    sprintf_s(msgBuffer, sizeof(msgBuffer), "检测到隐藏的可执行内存区域: 0x%p 大小: %zu 字节",
-                              (void *)baseAddr, regionSize);
+                    oss << "检测到隐藏的可执行内存区域: 0x" << std::hex << baseAddr << " 大小: " << std::dec
+                        << regionSize << " 字节";
                 }
                 else
                 {
-                    sprintf_s(msgBuffer, sizeof(msgBuffer),
-                              "检测到隐藏的可执行内存区域（无法读取）: 0x%p 大小: %zu 字节", (void *)baseAddr,
-                              regionSize);
+                    oss << "检测到隐藏的可执行内存区域（无法读取）: 0x" << std::hex << baseAddr << " 大小: " << std::dec
+                        << regionSize << " 字节";
                 }
-                context.AddEvidence(anti_cheat::INTEGRITY_MEMORY_PATCH, std::string(msgBuffer));
+                context.AddEvidence(anti_cheat::INTEGRITY_MEMORY_PATCH, oss.str());
             }
         }
     }
@@ -4154,27 +4162,44 @@ class MemorySecuritySensor : public ISensor
         bool accessible = false;
     };
 
-    static HiddenMemoryCheckResult CheckHiddenMemoryRegion(PVOID baseAddress, SIZE_T regionSize)
+    // 改为非静态成员函数，以便记录失败原因；使用 ReadProcessMemory 替代直接内存访问
+    HiddenMemoryCheckResult CheckHiddenMemoryRegion(PVOID baseAddress, SIZE_T regionSize)
     {
         HiddenMemoryCheckResult result;
-        __try
-        {
-            // 简单检查是否可能是PE文件头
-            const BYTE *pMem = reinterpret_cast<const BYTE *>(baseAddress);
-            bool mightBePE = (regionSize >= CheatConfigManager::GetInstance().GetMinMemoryRegionSize() &&
-                              pMem[0] == 'M' && pMem[1] == 'Z');
 
-            result.accessible = true;
-            result.shouldReport = mightBePE;
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER)
+        // 配置的最小尺寸检查
+        if (regionSize < CheatConfigManager::GetInstance().GetMinMemoryRegionSize())
         {
-            // 如果读取内存失败，仍然报告，因为这很可能是恶意隐藏
-            result.accessible = false;
-            result.shouldReport = true;
-            // 记录内存访问异常失败
-            // m_lastFailureReason = anti_cheat::MEMORY_ACCESS_EXCEPTION; // 静态方法中无法访问成员变量
+            return result;  // shouldReport is false
         }
+
+        // 使用 ReadProcessMemory 安全读取内存，避免直接解引用导致访问违规崩溃
+        BYTE mz_header[2] = {0};
+        SIZE_T bytesRead = 0;
+        HANDLE hProcess = GetCurrentProcess();
+
+        if (ReadProcessMemory(hProcess, baseAddress, mz_header, sizeof(mz_header), &bytesRead) &&
+            bytesRead == sizeof(mz_header))
+        {
+            // 成功读取内存
+            result.accessible = true;
+            if (mz_header[0] == 'M' && mz_header[1] == 'Z')
+            {
+                result.shouldReport = true;
+            }
+        }
+        else
+        {
+            // 读取内存失败，这本身就是一个可疑信号
+            result.accessible = false;
+            result.shouldReport = true;  // 恶意代码可能通过设置PAGE_NOACCESS来隐藏自身
+
+            // 记录具体的失败原因
+            RecordFailure(anti_cheat::MEMORY_ACCESS_EXCEPTION);
+            LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR,
+                        "ReadProcessMemory failed for address 0x%p, GetLastError()=%lu", baseAddress, GetLastError());
+        }
+
         return result;
     }
 };
@@ -5239,10 +5264,15 @@ void CheatMonitor::Pimpl::UploadHardwareReport()
 
 void CheatMonitor::Pimpl::UploadEvidenceReport()
 {
-    std::lock_guard<std::mutex> lock(m_sessionMutex);
-
-    if (m_evidences.empty())
-        return;
+    // 避免在上传过程中持有 m_sessionMutex，以降低死锁/竞态风险
+    std::vector<anti_cheat::Evidence> evidencesToSend;
+    {
+        std::lock_guard<std::mutex> lock(m_sessionMutex);
+        if (m_evidences.empty())
+            return;
+        evidencesToSend.swap(m_evidences);
+        m_uniqueEvidence.clear();  // 清空去重集合
+    }
 
     anti_cheat::Report report;
     report.set_type(anti_cheat::REPORT_EVIDENCE);
@@ -5253,13 +5283,11 @@ void CheatMonitor::Pimpl::UploadEvidenceReport()
             std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
                     .count());
 
-    // 移动证据到报告中，并清空本地缓存
-    for (auto &evidence : m_evidences)
+    // 移动证据到报告中
+    for (auto &evidence : evidencesToSend)
     {
         *evidence_report->add_evidences() = std::move(evidence);
     }
-    m_evidences.clear();
-    m_uniqueEvidence.clear();  // 清空去重集合
 
     SendReport(report);
 }
