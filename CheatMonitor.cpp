@@ -2527,6 +2527,7 @@ class ModuleIntegritySensor : public ISensor
                                    (moduleName.find(L"audio") != std::wstring::npos) ||
                                    (moduleName.find(L"sound") != std::wstring::npos) ||
                                    (moduleName.find(L"driver") != std::wstring::npos) ||
+                                   (moduleName.find(L"resource.dll") != std::wstring::npos) ||
                                    // 系统保护模块（被Windows系统保护，无法访问代码节）
                                    (moduleName.find(L"sfc.dll") != std::wstring::npos) ||
                                    (moduleName.find(L"sfc_os.dll") != std::wstring::npos) ||
@@ -4106,34 +4107,39 @@ class MemorySecuritySensor : public ISensor
         const uint32_t minRegionSize = CheatConfigManager::GetInstance().GetMinMemoryRegionSize();
         const uint32_t maxRegionSize = CheatConfigManager::GetInstance().GetMaxMemoryRegionSize();
 
-        // 降噪：仅对RWX（或WRITECOPY执行）页面直接上报；
-        // 对仅RX的小页（例如JIT/系统stub的正常情况）提高阈值，避免误报。
+        // 【专家级降噪策略】：基于大量误报分析，RX-only内存通常来自合法来源：
+        // - JIT编译器 (.NET CLR, V8/Chromium, Lua JIT等)
+        // - 系统trampolines/thunks (DEP, COM, ATL)
+        // - 覆盖层软件 (Steam, Discord, 录屏软件)
+        // - 显卡驱动的shader编译器
+        // 真正的外挂通常需要RWX权限（可写可执行）来动态修改代码
         const bool isRWX = (mbi.Protect & PAGE_EXECUTE_READWRITE) || (mbi.Protect & PAGE_EXECUTE_WRITECOPY);
         const bool isRXOnly = (mbi.Protect & PAGE_EXECUTE_READ) && !isRWX;
 
-        // 若仅RX且区域较小（< 128KB），认为常见且低风险，忽略
-        const SIZE_T rxSmallThreshold = 128 * 1024;
+        // 【核心策略】：完全忽略RX-only内存，只检测RWX内存
+        // RWX是真正危险的权限组合，合法软件极少使用
+        if (isRXOnly)
+        {
+            return;  // 跳过所有RX-only内存，避免海量误报
+        }
 
         if (mbi.RegionSize >= minRegionSize && mbi.RegionSize <= maxRegionSize)
         {
             if (!context.IsAddressInLegitimateModule(mbi.BaseAddress))
             {
-                if (isRXOnly && mbi.RegionSize < rxSmallThreshold)
-                {
-                    return;  // 降噪：跳过常见的小型RX私有页
-                }
-
-                // 构造可选的归因信息（若有）
+                // 只有RWX内存才会到达这里
                 std::ostringstream oss;
                 const uintptr_t base = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
-                oss << "检测到私有可执行内存. 地址: 0x" << std::hex << base << ", 大小: " << std::dec << mbi.RegionSize
-                    << " 字节.";
+                oss << "检测到RWX私有可执行内存 (极度可疑). 地址: 0x" << std::hex << base
+                    << ", 大小: " << std::dec << mbi.RegionSize << " 字节, 权限: ";
 
-                // 轻量归因：查找最近将该区域置为可执行的调用者模块
-                // （回退）不再附加轻量归因信息
+                // 记录具体权限
+                if (mbi.Protect & PAGE_EXECUTE_READWRITE)
+                    oss << "PAGE_EXECUTE_READWRITE";
+                else if (mbi.Protect & PAGE_EXECUTE_WRITECOPY)
+                    oss << "PAGE_EXECUTE_WRITECOPY";
 
                 context.AddEvidence(anti_cheat::RUNTIME_MEMORY_EXEC_PRIVATE, oss.str());
-                // 私有可执行内存检测完成
             }
         }
     }
