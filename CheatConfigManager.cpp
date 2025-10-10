@@ -723,8 +723,8 @@ void CheatConfigManager::SetDefaultValues(ConfigData& configData)
     // [新增] 性能调优参数
     configData.config->set_max_window_count(100);          // 最大窗口数量限制(100个)
     configData.config->set_max_handle_scan_count(150000);  // 最大句柄扫描数量(150K个)
-    configData.config->set_initial_buffer_size_mb(1);      // 初始缓冲区大小(1MB)
-    configData.config->set_max_buffer_size_mb(4);          // 最大缓冲区大小(4MB)
+    configData.config->set_initial_buffer_size_mb(2);      // 初始缓冲区大小(2MB) - 提高初始值减少扩容次数
+    configData.config->set_max_buffer_size_mb(16);         // 最大缓冲区大小(16MB) - 从4MB增加到16MB以处理大量句柄
 
     // --- 时间片扫描限额（游标式遍历） ---
     configData.config->set_max_pid_attempts_per_scan(300);  // 单次句柄扫描最多尝试的新PID数量
