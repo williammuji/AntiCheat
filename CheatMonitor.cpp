@@ -2027,25 +2027,48 @@ class ProcessAndWindowMonitorSensor : public ISensor
                         }
                         else
                         {
+                            // 检查是否为已知的模拟器/虚拟化软件（这些进程经常触发路径获取失败）
+                            bool isKnownVirtualizationProcess =
+                                    (processName.find(L"ldremote") != std::wstring::npos ||    // 雷电模拟器远程
+                                     processName.find(L"ldplayer") != std::wstring::npos ||    // 雷电模拟器
+                                     processName.find(L"dnplayer") != std::wstring::npos ||    // 雷电模拟器
+                                     processName.find(L"vmware") != std::wstring::npos ||      // VMware
+                                     processName.find(L"virtualbox") != std::wstring::npos ||  // VirtualBox
+                                     processName.find(L"vbox") != std::wstring::npos);         // VirtualBox
+
                             // 未知进程的路径获取失败需要记录
-                            if (lastError == ERROR_ACCESS_DENIED)
+                            if (lastError == ERROR_ACCESS_DENIED || lastError == ERROR_INVALID_PARAMETER ||
+                                lastError == 0x0000000F)  // 0x0F = 15 = ERROR_INVALID_PARAMETER
                             {
-                                // 访问被拒绝，记录为INFO级别
-                                LOG_INFO_F(AntiCheatLogger::LogCategory::SENSOR,
-                                           "ProcessAndWindowSensor: 无法访问进程路径(权限不足), 进程名=%s, PID=%lu",
-                                           Utils::WideToString(pe.szExeFile).c_str(), pe.th32ProcessID);
+                                // 常见的预期错误（权限不足、参数无效），降低日志级别
+                                if (isKnownVirtualizationProcess)
+                                {
+                                    // 已知虚拟化软件的路径获取失败是预期行为
+                                    LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR,
+                                                "ProcessAndWindowSensor: 虚拟化进程路径获取失败（预期行为）, "
+                                                "进程名=%s, PID=%lu, "
+                                                "错误=0x%08X",
+                                                Utils::WideToString(pe.szExeFile).c_str(), pe.th32ProcessID, lastError);
+                                }
+                                else
+                                {
+                                    // 其他进程，记录为INFO级别（不是WARNING，因为这是常见场景）
+                                    LOG_INFO_F(AntiCheatLogger::LogCategory::SENSOR,
+                                               "ProcessAndWindowSensor: 无法访问进程路径(权限/参数问题), 进程名=%s, "
+                                               "PID=%lu, "
+                                               "错误=0x%08X",
+                                               Utils::WideToString(pe.szExeFile).c_str(), pe.th32ProcessID, lastError);
+                                }
                             }
                             else
                             {
-                                // 其他错误，记录为WARNING级别
-                                LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR,
-                                              "ProcessAndWindowSensor: 获取进程路径失败, 进程名=%s, PID=%lu, "
-                                              "错误=0x%08X (%s)",
-                                              Utils::WideToString(pe.szExeFile).c_str(), pe.th32ProcessID, lastError,
-                                              lastError == ERROR_INVALID_PARAMETER ? "参数无效"
-                                              : lastError == ERROR_INVALID_HANDLE  ? "句柄无效"
-                                              : lastError == 0x0000001F            ? "STATUS_INVALID_PARAMETER"
-                                                                                   : "未知错误");
+                                // 其他罕见错误，记录为WARNING级别
+                                LOG_WARNING_F(
+                                        AntiCheatLogger::LogCategory::SENSOR,
+                                        "ProcessAndWindowSensor: 获取进程路径失败(未预期错误), 进程名=%s, PID=%lu, "
+                                        "错误=0x%08X (%s)",
+                                        Utils::WideToString(pe.szExeFile).c_str(), pe.th32ProcessID, lastError,
+                                        lastError == ERROR_INVALID_HANDLE ? "句柄无效" : "未知错误");
                                 RecordFailure(anti_cheat::PROCESS_WINDOW_GET_PROCESS_PATH_FAILED);
                             }
                         }
@@ -4127,17 +4150,47 @@ class MemorySecuritySensor : public ISensor
         {
             if (!context.IsAddressInLegitimateModule(mbi.BaseAddress))
             {
-                // 只有RWX内存才会到达这里
-                std::ostringstream oss;
                 const uintptr_t base = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
-                oss << "检测到RWX私有可执行内存 (极度可疑). 地址: 0x" << std::hex << base
-                    << ", 大小: " << std::dec << mbi.RegionSize << " 字节, 权限: ";
+
+                // 【高级降噪】：过滤低地址小块 RWX 内存（系统 trampolines/DEP）
+                // Windows DEP 机制和系统 thunks 常在低地址（< 2MB）分配单页或多页的 RWX
+                // 真正的外挂通常在高地址分配较大区域
+                const SIZE_T lowAddressThreshold = 0x200000;  // 2MB
+                const SIZE_T smallRwxThreshold = 64 * 1024;   // 64KB
+
+                if (base < lowAddressThreshold && mbi.RegionSize < smallRwxThreshold)
+                {
+                    // 低地址小块 RWX，很可能是系统合法分配，跳过
+                    LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR,
+                                "跳过低地址小块RWX内存 (系统trampolines): 0x%zx, 大小=%zu", base, mbi.RegionSize);
+                    return;
+                }
+
+                // 【进一步降噪】：检查初始分配保护（AllocationProtect）
+                // 如果区域最初分配时就是可执行的，通常是合法的（如 JIT 编译器）
+                // 可疑的外挂通常会先分配 RW，再通过 VirtualProtect 改为 RWX
+                if (mbi.AllocationProtect &
+                    (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY))
+                {
+                    // 初始分配时就包含执行权限，认为是合法用途
+                    LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR,
+                                "跳过初始即可执行的RWX内存 (合法JIT/系统): 0x%zx, AllocationProtect=0x%X", base,
+                                mbi.AllocationProtect);
+                    return;
+                }
+
+                // 只有RWX内存且通过所有过滤才会到达这里
+                std::ostringstream oss;
+                oss << "检测到RWX私有可执行内存 (极度可疑). 地址: 0x" << std::hex << base << ", 大小: " << std::dec
+                    << mbi.RegionSize << " 字节, 权限: ";
 
                 // 记录具体权限
                 if (mbi.Protect & PAGE_EXECUTE_READWRITE)
                     oss << "PAGE_EXECUTE_READWRITE";
                 else if (mbi.Protect & PAGE_EXECUTE_WRITECOPY)
                     oss << "PAGE_EXECUTE_WRITECOPY";
+
+                oss << ", 初始分配保护: 0x" << std::hex << mbi.AllocationProtect;
 
                 context.AddEvidence(anti_cheat::RUNTIME_MEMORY_EXEC_PRIVATE, oss.str());
             }
