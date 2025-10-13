@@ -2027,18 +2027,20 @@ class ProcessAndWindowMonitorSensor : public ISensor
                         }
                         else
                         {
-                            // 检查是否为已知的模拟器/虚拟化软件（这些进程经常触发路径获取失败）
+                            // 检查是否为已知的模拟器/虚拟化软件及游戏辅助进程（这些进程经常触发路径获取失败）
                             bool isKnownVirtualizationProcess =
-                                    (processName.find(L"ldremote") != std::wstring::npos ||    // 雷电模拟器远程
-                                     processName.find(L"ldplayer") != std::wstring::npos ||    // 雷电模拟器
-                                     processName.find(L"dnplayer") != std::wstring::npos ||    // 雷电模拟器
-                                     processName.find(L"vmware") != std::wstring::npos ||      // VMware
-                                     processName.find(L"virtualbox") != std::wstring::npos ||  // VirtualBox
-                                     processName.find(L"vbox") != std::wstring::npos);         // VirtualBox
+                                    (processName.find(L"ldremote") != std::wstring::npos ||        // 雷电模拟器远程
+                                     processName.find(L"ldplayer") != std::wstring::npos ||        // 雷电模拟器
+                                     processName.find(L"dnplayer") != std::wstring::npos ||        // 雷电模拟器
+                                     processName.find(L"vmware") != std::wstring::npos ||          // VMware
+                                     processName.find(L"virtualbox") != std::wstring::npos ||      // VirtualBox
+                                     processName.find(L"vbox") != std::wstring::npos ||            // VirtualBox
+                                     processName.find(L"biz_helper") != std::wstring::npos ||      // 业务辅助工具
+                                     processName.find(L"usernetschedule") != std::wstring::npos);  // 用户网络调度
 
                             // 未知进程的路径获取失败需要记录
                             if (lastError == ERROR_ACCESS_DENIED || lastError == ERROR_INVALID_PARAMETER ||
-                                lastError == 0x0000000F)  // 0x0F = 15 = ERROR_INVALID_PARAMETER
+                                lastError == 0x0000001F)  // 0x1F = 31 = ERROR_GEN_FAILURE (通用失败)
                             {
                                 // 常见的预期错误（权限不足、参数无效），降低日志级别
                                 if (isKnownVirtualizationProcess)
@@ -5854,12 +5856,36 @@ void CheatMonitor::Pimpl::VerifyModuleSignature(HMODULE hModule)
             m_sigThrottleUntil[modulePath] =
                     now +
                     std::chrono::seconds(CheatConfigManager::GetInstance().GetSignatureVerificationThrottleSeconds());
+
+            // 【降噪】：检查是否为常见的合法第三方库（这些库通常没有数字签名）
+            std::wstring moduleNameLower = modulePath;
+            std::transform(moduleNameLower.begin(), moduleNameLower.end(), moduleNameLower.begin(), ::towlower);
+
+            bool isKnownThirdPartyLib =
+                    (moduleNameLower.find(L"fmodex") != std::wstring::npos ||     // FMOD 音频引擎
+                     moduleNameLower.find(L"fmod") != std::wstring::npos ||       // FMOD
+                     moduleNameLower.find(L"bass") != std::wstring::npos ||       // BASS 音频
+                     moduleNameLower.find(L"bink") != std::wstring::npos ||       // Bink 视频编解码器
+                     moduleNameLower.find(L"d3dx9_") != std::wstring::npos ||     // DirectX 9 扩展库
+                     moduleNameLower.find(L"physx") != std::wstring::npos ||      // PhysX 物理引擎
+                     moduleNameLower.find(L"xlua") != std::wstring::npos ||       // xLua 脚本引擎
+                     moduleNameLower.find(L"lua5") != std::wstring::npos ||       // Lua 脚本引擎
+                     moduleNameLower.find(L"speedtree") != std::wstring::npos ||  // SpeedTree 植被引擎
+                     moduleNameLower.find(L"wwise") != std::wstring::npos);       // Wwise 音频引擎
+
             // 在 XP/Vista/Win7 上，避免将现代SHA-2签名缺失误判为不受信任，降低证据等级：仅缓存，不立即上报。
+            // 同时跳过已知的合法第三方库
             if (m_windowsVersion != SystemUtils::WindowsVersion::Win_XP &&
-                m_windowsVersion != SystemUtils::WindowsVersion::Win_Vista_Win7)
+                m_windowsVersion != SystemUtils::WindowsVersion::Win_Vista_Win7 && !isKnownThirdPartyLib)
             {
                 AddEvidence(anti_cheat::RUNTIME_MODULE_NEW_UNKNOWN,
                             "加载了未签名的模块: " + Utils::WideToString(modulePath));
+            }
+            else if (isKnownThirdPartyLib)
+            {
+                // 已知第三方库，记录调试日志
+                LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR, "跳过已知第三方库的未签名警告: %s",
+                            Utils::WideToString(modulePath).c_str());
             }
         }
         break;
