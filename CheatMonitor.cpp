@@ -4103,7 +4103,7 @@ class MemorySecuritySensor : public ISensor
         const uint32_t minRegionSize = CheatConfigManager::GetInstance().GetMinMemoryRegionSize();
         const uint32_t maxRegionSize = CheatConfigManager::GetInstance().GetMaxMemoryRegionSize();
 
-        if (baseAddr > 0x10000 && regionSize >= minRegionSize && regionSize <= maxRegionSize)
+        if (baseAddr > 0x200000 && regionSize >= minRegionSize && regionSize <= maxRegionSize)
         {
             auto peCheckResult = CheckHiddenMemoryRegion(mbi.BaseAddress, regionSize);
             if (peCheckResult.shouldReport)
