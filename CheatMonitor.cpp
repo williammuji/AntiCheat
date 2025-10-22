@@ -2423,8 +2423,8 @@ class ModuleIntegritySensor : public ISensor
             if (index++ < startCursor)
                 return;
 
-            // 优化：每10个模块检查一次超时，因为模块完整性检查较重
-            if (processed % 10 == 0)
+            // 优化：每5个模块检查一次超时（从10改为5，更频繁检查避免超时过多）
+            if (processed % 5 == 0)
             {
                 auto now = std::chrono::steady_clock::now();
                 if (std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count() > budget_ms)
@@ -2547,31 +2547,36 @@ class ModuleIntegritySensor : public ISensor
             std::transform(moduleName.begin(), moduleName.end(), moduleName.begin(), ::towlower);
 
             // 检查是否为已知的特殊模块类型（包括系统保护模块）
-            bool isSpecialModule = (moduleName.find(L"fmodex") != std::wstring::npos) ||
-                                   (moduleName.find(L"fmod") != std::wstring::npos) ||
-                                   (moduleName.find(L"audio") != std::wstring::npos) ||
-                                   (moduleName.find(L"sound") != std::wstring::npos) ||
-                                   (moduleName.find(L"driver") != std::wstring::npos) ||
-                                   (moduleName.find(L"resource.dll") != std::wstring::npos) ||
-                                   // 系统保护模块（被Windows系统保护，无法访问代码节）
-                                   (moduleName.find(L"sfc.dll") != std::wstring::npos) ||
-                                   (moduleName.find(L"sfc_os.dll") != std::wstring::npos) ||
-                                   (moduleName.find(L"wfp.dll") != std::wstring::npos) ||
-                                   (moduleName.find(L"wfpdiag.dll") != std::wstring::npos) ||
-                                   (moduleName.find(L"ntdll.dll") != std::wstring::npos) ||
-                                   (moduleName.find(L"kernel32.dll") != std::wstring::npos) ||
-                                   (moduleName.find(L"kernelbase.dll") != std::wstring::npos) ||
-                                   (moduleName.find(L"user32.dll") != std::wstring::npos) ||
-                                   (moduleName.find(L"gdi32.dll") != std::wstring::npos) ||
-                                   (moduleName.find(L"advapi32.dll") != std::wstring::npos) ||
-                                   (moduleName.find(L"ole32.dll") != std::wstring::npos) ||
-                                   (moduleName.find(L"oleaut32.dll") != std::wstring::npos) ||
-                                   (moduleName.find(L"shell32.dll") != std::wstring::npos) ||
-                                   (moduleName.find(L"comctl32.dll") != std::wstring::npos) ||
-                                   (moduleName.find(L"msvcrt.dll") != std::wstring::npos) ||
-                                   (moduleName.find(L"ucrtbase.dll") != std::wstring::npos) ||
-                                   (moduleName.find(L"sppc.dll") != std::wstring::npos) ||
-                                   (moduleName.find(L"slc.dll") != std::wstring::npos);
+            // 优化：使用静态集合提高查找效率
+            static const std::unordered_set<std::wstring> specialModuleKeywords = {
+                L"fmodex", L"fmod", L"audio", L"sound", L"driver", L"resource.dll",
+                // 系统保护模块（被Windows系统保护，无法访问代码节）
+                L"sfc.dll", L"sfc_os.dll", L"wfp.dll", L"wfpdiag.dll",
+                L"ntdll.dll", L"kernel32.dll", L"kernelbase.dll",
+                L"user32.dll", L"gdi32.dll", L"advapi32.dll",
+                L"ole32.dll", L"oleaut32.dll", L"shell32.dll", L"comctl32.dll",
+                L"msvcrt.dll", L"ucrtbase.dll", L"sppc.dll", L"slc.dll",
+                // 新增：更多可能导致失败的系统模块
+                L"win32u.dll", L"bcrypt.dll", L"crypt32.dll", L"cryptbase.dll",
+                L"sechost.dll", L"rpcrt4.dll", L"imm32.dll", L"msctf.dll",
+                L"clbcatq.dll", L"propsys.dll", L"profapi.dll", L"powrprof.dll",
+                L"uxtheme.dll", L"dwmapi.dll", L"wintrust.dll", L"imagehlp.dll",
+                L"dbghelp.dll", L"version.dll", L"winmm.dll", L"ws2_32.dll",
+                L"mswsock.dll", L"iphlpapi.dll", L"dnsapi.dll", L"rasapi32.dll",
+                // 显卡驱动相关
+                L"nvoglv", L"nvd3d", L"nvwgf", L"amdvlk", L"amdxc", L"atiumd",
+                L"igd10iumd", L"igdmcl", L"ig9icd", L"ig4icd",
+                // 游戏平台覆盖层
+                L"gameoverlayrenderer", L"discord_hook", L"rtss", L"wegame_helper"
+            };
+
+            bool isSpecialModule = false;
+            for (const auto& keyword : specialModuleKeywords) {
+                if (moduleName.find(keyword) != std::wstring::npos) {
+                    isSpecialModule = true;
+                    break;
+                }
+            }
 
             if (isSpecialModule)
             {
@@ -2907,14 +2912,25 @@ class ProcessHandleSensor : public ISensor
                                            : (ULONG_PTR)((const ULONG_PTR *)pHandleInfoEx)[0];
         if (totalHandles > kMaxHandlesToScan)
         {
-            // 提供更详细的上下文信息
+            // 优化：自适应策略 - 如果句柄数超限但不是太离谱（<150%），仍然尝试扫描但减少处理量
             double handleRatio = static_cast<double>(totalHandles) / kMaxHandlesToScan;
-            LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR,
-                          "ProcessHandleSensor: 系统句柄数量超过上限 (%lu > %lu, 超出%.1f%%)，跳过扫描以确保系统性能。"
-                          "建议：1) 检查系统是否有句柄泄漏 2) 考虑增加max_handle_scan_count配置值",
+            if (handleRatio < 1.5)  // 超出不到50%，可以尝试降级扫描
+            {
+                LOG_INFO_F(AntiCheatLogger::LogCategory::SENSOR,
+                          "ProcessHandleSensor: 系统句柄数量略超上限 (%lu > %lu, 超出%.1f%%)，启用降级扫描模式",
                           (ULONG)totalHandles, kMaxHandlesToScan, (handleRatio - 1.0) * 100.0);
-            RecordFailure(anti_cheat::PROCESS_HANDLE_HANDLE_COUNT_EXCEEDED);
-            return SensorExecutionResult::FAILURE;
+                // 继续执行，但会通过游标机制自动限制扫描量
+            }
+            else
+            {
+                // 超出太多，直接跳过
+                LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR,
+                              "ProcessHandleSensor: 系统句柄数量严重超限 (%lu > %lu, 超出%.1f%%)，跳过扫描以确保系统性能。"
+                              "建议：1) 检查系统是否有句柄泄漏 2) 考虑增加max_handle_scan_count配置值",
+                              (ULONG)totalHandles, kMaxHandlesToScan, (handleRatio - 1.0) * 100.0);
+                RecordFailure(anti_cheat::PROCESS_HANDLE_HANDLE_COUNT_EXCEEDED);
+                return SensorExecutionResult::FAILURE;
+            }
         }
 
         // 记录句柄数量统计信息（仅在DEBUG级别）
@@ -4001,15 +4017,20 @@ class MemorySecuritySensor : public ISensor
 
         // 4. 使用公共扫描器进行内存遍历（支持超时提前退出）
         bool timeoutOccurred = false;
+        size_t regionsScanned = 0;
         MemoryScanner::ScanMemoryRegions([&](const MEMORY_BASIC_INFORMATION &mbi) -> bool {
-            // 检查超时
-            auto now = std::chrono::steady_clock::now();
-            if (std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count() > budget_ms)
+            // 优化：每50个内存区域检查一次超时（减少时间检查开销）
+            if (regionsScanned++ % 50 == 0)
             {
-                LOG_WARNING(AntiCheatLogger::LogCategory::SENSOR, "MemorySecuritySensor: 内存扫描超时");
-                RecordFailure(anti_cheat::MEMORY_SCAN_TIMEOUT);
-                timeoutOccurred = true;
-                return false;  // 返回 false 立即停止扫描
+                auto now = std::chrono::steady_clock::now();
+                if (std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count() > budget_ms)
+                {
+                    LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR,
+                                 "MemorySecuritySensor: 内存扫描超时，已扫描%zu个区域", regionsScanned);
+                    RecordFailure(anti_cheat::MEMORY_SCAN_TIMEOUT);
+                    timeoutOccurred = true;
+                    return false;  // 返回 false 立即停止扫描
+                }
             }
 
             // 性能优化：跳过已知安全区域
