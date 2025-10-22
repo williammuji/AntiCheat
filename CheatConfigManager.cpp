@@ -709,7 +709,7 @@ void CheatConfigManager::SetDefaultValues(ConfigData& configData)
 
     // --- 通用配置参数（所有Sensor共用） ---
     configData.config->set_max_code_section_size(100 * 1024 * 1024);  // 最大代码节大小(100MB) - 覆盖大部分游戏模块
-    configData.config->set_heavy_scan_budget_ms(1000);                // 重量级扫描预算(毫秒)
+    configData.config->set_heavy_scan_budget_ms(2000);                // 重量级扫描预算(毫秒)
 
     // [新增] MemorySecuritySensor配置参数
     configData.config->set_min_memory_region_size(128 * 1024);  // 最小内存区域大小(128KB)
@@ -722,14 +722,14 @@ void CheatConfigManager::SetDefaultValues(ConfigData& configData)
 
     // [新增] 性能调优参数
     configData.config->set_max_window_count(100);          // 最大窗口数量限制(100个)
-    configData.config->set_max_handle_scan_count(250000);  // 最大句柄扫描数量(250K个，适应高负载环境)
-    configData.config->set_initial_buffer_size_mb(2);      // 初始缓冲区大小(2MB) - 提高初始值减少扩容次数
-    configData.config->set_max_buffer_size_mb(16);         // 最大缓冲区大小(16MB) - 从4MB增加到16MB以处理大量句柄
+    configData.config->set_max_handle_scan_count(500000);  // 最大句柄扫描数量(250K个，适应高负载环境)
+    configData.config->set_initial_buffer_size_mb(4);      // 初始缓冲区大小(2MB) - 提高初始值减少扩容次数
+    configData.config->set_max_buffer_size_mb(32);         // 最大缓冲区大小(16MB) - 从4MB增加到16MB以处理大量句柄
 
     // --- 时间片扫描限额（游标式遍历） ---
-    configData.config->set_max_pid_attempts_per_scan(300);  // 单次句柄扫描最多尝试的新PID数量
-    configData.config->set_max_modules_per_scan(100);       // 单次模块完整性扫描最多处理的模块数量（平衡性能与覆盖）
-    configData.config->set_pid_throttle_minutes(5);         // PID节流时长（分钟）
+    configData.config->set_max_pid_attempts_per_scan(200);  // 单次句柄扫描最多尝试的新PID数量
+    configData.config->set_max_modules_per_scan(50);       // 单次模块完整性扫描最多处理的模块数量（平衡性能与覆盖）
+    configData.config->set_pid_throttle_minutes(10);         // PID节流时长（分钟）
 
     // 新增：最低OS版本要求
     configData.config->set_min_os_version(anti_cheat::OS_WIN10);  // 默认要求Windows 10+
