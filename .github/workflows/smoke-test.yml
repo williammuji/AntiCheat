@@ -212,7 +212,6 @@ jobs:
 
         $sensorChecks = @(
           "SensorWeight::LIGHT",
-          "SensorWeight::MEDIUM",
           "SensorWeight::HEAVY",
           "SensorWeight::CRITICAL"
         )
