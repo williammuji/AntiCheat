@@ -922,10 +922,9 @@ class ScanContext;
 // 传感器权重分级枚举（基于专家审查建议）
 enum class SensorWeight
 {
-    LIGHT,    // < 1ms: SystemIntegrity, AdvancedAntiDebug
-    MEDIUM,   // 1-10ms: IatHook, SelfIntegrity
-    HEAVY,    // 10-100ms: MemoryScan, ProcessHandle
-    CRITICAL  // > 100ms: VehHook (需特殊处理)
+    LIGHT,    // 0-10ms: AdvancedAntiDebug, SystemCodeIntegrity, IatHook, VehHook
+    HEAVY,    // 100-10000ms: ThreadAndModuleActivity, MemorySecurity
+    CRITICAL  // 1000-100000ms: ProcessHandle, ProcessAndWindowMonitor, ModuleIntegrity (分段扫描)
 };
 
 // 传感器执行结果枚举
@@ -1023,6 +1022,7 @@ struct CheatMonitor::Pimpl
     // === 跨扫描游标（时间片遍历） ===
     size_t m_handleCursorOffset = 0;  // 上次句柄扫描游标
     size_t m_moduleCursorOffset = 0;  // 上次模块扫描游标
+    size_t m_processCursorOffset = 0; // 上次进程扫描游标
 
     // === 跨扫描节流（Handle PID DuplicateHandle 尝试）===
     std::unordered_map<DWORD, std::chrono::steady_clock::time_point> m_pidThrottleUntil;
@@ -1294,6 +1294,14 @@ class ScanContext
     void SetModuleCursorOffset(size_t v)
     {
         m_pimpl->m_moduleCursorOffset = v;
+    }
+    size_t GetProcessCursorOffset() const
+    {
+        return m_pimpl->m_processCursorOffset;
+    }
+    void SetProcessCursorOffset(size_t v)
+    {
+        m_pimpl->m_processCursorOffset = v;
     }
     std::unordered_map<DWORD, std::chrono::steady_clock::time_point> &GetPidThrottleUntil()
     {
@@ -1876,14 +1884,16 @@ class ProcessAndWindowMonitorSensor : public ISensor
     }
     SensorWeight GetWeight() const override
     {
-        return SensorWeight::MEDIUM;  // 1-10ms: 进程和窗口监控
+        return SensorWeight::CRITICAL;  // 100-10000ms: 进程和窗口监控（大量进程时耗时长）
     }
     SensorExecutionResult Execute(ScanContext &context) override
     {
         // 重置失败原因
         m_lastFailureReason = anti_cheat::UNKNOWN_FAILURE;
 
-        // 获取配置参数
+        // 获取配置参数和时间预算
+        const int budget_ms = CheatConfigManager::GetInstance().GetHeavyScanBudgetMs();
+        const auto startTime = std::chrono::steady_clock::now();
         const int maxProcessesToScan = CheatConfigManager::GetInstance().GetMaxProcessesToScan();
         auto knownGoodProcesses = CheatConfigManager::GetInstance().GetKnownGoodProcesses();
 
@@ -1940,7 +1950,7 @@ class ProcessAndWindowMonitorSensor : public ISensor
             return SensorExecutionResult::FAILURE;
         }
 
-        // 2. 然后，遍历进程列表，进行检查
+        // 2. 然后，遍历进程列表，进行检查（支持分段扫描和超时控制）
         using UniqueSnapshotHandle = std::unique_ptr<void, decltype(&::CloseHandle)>;
         UniqueSnapshotHandle hSnapshot(CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0), &::CloseHandle);
         if (hSnapshot.get() == INVALID_HANDLE_VALUE)
@@ -1950,23 +1960,74 @@ class ProcessAndWindowMonitorSensor : public ISensor
             return SensorExecutionResult::FAILURE;
         }
 
+        // 分段扫描：使用游标记录上次扫描位置
+        size_t startCursor = context.GetProcessCursorOffset();
+        size_t totalProcesses = 0;
+        size_t processedCount = 0;
+        bool timeoutOccurred = false;
+        std::wstring lastProcessedName;
+
+        // 第一遍：统计总进程数
         PROCESSENTRY32W pe;
         pe.dwSize = sizeof(pe);
         if (Process32FirstW(hSnapshot.get(), &pe))
         {
-            int processCount = 0;
             do
             {
-                if (processCount >= maxProcessesToScan)
+                totalProcesses++;
+            } while (Process32NextW(hSnapshot.get(), &pe));
+        }
+
+        // 第二遍：从游标位置开始扫描
+        pe.dwSize = sizeof(pe);
+        if (Process32FirstW(hSnapshot.get(), &pe))
+        {
+            size_t currentIndex = 0;
+            do
+            {
+                // 游标：跳过上次已处理的进程
+                if (currentIndex++ < startCursor)
+                    continue;
+
+                // 【关键优化】超时检查：在处理进程之前检查，每个进程都检查
+                // 原因：ProcessAndWindowMonitorSensor单个进程可能耗时很长（签名验证、路径获取等）
+                // 如果每10个才检查，可能已经超时了200-500ms
                 {
-                    LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR,
-                                  "ProcessAndWindowMonitorSensor: 达到最大进程扫描数量限制(%d)，可能存在恶意进程干扰",
-                                  maxProcessesToScan);
+                    auto now = std::chrono::steady_clock::now();
+                    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count();
+                    if (elapsed > budget_ms)
+                    {
+                        // 获取下一个待处理进程名
+                        std::wstring nextProcessName = pe.szExeFile;
+                        std::transform(nextProcessName.begin(), nextProcessName.end(), nextProcessName.begin(),
+                                       ::towlower);
+
+                        LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR,
+                                      "ProcessAndWindowMonitorSensor超时: elapsed=%lldms budget=%dms "
+                                      "total=%zu processed=%zu cursor=%zu last='%s' next='%s'",
+                                      (long long)elapsed, budget_ms, totalProcesses, processedCount, currentIndex - 1,
+                                      lastProcessedName.empty() ? "" : Utils::WideToString(lastProcessedName).c_str(),
+                                      Utils::WideToString(nextProcessName).c_str());
+                        RecordFailure(anti_cheat::PROCESS_SCAN_TIMEOUT);
+                        timeoutOccurred = true;
+                        break;
+                    }
+                }
+
+                // 限额检查：单次扫描不超过配置的最大数量
+                if (processedCount >= (size_t)maxProcessesToScan)
+                {
+                    LOG_INFO_F(AntiCheatLogger::LogCategory::SENSOR,
+                               "ProcessAndWindowMonitorSensor: 达到单次扫描限额(%d)，下次继续", maxProcessesToScan);
                     break;
                 }
-                processCount++;
+
+                processedCount++;
                 std::wstring processName = pe.szExeFile;
                 std::transform(processName.begin(), processName.end(), processName.begin(), ::towlower);
+
+                // 记录当前处理的进程名（用于超时日志）
+                lastProcessedName = processName;
 
                 // 新增优化：首先通过进程名快速过滤已知的安全进程。
                 if (knownGoodProcesses->count(processName) > 0)
@@ -2192,6 +2253,23 @@ class ProcessAndWindowMonitorSensor : public ISensor
             } while (Process32NextW(hSnapshot.get(), &pe));
         }
 
+        // 更新游标（轮转式扫描）
+        if (totalProcesses > 0)
+        {
+            size_t nextCursor = (startCursor + processedCount) % totalProcesses;
+            context.SetProcessCursorOffset(nextCursor);
+        }
+
+        // Telemetry: 记录本轮进程快照与处理量
+        context.RecordSensorWorkloadCounters("ProcessAndWindowMonitorSensor", (uint64_t)totalProcesses,
+                                             (uint64_t)processedCount, (uint64_t)processedCount);
+
+        // 如果发生超时，直接返回失败
+        if (timeoutOccurred)
+        {
+            return SensorExecutionResult::FAILURE;
+        }
+
         // 统一的执行结果判断逻辑
         // 成功条件：没有失败原因记录
         if (m_lastFailureReason != anti_cheat::UNKNOWN_FAILURE)
@@ -2212,7 +2290,7 @@ class IatHookSensor : public ISensor
     }
     SensorWeight GetWeight() const override
     {
-        return SensorWeight::MEDIUM;  // 1-10ms: IAT Hook检测
+        return SensorWeight::LIGHT;  // < 1ms: IAT Hook检测
     }
     SensorExecutionResult Execute(ScanContext &context) override
     {
@@ -2384,7 +2462,7 @@ class ModuleIntegritySensor : public ISensor
     }
     SensorWeight GetWeight() const override
     {
-        return SensorWeight::HEAVY;  // 10-100ms: 模块代码完整性检测
+        return SensorWeight::CRITICAL;  // ~1000ms: 模块代码完整性检测（分段扫描，平均接近预算阈值）
     }
 
     SensorExecutionResult Execute(ScanContext &context) override
@@ -2423,8 +2501,9 @@ class ModuleIntegritySensor : public ISensor
             if (index++ < startCursor)
                 return;
 
-            // 优化：每5个模块检查一次超时（从10改为5，更频繁检查避免超时过多）
-            if (processed % 5 == 0)
+            // 【关键优化】超时检查：在处理模块之前检查，每个模块都检查
+            // 原因：某些大型模块（如Unreal Engine）单个模块可能耗时100-200ms
+            // 如果每5个才检查，可能已经超时了500-1000ms
             {
                 auto now = std::chrono::steady_clock::now();
                 if (std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count() > budget_ms)
@@ -2759,7 +2838,7 @@ class ProcessHandleSensor : public ISensor
     }
     SensorWeight GetWeight() const override
     {
-        return SensorWeight::HEAVY;  // 10-100ms: 进程句柄扫描
+        return SensorWeight::CRITICAL;  // 1000-100000ms: 进程句柄扫描（分段扫描）
     }
 
     // 获取进程创建时间标识（用于缓存验证）
@@ -4295,7 +4374,7 @@ class VehHookSensor : public ISensor
     }
     SensorWeight GetWeight() const override
     {
-        return SensorWeight::CRITICAL;  // > 100ms: VEH检测需特殊处理
+        return SensorWeight::LIGHT;  // 0-10ms: VEH检测
     }
 
     SensorExecutionResult Execute(ScanContext &context) override
@@ -4927,7 +5006,6 @@ void CheatMonitor::Pimpl::InitializeSystem()
         switch (weight)
         {
             case SensorWeight::LIGHT:
-            case SensorWeight::MEDIUM:
                 m_lightweightSensors.emplace_back(std::move(sensor));
                 break;
             case SensorWeight::HEAVY:
