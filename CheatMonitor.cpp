@@ -923,8 +923,8 @@ class ScanContext;
 enum class SensorWeight
 {
     LIGHT,    // 0-10ms: AdvancedAntiDebug, SystemCodeIntegrity, IatHook, VehHook
-    HEAVY,    // 100-10000ms: ThreadAndModuleActivity, MemorySecurity
-    CRITICAL  // 1000-100000ms: ProcessHandle, ProcessAndWindowMonitor, ModuleIntegrity (分段扫描)
+    HEAVY,    // 100-1000ms: ThreadAndModuleActivity, MemorySecurity
+    CRITICAL  // 1000-10000ms: ProcessHandle, ProcessAndWindowMonitor, ModuleIntegrity (分段扫描)
 };
 
 // 传感器执行结果枚举
@@ -1884,7 +1884,7 @@ class ProcessAndWindowMonitorSensor : public ISensor
     }
     SensorWeight GetWeight() const override
     {
-        return SensorWeight::CRITICAL;  // 100-10000ms: 进程和窗口监控（大量进程时耗时长）
+        return SensorWeight::CRITICAL;  // 1000-10000ms: 进程和窗口监控（大量进程时耗时长）
     }
     SensorExecutionResult Execute(ScanContext &context) override
     {
@@ -2838,7 +2838,7 @@ class ProcessHandleSensor : public ISensor
     }
     SensorWeight GetWeight() const override
     {
-        return SensorWeight::CRITICAL;  // 1000-100000ms: 进程句柄扫描（分段扫描）
+        return SensorWeight::CRITICAL;  // 1000-10000ms: 进程句柄扫描（分段扫描）
     }
 
     // 获取进程创建时间标识（用于缓存验证）

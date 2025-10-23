@@ -7,8 +7,8 @@ Anti-cheat system for MMORPG games with multi-layered detection and sensor-based
 | Weight | Execution Time | Sensors | Purpose |
 |--------|----------------|---------|---------|
 | **LIGHT** | 0-10ms | AdvancedAntiDebugSensor, SystemCodeIntegritySensor, IatHookSensor, VehHookSensor | Quick system integrity checks and API hook detection |
-| **HEAVY** | 100-10000ms | ThreadAndModuleActivitySensor, MemorySecuritySensor | Deep system analysis with time-budgeted scanning |
-| **CRITICAL** | 1000-100000ms | ProcessHandleSensor, ModuleIntegritySensor, ProcessAndWindowMonitorSensor | Intensive segmented scanning with cursor-based approach |
+| **HEAVY** | 100-1000ms | ThreadAndModuleActivitySensor, MemorySecuritySensor | Deep system analysis with time-budgeted scanning |
+| **CRITICAL** | 1000-10000ms | ProcessHandleSensor, ModuleIntegritySensor, ProcessAndWindowMonitorSensor | Intensive segmented scanning with cursor-based approach |
 
 
 ### AdvancedAntiDebugSensor

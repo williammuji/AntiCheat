@@ -238,8 +238,7 @@ jobs:
         # Check weight classification
         $weightChecks = @{
           "LIGHT" = 2;
-          "MEDIUM" = 2;
-          "HEAVY" = 4;
+          "HEAVY" = 3;
           "CRITICAL" = 1
         }
 
