@@ -709,27 +709,26 @@ void CheatConfigManager::SetDefaultValues(ConfigData& configData)
 
     // --- 通用配置参数（所有Sensor共用） ---
     configData.config->set_max_code_section_size(100 * 1024 * 1024);  // 最大代码节大小(100MB) - 覆盖大部分游戏模块
-    configData.config->set_heavy_scan_budget_ms(2000);                // 重量级扫描预算(毫秒)
+    configData.config->set_heavy_scan_budget_ms(2000);  // HEAVY级传感器预算(2000ms) - ThreadAndModuleActivity, MemorySecurity
 
-    // [新增] MemorySecuritySensor配置参数
+    // 注意：CRITICAL级传感器使用相同的heavy_scan_budget_ms，但通过分段扫描机制确保单次不超时
+    // CRITICAL级传感器：ProcessHandle, ModuleIntegrity, ProcessAndWindowMonitor
+
+    // [新增] MemorySecuritySensor配置参数 (HEAVY级)
     configData.config->set_min_memory_region_size(128 * 1024);  // 最小内存区域大小(128KB)
-    configData.config->set_max_memory_region_size(16 * 1024 *
-                                                  1024);  // 最大内存区域大小(16MB)
-                                                          // 移除maxScannedRegions相关配置，依赖budget_ms机制
+    configData.config->set_max_memory_region_size(16 * 1024 * 1024);  // 最大内存区域大小(16MB)
 
-    // [新增] EnvironmentSensor配置参数
-    configData.config->set_max_processes_to_scan(1000);  // 最大进程扫描数量(1000个)
+    // [新增] ProcessAndWindowMonitorSensor配置参数 (CRITICAL级 - 分段扫描)
+    configData.config->set_max_processes_to_scan(100);  // 单次扫描进程数(100个) - 基于A/B测试优化
+    configData.config->set_max_window_count(80);  // 最大窗口数量限制(80个)
 
-    // [新增] 性能调优参数
-    configData.config->set_max_window_count(100);          // 最大窗口数量限制(100个)
-    configData.config->set_max_handle_scan_count(500000);  // 最大句柄扫描数量(250K个，适应高负载环境)
-    configData.config->set_initial_buffer_size_mb(4);      // 初始缓冲区大小(2MB) - 提高初始值减少扩容次数
-    configData.config->set_max_buffer_size_mb(32);         // 最大缓冲区大小(16MB) - 从4MB增加到16MB以处理大量句柄
-
-    // --- 时间片扫描限额（游标式遍历） ---
-    configData.config->set_max_pid_attempts_per_scan(200);  // 单次句柄扫描最多尝试的新PID数量
-    configData.config->set_max_modules_per_scan(50);       // 单次模块完整性扫描最多处理的模块数量（平衡性能与覆盖）
-    configData.config->set_pid_throttle_minutes(10);         // PID节流时长（分钟）
+    // [新增] ProcessHandleSensor配置参数 (CRITICAL级 - 分段扫描)
+    configData.config->set_max_handle_scan_count(800000);  // 最大句柄扫描数量(800K) - 基于A/B测试，成功耗时仅116ms，可增加
+    configData.config->set_initial_buffer_size_mb(4);  // 初始缓冲区大小(4MB) - 减少扩容次数
+    configData.config->set_max_buffer_size_mb(32);  // 最大缓冲区大小(32MB) - 处理大量句柄场景
+    configData.config->set_max_pid_attempts_per_scan(200);  // 单次扫描最多尝试的新PID数量(200个)
+    configData.config->set_max_modules_per_scan(50);  // ModuleIntegritySensor单次扫描模块数(50个) - CRITICAL级分段扫描
+    configData.config->set_pid_throttle_minutes(10);  // PID节流时长(10分钟) - 避免重复扫描同一PID
 
     // 新增：最低OS版本要求
     configData.config->set_min_os_version(anti_cheat::OS_WIN10);  // 默认要求Windows 10+
