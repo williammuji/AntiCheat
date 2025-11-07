@@ -408,6 +408,28 @@ typedef struct _SYSTEM_HANDLE_INFORMATION_EX
     SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX Handles[1];
 } SYSTEM_HANDLE_INFORMATION_EX, *PSYSTEM_HANDLE_INFORMATION_EX;
 
+// CLIENT_ID structure
+typedef struct _CLIENT_ID
+{
+    HANDLE UniqueProcess;
+    HANDLE UniqueThread;
+} CLIENT_ID;
+
+// THREAD_BASIC_INFORMATION structure
+typedef struct _THREAD_BASIC_INFORMATION
+{
+    NTSTATUS ExitStatus;
+    PVOID TebBaseAddress;
+    CLIENT_ID ClientId;
+    KAFFINITY AffinityMask;
+    KPRIORITY BasePriority;
+    KPRIORITY LastBasePriority;
+    ULONG SubProcessTag;
+    PVOID ActiveProcessAffinityPort;
+    ULONG GrantedAccess;
+    ULONG Flags;
+} THREAD_BASIC_INFORMATION, *PTHREAD_BASIC_INFORMATION;
+
 // 类型定义验证完成
 
 typedef NTSTATUS(WINAPI *PNtQuerySystemInformation)(ULONG SystemInformationClass, PVOID SystemInformation,
@@ -724,7 +746,6 @@ std::wstring GetProcessFullName(HANDLE hProcess)
 
     return L"";  // 获取失败
 }
-
 // 通用的文件签名验证辅助函数
 SignatureStatus VerifyFileSignature(const std::wstring &filePath, SystemUtils::WindowsVersion winVer)
 {
@@ -787,7 +808,7 @@ SignatureStatus VerifyFileSignature(const std::wstring &filePath, SystemUtils::W
         }
     }
 
-    // 离线降噪策略：系统目录中的文件若返回以下错误，降级为“无法判断”（不当作未签名）：
+    // 离线降噪策略：系统目录中的文件若返回以下错误，降级为"无法判断"（不当作未签名）：
     // - TRUST_E_NOSIGNATURE: 无嵌入签名（很多系统DLL走catalog签名，离线/无catalog场景易触发）
     // - CERT_E_CHAINING / CERT_E_UNTRUSTEDROOT: 链构建失败/不受信根（离线/企业策略常见）
     // - TRUST_E_SYSTEM_ERROR: WinVerifyTrust内部策略/组件出错
@@ -1020,9 +1041,9 @@ struct CheatMonitor::Pimpl
     std::unordered_map<std::wstring, std::chrono::steady_clock::time_point> m_sigThrottleUntil;
 
     // === 跨扫描游标（时间片遍历） ===
-    size_t m_handleCursorOffset = 0;  // 上次句柄扫描游标
-    size_t m_moduleCursorOffset = 0;  // 上次模块扫描游标
-    size_t m_processCursorOffset = 0; // 上次进程扫描游标
+    size_t m_handleCursorOffset = 0;   // 上次句柄扫描游标
+    size_t m_moduleCursorOffset = 0;   // 上次模块扫描游标
+    size_t m_processCursorOffset = 0;  // 上次进程扫描游标
 
     // === 跨扫描节流（Handle PID DuplicateHandle 尝试）===
     std::unordered_map<DWORD, std::chrono::steady_clock::time_point> m_pidThrottleUntil;
@@ -1519,7 +1540,6 @@ class ThreadScanner
         return nullptr;
     }
 };
-
 // --- 传感器实现按重要程度从低到高排列 ---
 
 class AdvancedAntiDebugSensor : public ISensor
@@ -2280,7 +2300,6 @@ class ProcessAndWindowMonitorSensor : public ISensor
         return SensorExecutionResult::SUCCESS;
     }
 };
-
 class IatHookSensor : public ISensor
 {
    public:
@@ -2628,30 +2647,27 @@ class ModuleIntegritySensor : public ISensor
             // 检查是否为已知的特殊模块类型（包括系统保护模块）
             // 优化：使用静态集合提高查找效率
             static const std::unordered_set<std::wstring> specialModuleKeywords = {
-                L"fmodex", L"fmod", L"audio", L"sound", L"driver", L"resource.dll",
-                // 系统保护模块（被Windows系统保护，无法访问代码节）
-                L"sfc.dll", L"sfc_os.dll", L"wfp.dll", L"wfpdiag.dll",
-                L"ntdll.dll", L"kernel32.dll", L"kernelbase.dll",
-                L"user32.dll", L"gdi32.dll", L"advapi32.dll",
-                L"ole32.dll", L"oleaut32.dll", L"shell32.dll", L"comctl32.dll",
-                L"msvcrt.dll", L"ucrtbase.dll", L"sppc.dll", L"slc.dll",
-                // 新增：更多可能导致失败的系统模块
-                L"win32u.dll", L"bcrypt.dll", L"crypt32.dll", L"cryptbase.dll",
-                L"sechost.dll", L"rpcrt4.dll", L"imm32.dll", L"msctf.dll",
-                L"clbcatq.dll", L"propsys.dll", L"profapi.dll", L"powrprof.dll",
-                L"uxtheme.dll", L"dwmapi.dll", L"wintrust.dll", L"imagehlp.dll",
-                L"dbghelp.dll", L"version.dll", L"winmm.dll", L"ws2_32.dll",
-                L"mswsock.dll", L"iphlpapi.dll", L"dnsapi.dll", L"rasapi32.dll",
-                // 显卡驱动相关
-                L"nvoglv", L"nvd3d", L"nvwgf", L"amdvlk", L"amdxc", L"atiumd",
-                L"igd10iumd", L"igdmcl", L"ig9icd", L"ig4icd",
-                // 游戏平台覆盖层
-                L"gameoverlayrenderer", L"discord_hook", L"rtss", L"wegame_helper"
-            };
+                    L"fmodex", L"fmod", L"audio", L"sound", L"driver", L"resource.dll",
+                    // 系统保护模块（被Windows系统保护，无法访问代码节）
+                    L"sfc.dll", L"sfc_os.dll", L"wfp.dll", L"wfpdiag.dll", L"ntdll.dll", L"kernel32.dll",
+                    L"kernelbase.dll", L"user32.dll", L"gdi32.dll", L"advapi32.dll", L"ole32.dll", L"oleaut32.dll",
+                    L"shell32.dll", L"comctl32.dll", L"msvcrt.dll", L"ucrtbase.dll", L"sppc.dll", L"slc.dll",
+                    // 新增：更多可能导致失败的系统模块
+                    L"win32u.dll", L"bcrypt.dll", L"crypt32.dll", L"cryptbase.dll", L"sechost.dll", L"rpcrt4.dll",
+                    L"imm32.dll", L"msctf.dll", L"clbcatq.dll", L"propsys.dll", L"profapi.dll", L"powrprof.dll",
+                    L"uxtheme.dll", L"dwmapi.dll", L"wintrust.dll", L"imagehlp.dll", L"dbghelp.dll", L"version.dll",
+                    L"winmm.dll", L"ws2_32.dll", L"mswsock.dll", L"iphlpapi.dll", L"dnsapi.dll", L"rasapi32.dll",
+                    // 显卡驱动相关
+                    L"nvoglv", L"nvd3d", L"nvwgf", L"amdvlk", L"amdxc", L"atiumd", L"igd10iumd", L"igdmcl", L"ig9icd",
+                    L"ig4icd",
+                    // 游戏平台覆盖层
+                    L"gameoverlayrenderer", L"discord_hook", L"rtss", L"wegame_helper"};
 
             bool isSpecialModule = false;
-            for (const auto& keyword : specialModuleKeywords) {
-                if (moduleName.find(keyword) != std::wstring::npos) {
+            for (const auto &keyword : specialModuleKeywords)
+            {
+                if (moduleName.find(keyword) != std::wstring::npos)
+                {
                     isSpecialModule = true;
                     break;
                 }
@@ -2775,7 +2791,6 @@ class ModuleIntegritySensor : public ISensor
         }
     }
 };
-
 class ProcessHandleSensor : public ISensor
 {
    public:
@@ -2996,17 +3011,18 @@ class ProcessHandleSensor : public ISensor
             if (handleRatio < 1.5)  // 超出不到50%，可以尝试降级扫描
             {
                 LOG_INFO_F(AntiCheatLogger::LogCategory::SENSOR,
-                          "ProcessHandleSensor: 系统句柄数量略超上限 (%lu > %lu, 超出%.1f%%)，启用降级扫描模式",
-                          (ULONG)totalHandles, kMaxHandlesToScan, (handleRatio - 1.0) * 100.0);
+                           "ProcessHandleSensor: 系统句柄数量略超上限 (%lu > %lu, 超出%.1f%%)，启用降级扫描模式",
+                           (ULONG)totalHandles, kMaxHandlesToScan, (handleRatio - 1.0) * 100.0);
                 // 继续执行，但会通过游标机制自动限制扫描量
             }
             else
             {
                 // 超出太多，直接跳过
-                LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR,
-                              "ProcessHandleSensor: 系统句柄数量严重超限 (%lu > %lu, 超出%.1f%%)，跳过扫描以确保系统性能。"
-                              "建议：1) 检查系统是否有句柄泄漏 2) 考虑增加max_handle_scan_count配置值",
-                              (ULONG)totalHandles, kMaxHandlesToScan, (handleRatio - 1.0) * 100.0);
+                LOG_WARNING_F(
+                        AntiCheatLogger::LogCategory::SENSOR,
+                        "ProcessHandleSensor: 系统句柄数量严重超限 (%lu > %lu, 超出%.1f%%)，跳过扫描以确保系统性能。"
+                        "建议：1) 检查系统是否有句柄泄漏 2) 考虑增加max_handle_scan_count配置值",
+                        (ULONG)totalHandles, kMaxHandlesToScan, (handleRatio - 1.0) * 100.0);
                 RecordFailure(anti_cheat::PROCESS_HANDLE_HANDLE_COUNT_EXCEEDED);
                 return SensorExecutionResult::FAILURE;
             }
@@ -3706,7 +3722,6 @@ class ProcessHandleSensor : public ISensor
         return pointsToUs;
     }
 };
-
 class ThreadAndModuleActivitySensor : public ISensor
 {
    public:
@@ -3877,9 +3892,11 @@ class ThreadAndModuleActivitySensor : public ISensor
                     std::wstring modulePath;
                     if (!context.IsAddressInLegitimateModule(startAddress, modulePath))
                     {
+                        // 获取线程详细信息
+                        std::string threadDetails = GetThreadDetailedInfo(threadId, startAddress);
+
                         std::ostringstream oss;
-                        oss << "检测到新线程 (TID: " << threadId << ") 的起始地址 (0x" << std::hex << startAddress
-                            << ") 不在任何已知模块中，疑似Shellcode。";
+                        oss << "【检测到可疑线程】新线程的起始地址不在任何已知模块中\n" << threadDetails;
                         context.AddEvidence(anti_cheat::RUNTIME_THREAD_NEW_UNKNOWN, oss.str());
                     }
                 }
@@ -3941,9 +3958,11 @@ class ThreadAndModuleActivitySensor : public ISensor
                 std::wstring modulePath;
                 if (!context.IsAddressInLegitimateModule(startAddress, modulePath))
                 {
+                    // 获取线程详细信息
+                    std::string threadDetails = GetThreadDetailedInfo(threadId, startAddress);
+
                     std::ostringstream oss;
-                    oss << "检测到线程(TID: " << threadId << ") 的起始地址 (0x" << std::hex << startAddress
-                        << ") 不在任何已知模块中，疑似Shellcode。";
+                    oss << "【检测到可疑线程】线程的起始地址不在任何已知模块中\n" << threadDetails;
                     context.AddEvidence(anti_cheat::RUNTIME_THREAD_NEW_UNKNOWN, oss.str());
                 }
             }
@@ -4006,6 +4025,466 @@ class ThreadAndModuleActivitySensor : public ISensor
         }
     }
 
+    // 获取线程详细信息的辅助函数
+    std::string GetThreadDetailedInfo(DWORD threadId, PVOID startAddress)
+    {
+        std::ostringstream oss;
+        oss << std::hex << std::uppercase;
+
+        // 防御性检查：确保NT API已初始化
+        if (!SystemUtils::g_pNtQueryInformationThread)
+        {
+            oss << "警告: NtQueryInformationThread API不可用，部分信息可能缺失\n";
+        }
+
+        // 优化：只打开一次线程句柄，复用所有操作
+        HANDLE hThread = OpenThread(THREAD_QUERY_INFORMATION, FALSE, threadId);
+        if (!hThread)
+        {
+            // 如果失败，尝试使用较少权限
+            hThread = OpenThread(THREAD_QUERY_LIMITED_INFORMATION, FALSE, threadId);
+        }
+
+        auto thread_closer = [](HANDLE h) {
+            if (h)
+                CloseHandle(h);
+        };
+        std::unique_ptr<void, decltype(thread_closer)> thread_handle(hThread, thread_closer);
+
+        // 初始化变量
+        DWORD ownerPid = 0;
+        std::wstring processName;
+        std::string suspectedOrigin = "未知";
+        bool isRemoteThread = false;
+
+        // 如果成功打开句柄，获取线程信息
+        if (hThread)
+        {
+            // 获取线程创建时间
+            FILETIME creationTime, exitTime, kernelTime, userTime;
+            if (GetThreadTimes(hThread, &creationTime, &exitTime, &kernelTime, &userTime))
+            {
+                SYSTEMTIME st;
+                FileTimeToSystemTime(&creationTime, &st);
+                oss << "创建时间: " << std::dec << st.wYear << "-" << std::setfill('0') << std::setw(2) << st.wMonth
+                    << "-" << std::setw(2) << st.wDay << " " << std::setw(2) << st.wHour << ":" << std::setw(2)
+                    << st.wMinute << ":" << std::setw(2) << st.wSecond << "\n";
+            }
+
+            // 获取线程名称 (需要 Windows 10 1607+)
+            typedef HRESULT(WINAPI * PGetThreadDescription)(HANDLE, PWSTR *);
+            static PGetThreadDescription pGetThreadDescription =
+                    (PGetThreadDescription)GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "GetThreadDescription");
+            if (pGetThreadDescription)
+            {
+                PWSTR threadName = nullptr;
+                if (SUCCEEDED(pGetThreadDescription(hThread, &threadName)) && threadName && wcslen(threadName) > 0)
+                {
+                    oss << "线程名称: " << Utils::WideToString(threadName) << "\n";
+                    LocalFree(threadName);
+                }
+            }
+
+            // 获取线程所属进程PID
+            if (SystemUtils::g_pNtQueryInformationThread)
+            {
+                THREAD_BASIC_INFORMATION tbi = {0};
+                ULONG returnLength = 0;
+                NTSTATUS status =
+                        SystemUtils::g_pNtQueryInformationThread(hThread,
+                                                                 (THREADINFOCLASS)0,  // ThreadBasicInformation is 0
+                                                                 &tbi, sizeof(tbi), &returnLength);
+                if (NT_SUCCESS(status))
+                {
+                    ownerPid = (DWORD)(ULONG_PTR)tbi.ClientId.UniqueProcess;
+                }
+            }
+        }
+
+        // 获取进程名称
+        if (ownerPid != 0)
+        {
+            processName = Utils::GetProcessNameByPid(ownerPid);
+        }
+
+        // 优化：只调用一次 VirtualQuery，复用结果
+        MEMORY_BASIC_INFORMATION mbi = {0};
+        bool hasMemoryInfo = (VirtualQuery(startAddress, &mbi, sizeof(mbi)) != 0);
+
+        // 分析威胁来源
+        if (ownerPid != 0 && ownerPid != GetCurrentProcessId())
+        {
+            isRemoteThread = true;
+            HANDLE hOwnerProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, ownerPid);
+            if (hOwnerProcess)
+            {
+                wchar_t ownerPath[MAX_PATH] = {0};
+                // 动态加载 GetModuleFileNameExW 以提高兼容性
+                typedef DWORD(WINAPI * PGetModuleFileNameExW)(HANDLE, HMODULE, LPWSTR, DWORD);
+                static PGetModuleFileNameExW pGetModuleFileNameExW = nullptr;
+                static bool checkedGetModuleFileNameExW = false;
+                if (!checkedGetModuleFileNameExW)
+                {
+                    HMODULE hPsapi = LoadLibraryW(L"psapi.dll");
+                    if (hPsapi)
+                    {
+                        pGetModuleFileNameExW = (PGetModuleFileNameExW)GetProcAddress(hPsapi, "GetModuleFileNameExW");
+                    }
+                    checkedGetModuleFileNameExW = true;
+                }
+                if (pGetModuleFileNameExW && pGetModuleFileNameExW(hOwnerProcess, nullptr, ownerPath, MAX_PATH) > 0)
+                {
+                    suspectedOrigin = "⚠️⚠️ 远程线程注入 (来自: " + Utils::WideToString(ownerPath) + ")";
+                }
+                else if (!processName.empty())
+                {
+                    suspectedOrigin = "⚠️⚠️ 远程线程注入 (来自进程: " + Utils::WideToString(processName) +
+                                      ", PID: " + std::to_string(ownerPid) + ")";
+                }
+                else
+                {
+                    suspectedOrigin = "⚠️⚠️ 远程线程注入 (来自 PID: " + std::to_string(ownerPid) + ")";
+                }
+                CloseHandle(hOwnerProcess);
+            }
+            else
+            {
+                if (!processName.empty())
+                {
+                    suspectedOrigin = "⚠️⚠️ 远程线程注入 (来自进程: " + Utils::WideToString(processName) +
+                                      ", PID: " + std::to_string(ownerPid) + ", 无法打开进程)";
+                }
+                else
+                {
+                    suspectedOrigin = "⚠️⚠️ 远程线程注入 (来自 PID: " + std::to_string(ownerPid) + ", 无法打开进程)";
+                }
+            }
+        }
+        else if (hasMemoryInfo && (ownerPid == GetCurrentProcessId() || ownerPid == 0))
+        {
+            // 内存属性分析（仅对当前进程的线程）
+            bool isExecutable = (mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE |
+                                                PAGE_EXECUTE_WRITECOPY)) != 0;
+            bool isWritable = (mbi.Protect & (PAGE_READWRITE | PAGE_EXECUTE_READWRITE | PAGE_WRITECOPY |
+                                              PAGE_EXECUTE_WRITECOPY)) != 0;
+
+            if (mbi.Type == MEM_PRIVATE && isExecutable && isWritable)
+            {
+                suspectedOrigin = "⚠️⚠️ Shellcode (私有可写可执行内存 - 高度可疑)";
+            }
+            else if (mbi.Type == MEM_PRIVATE && isExecutable)
+            {
+                suspectedOrigin = "⚠️ Shellcode (私有可执行内存)";
+            }
+            else if (mbi.Type == MEM_MAPPED && isExecutable)
+            {
+                suspectedOrigin = "⚠️ 可能的反射DLL注入 (映射文件可执行内存)";
+            }
+
+            // 检查是否为APC注入或系统API调用
+            HMODULE hNtdll = GetModuleHandleW(L"ntdll.dll");
+            HMODULE hKernel32 = GetModuleHandleW(L"kernel32.dll");
+
+            if (hNtdll)
+            {
+                FARPROC pKiUserApcDispatcher = GetProcAddress(hNtdll, "KiUserApcDispatcher");
+                FARPROC pAsmKiUserApcDispatcher = GetProcAddress(hNtdll, "AsmKiUserApcDispatcher");
+                if (startAddress == pKiUserApcDispatcher || startAddress == pAsmKiUserApcDispatcher)
+                {
+                    suspectedOrigin = "⚠️⚠️ APC注入 (起始于 ntdll APC分发函数)";
+                }
+                else
+                {
+                    // 检查其他NTDLL API
+                    FARPROC pLdrLoadDll = GetProcAddress(hNtdll, "LdrLoadDll");
+                    FARPROC pRtlUserThreadStart = GetProcAddress(hNtdll, "RtlUserThreadStart");
+                    FARPROC pNtCreateThread = GetProcAddress(hNtdll, "NtCreateThread");
+                    FARPROC pNtCreateThreadEx = GetProcAddress(hNtdll, "NtCreateThreadEx");
+
+                    if (startAddress == pLdrLoadDll)
+                    {
+                        suspectedOrigin = "⚠️⚠️ 可疑: 线程起始于LdrLoadDll API (可能是DLL注入)";
+                    }
+                    else if (startAddress == pRtlUserThreadStart)
+                    {
+                        suspectedOrigin = "备注: 线程起始于RtlUserThreadStart (正常线程入口)";
+                    }
+                    else if (startAddress == pNtCreateThread || startAddress == pNtCreateThreadEx)
+                    {
+                        suspectedOrigin = "⚠️ 可疑: 线程起始于NtCreateThread API";
+                    }
+                }
+            }
+
+            if (hKernel32)
+            {
+                FARPROC pLoadLibraryA = GetProcAddress(hKernel32, "LoadLibraryA");
+                FARPROC pLoadLibraryW = GetProcAddress(hKernel32, "LoadLibraryW");
+                FARPROC pLoadLibraryExA = GetProcAddress(hKernel32, "LoadLibraryExA");
+                FARPROC pLoadLibraryExW = GetProcAddress(hKernel32, "LoadLibraryExW");
+
+                if (startAddress == pLoadLibraryA || startAddress == pLoadLibraryW || startAddress == pLoadLibraryExA ||
+                    startAddress == pLoadLibraryExW)
+                {
+                    suspectedOrigin = "⚠️⚠️ 可疑: 线程起始于LoadLibrary API (可能是DLL注入)";
+                }
+            }
+        }
+
+        // === 输出格式优化：关键信息前置 ===
+        oss << "\n【威胁评估】" << suspectedOrigin << "\n";
+        oss << "\n【关键信息】\n";
+        oss << "  线程ID (TID): " << std::dec << threadId << "\n";
+        oss << "  起始地址: 0x" << std::hex << reinterpret_cast<uintptr_t>(startAddress) << "\n";
+        if (ownerPid != 0)
+        {
+            oss << "  所属进程PID: " << std::dec << ownerPid << "\n";
+            if (!processName.empty())
+            {
+                oss << "  所属进程名: " << Utils::WideToString(processName) << "\n";
+            }
+        }
+        if (ownerPid == GetCurrentProcessId())
+        {
+            oss << "  备注: 这是当前进程的线程\n";
+        }
+
+        // --- 内存详细信息 ---
+        oss << "\n【内存详细信息】\n";
+        if (hasMemoryInfo)
+        {
+            oss << "内存区域基址: 0x" << std::hex << reinterpret_cast<uintptr_t>(mbi.BaseAddress) << "\n";
+            oss << "分配基址: 0x" << reinterpret_cast<uintptr_t>(mbi.AllocationBase) << "\n";
+            oss << "内存区域大小: 0x" << mbi.RegionSize << " (" << std::dec << (mbi.RegionSize / 1024) << " KB)\n";
+
+            // 内存保护属性（当前）
+            oss << "当前保护属性: ";
+            if (mbi.Protect & PAGE_EXECUTE)
+                oss << "EXECUTE ";
+            if (mbi.Protect & PAGE_EXECUTE_READ)
+                oss << "EXECUTE_READ ";
+            if (mbi.Protect & PAGE_EXECUTE_READWRITE)
+                oss << "EXECUTE_READWRITE ";
+            if (mbi.Protect & PAGE_EXECUTE_WRITECOPY)
+                oss << "EXECUTE_WRITECOPY ";
+            if (mbi.Protect & PAGE_READONLY)
+                oss << "READONLY ";
+            if (mbi.Protect & PAGE_READWRITE)
+                oss << "READWRITE ";
+            if (mbi.Protect & PAGE_WRITECOPY)
+                oss << "WRITECOPY ";
+            if (mbi.Protect & PAGE_NOACCESS)
+                oss << "NOACCESS ";
+            if (mbi.Protect & PAGE_GUARD)
+                oss << "[GUARD] ";
+            if (mbi.Protect & PAGE_NOCACHE)
+                oss << "[NOCACHE] ";
+            oss << "(0x" << std::hex << mbi.Protect << ")\n";
+
+            // 初始保护属性
+            if (mbi.AllocationProtect != 0)
+            {
+                oss << "初始保护属性: ";
+                if (mbi.AllocationProtect & PAGE_EXECUTE)
+                    oss << "EXECUTE ";
+                if (mbi.AllocationProtect & PAGE_EXECUTE_READ)
+                    oss << "EXECUTE_READ ";
+                if (mbi.AllocationProtect & PAGE_EXECUTE_READWRITE)
+                    oss << "EXECUTE_READWRITE ";
+                if (mbi.AllocationProtect & PAGE_EXECUTE_WRITECOPY)
+                    oss << "EXECUTE_WRITECOPY ";
+                if (mbi.AllocationProtect & PAGE_READONLY)
+                    oss << "READONLY ";
+                if (mbi.AllocationProtect & PAGE_READWRITE)
+                    oss << "READWRITE ";
+                if (mbi.AllocationProtect & PAGE_WRITECOPY)
+                    oss << "WRITECOPY ";
+                if (mbi.AllocationProtect & PAGE_NOACCESS)
+                    oss << "NOACCESS ";
+                oss << "(0x" << std::hex << mbi.AllocationProtect << ")\n";
+
+                // 检测保护属性变化（可能是DEP绕过）
+                if (mbi.AllocationProtect != mbi.Protect)
+                {
+                    bool wasNonExecutable =
+                            !(mbi.AllocationProtect &
+                              (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY));
+                    bool nowExecutable = (mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE |
+                                                         PAGE_EXECUTE_WRITECOPY)) != 0;
+                    if (wasNonExecutable && nowExecutable)
+                    {
+                        oss << "⚠️ 警告: 内存保护属性已被修改为可执行 (可能的DEP绕过)\n";
+                    }
+                }
+            }
+
+            // 内存状态
+            oss << "内存状态: ";
+            if (mbi.State == MEM_COMMIT)
+                oss << "MEM_COMMIT (已提交)";
+            else if (mbi.State == MEM_RESERVE)
+                oss << "MEM_RESERVE (已保留)";
+            else if (mbi.State == MEM_FREE)
+                oss << "MEM_FREE (空闲)";
+            else
+                oss << "未知 (0x" << std::hex << mbi.State << ")";
+            oss << "\n";
+
+            // 内存类型
+            oss << "内存类型: ";
+            if (mbi.Type == MEM_IMAGE)
+                oss << "MEM_IMAGE (模块映像 - 正常DLL/EXE)";
+            else if (mbi.Type == MEM_MAPPED)
+                oss << "MEM_MAPPED (内存映射文件 - 可能是反射DLL)";
+            else if (mbi.Type == MEM_PRIVATE)
+                oss << "MEM_PRIVATE (私有内存 - 可能是动态代码)";
+            else if (mbi.Type == 0)
+                oss << "未分配";
+            else
+                oss << "未知 (0x" << std::hex << mbi.Type << ")";
+            oss << "\n";
+
+            // 尝试获取该地址附近的模块（使用AllocationBase更准确）
+            HMODULE hNearbyModule = nullptr;
+            bool foundModule = false;
+
+            // 先尝试从AllocationBase查找
+            if (GetModuleHandleExW(
+                        GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                        (LPCWSTR)mbi.AllocationBase, &hNearbyModule) &&
+                hNearbyModule)
+            {
+                foundModule = true;
+            }
+            // 如果失败，再尝试从BaseAddress查找
+            else if (GetModuleHandleExW(
+                             GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                             (LPCWSTR)mbi.BaseAddress, &hNearbyModule) &&
+                     hNearbyModule)
+            {
+                foundModule = true;
+            }
+
+            if (foundModule)
+            {
+                wchar_t modulePath[MAX_PATH] = {0};
+                if (GetModuleFileNameW(hNearbyModule, modulePath, MAX_PATH) > 0)
+                {
+                    oss << "关联模块: " << Utils::WideToString(modulePath) << "\n";
+                    oss << "模块基址: 0x" << std::hex << reinterpret_cast<uintptr_t>(hNearbyModule) << "\n";
+                    intptr_t offset =
+                            reinterpret_cast<uintptr_t>(startAddress) - reinterpret_cast<uintptr_t>(hNearbyModule);
+                    oss << "相对偏移: +0x" << std::hex << offset << " (" << std::dec << offset << " 字节)\n";
+                }
+            }
+            else
+            {
+                oss << "关联模块: <未找到已加载的模块> ⚠️\n";
+            }
+
+            // 尝试读取起始地址的前几个字节（用于特征分析）
+            __try
+            {
+                BYTE headerBytes[16] = {0};
+                SIZE_T bytesRead = 0;
+                if (ReadProcessMemory(GetCurrentProcess(), startAddress, headerBytes, sizeof(headerBytes),
+                                      &bytesRead) &&
+                    bytesRead > 0)
+                {
+                    oss << "内存头部特征 (前16字节): ";
+                    for (SIZE_T i = 0; i < bytesRead; i++)
+                    {
+                        oss << std::hex << std::setfill('0') << std::setw(2) << (int)headerBytes[i] << " ";
+                    }
+                    oss << "\n";
+
+                    // 增强的shellcode特征识别
+                    if (bytesRead >= 2)
+                    {
+                        // 检查是否是PE头 (MZ)
+                        if (headerBytes[0] == 0x4D && headerBytes[1] == 0x5A)
+                        {
+                            oss << "特征: 检测到PE文件头 (MZ) - 可能是反射DLL注入\n";
+                        }
+                        // 检查已知shellcode模式
+                        else if (bytesRead >= 5)
+                        {
+                            // LdrLoadDll shellcode: 0x55, 0x8B, 0xEC, 0x8D, 0x5
+                            if (headerBytes[0] == 0x55 && headerBytes[1] == 0x8B && headerBytes[2] == 0xEC &&
+                                headerBytes[3] == 0x8D && headerBytes[4] == 0x5)
+                            {
+                                oss << "特征: 检测到LdrLoadDll shellcode模式 - 可能是DLL注入\n";
+                            }
+                            // ManualMap shellcode: 0x55, 0x8B, 0xEC, 0x51, 0x53, 0x8B
+                            else if (bytesRead >= 6 && headerBytes[0] == 0x55 && headerBytes[1] == 0x8B &&
+                                     headerBytes[2] == 0xEC && headerBytes[3] == 0x51 && headerBytes[4] == 0x53 &&
+                                     headerBytes[5] == 0x8B)
+                            {
+                                oss << "特征: 检测到ManualMap shellcode模式 - 可能是手动映射DLL注入\n";
+                            }
+                            // Reflective DLL shellcode: 0x55, 0x89, 0xE5, 0x53, 0x83, 0xEC, 0x54, 0x8B
+                            else if (bytesRead >= 8 && headerBytes[0] == 0x55 && headerBytes[1] == 0x89 &&
+                                     headerBytes[2] == 0xE5 && headerBytes[3] == 0x53 && headerBytes[4] == 0x83 &&
+                                     headerBytes[5] == 0xEC && headerBytes[6] == 0x54 && headerBytes[7] == 0x8B)
+                            {
+                                oss << "特征: 检测到Reflective DLL shellcode模式 - 可能是反射DLL注入\n";
+                            }
+                            // Manual Load shellcode: 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x20, 0x53, 0x56
+                            else if (bytesRead >= 8 && headerBytes[0] == 0x55 && headerBytes[1] == 0x8B &&
+                                     headerBytes[2] == 0xEC && headerBytes[3] == 0x83 && headerBytes[4] == 0xEC &&
+                                     headerBytes[5] == 0x20 && headerBytes[6] == 0x53 && headerBytes[7] == 0x56)
+                            {
+                                oss << "特征: 检测到Manual Load shellcode模式 - 可能是手动加载DLL\n";
+                            }
+                            // Thread hijack shellcode: 0x68, 0xCC, 0xCC, 0xCC, 0xCC, 0x60, 0x9C, 0xBB, 0xCC, 0xCC
+                            else if (bytesRead >= 10 && headerBytes[0] == 0x68 &&
+                                     (headerBytes[1] == 0xCC || headerBytes[1] == 0x00) &&
+                                     (headerBytes[2] == 0xCC || headerBytes[2] == 0x00) &&
+                                     (headerBytes[3] == 0xCC || headerBytes[3] == 0x00) &&
+                                     (headerBytes[4] == 0xCC || headerBytes[4] == 0x00) && headerBytes[5] == 0x60 &&
+                                     headerBytes[6] == 0x9C && headerBytes[7] == 0xBB)
+                            {
+                                oss << "特征: 检测到Thread hijack shellcode模式 - 可能是线程劫持注入\n";
+                            }
+                            // CreateRemoteThreadEx shellcode: 0xE8, 0x1D, 0x00, 0x00, 0x00, 0x50, 0x68, 0x58, 0x58,
+                            // 0xC3
+                            else if (bytesRead >= 10 && headerBytes[0] == 0xE8 && headerBytes[1] == 0x1D &&
+                                     headerBytes[2] == 0x00 && headerBytes[3] == 0x00 && headerBytes[4] == 0x00 &&
+                                     headerBytes[5] == 0x50 && headerBytes[6] == 0x68 && headerBytes[7] == 0x58 &&
+                                     headerBytes[8] == 0x58 && headerBytes[9] == 0xC3)
+                            {
+                                oss << "特征: 检测到CreateRemoteThreadEx shellcode模式 - 可能是远程线程注入\n";
+                            }
+                            // 检查常见的shellcode特征（通用模式）
+                            else if (headerBytes[0] == 0xE8 || headerBytes[0] == 0xE9)  // CALL/JMP
+                            {
+                                oss << "特征: 检测到跳转指令 (CALL/JMP) - 常见于shellcode\n";
+                            }
+                            else if (headerBytes[0] == 0x55 && headerBytes[1] == 0x8B)  // PUSH EBP; MOV EBP, ESP
+                            {
+                                oss << "特征: 检测到函数序言 (PUSH EBP; MOV) - 可能是正常函数或shellcode\n";
+                            }
+                            else if (headerBytes[0] == 0xFC)  // CLD
+                            {
+                                oss << "特征: 检测到CLD指令 - 常见于shellcode\n";
+                            }
+                        }
+                    }
+                }
+            }
+            __except (EXCEPTION_EXECUTE_HANDLER)
+            {
+                DWORD exceptionCode = GetExceptionCode();
+                oss << "无法读取内存内容 (异常代码: 0x" << std::hex << exceptionCode << ")\n";
+            }
+        }
+        else
+        {
+            oss << "无法查询内存信息 (VirtualQuery失败)。\n";
+        }
+
+        return oss.str();
+    }
     bool ScanModulesWithTimeout(ScanContext &context, int budget_ms,
                                 const std::chrono::steady_clock::time_point &startTime)
     {
@@ -4105,7 +4584,7 @@ class MemorySecuritySensor : public ISensor
                 if (std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count() > budget_ms)
                 {
                     LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR,
-                                 "MemorySecuritySensor: 内存扫描超时，已扫描%zu个区域", regionsScanned);
+                                  "MemorySecuritySensor: 内存扫描超时，已扫描%zu个区域", regionsScanned);
                     RecordFailure(anti_cheat::MEMORY_SCAN_TIMEOUT);
                     timeoutOccurred = true;
                     return false;  // 返回 false 立即停止扫描
@@ -4804,7 +5283,6 @@ CheatMonitor &CheatMonitor::GetInstance()
     static CheatMonitor instance;
     return instance;
 }
-
 CheatMonitor::CheatMonitor() : m_pimpl(std::make_unique<Pimpl>())
 {
 }
@@ -5402,24 +5880,71 @@ void CheatMonitor::Pimpl::AddEvidence(anti_cheat::CheatCategory category, const 
 
 void CheatMonitor::Pimpl::UploadHardwareReport()
 {
+    auto sendWithFingerprint = [&](std::unique_ptr<anti_cheat::HardwareFingerprint> fp) {
+        if (!fp)
+        {
+            fp = std::make_unique<anti_cheat::HardwareFingerprint>();
+            fp->set_os_version("ERROR:FingerprintNull");
+        }
+
+        anti_cheat::Report report;
+        report.set_type(anti_cheat::REPORT_HARDWARE);
+
+        auto hardware_report = report.mutable_hardware();
+        hardware_report->set_report_id(Utils::GenerateUuid());
+        hardware_report->set_report_timestamp_ms(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                                         std::chrono::system_clock::now().time_since_epoch())
+                                                         .count());
+        *hardware_report->mutable_fingerprint() = *fp;
+
+        SendReport(report);
+    };
+
     if (!m_hwCollector)
+    {
+        auto fp = std::make_unique<anti_cheat::HardwareFingerprint>();
+        fp->set_disk_serial("ERROR:CollectorNull");
+        fp->add_mac_addresses("ERROR:CollectorNull");
+        fp->set_computer_name("ERROR:CollectorNull");
+        fp->set_os_version("ERROR:CollectorNull");
+        fp->set_cpu_info("ERROR:CollectorNull");
+        sendWithFingerprint(std::move(fp));
         return;
+    }
+
+    // 修复：如果fingerprint已被消费（多开场景），先重新收集
+    if (!m_hwCollector->GetFingerprint())
+    {
+        bool collected = m_hwCollector->EnsureCollected();
+        if (!collected && !m_hwCollector->GetFingerprint())
+        {
+            auto fp = std::make_unique<anti_cheat::HardwareFingerprint>();
+            fp->set_os_version("ERROR:EnsureCollectedFailed");
+            fp->add_mac_addresses("ERROR:EnsureCollectedFailed");
+            sendWithFingerprint(std::move(fp));
+            return;
+        }
+    }
 
     auto fp = m_hwCollector->ConsumeFingerprint();
     if (!fp)
+    {
+        auto fallback = std::make_unique<anti_cheat::HardwareFingerprint>();
+        fallback->set_os_version("ERROR:ConsumeFingerprintNull");
+        fallback->add_mac_addresses("ERROR:ConsumeFingerprintNull");
+        sendWithFingerprint(std::move(fallback));
         return;
+    }
 
-    anti_cheat::Report report;
-    report.set_type(anti_cheat::REPORT_HARDWARE);
+    // 检查硬件信息是否为空（可能是沙箱环境）
+    if (fp->disk_serial().empty() && fp->mac_addresses().empty() && fp->computer_name().empty() &&
+        fp->cpu_info().empty())
+    {
+        fp->set_os_version("ERROR:FingerprintEmpty");
+        fp->add_mac_addresses("ERROR:FingerprintEmpty");
+    }
 
-    auto hardware_report = report.mutable_hardware();
-    hardware_report->set_report_id(Utils::GenerateUuid());
-    hardware_report->set_report_timestamp_ms(
-            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
-                    .count());
-    *hardware_report->mutable_fingerprint() = *fp;
-
-    SendReport(report);
+    sendWithFingerprint(std::move(fp));
 }
 
 void CheatMonitor::Pimpl::UploadEvidenceReport()
@@ -5568,7 +6093,6 @@ void CheatMonitor::Pimpl::RecordSensorExecutionStats(const char *name, int durat
         (*stats.mutable_failure_reasons())[static_cast<int32_t>(failureReason)]++;
     }
 }
-
 void CheatMonitor::Pimpl::RecordSensorWorkloadCounters(const std::string &name, uint64_t snapshot_size,
                                                        uint64_t attempts, uint64_t hits)
 {

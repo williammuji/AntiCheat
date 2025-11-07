@@ -1,4 +1,5 @@
 ﻿#include "HardwareInfoCollector.h"
+#include "Logger.h"
 
 #include <windows.h>
 #include <winternl.h>  // For NTSTATUS and NT_SUCCESS
@@ -76,10 +77,20 @@ bool HardwareInfoCollector::EnsureCollected()
     {
         fingerprint_->set_disk_serial(std::to_string(serialNum));
     }
+    else
+    {
+        DWORD error = GetLastError();
+        LOG_WARNING_F(AntiCheatLogger::LogCategory::SYSTEM,
+                      "HardwareInfoCollector: GetVolumeInformationW failed, error=%lu (possible sandbox)", error);
+        fingerprint_->set_disk_serial("ERROR:GetVolumeInformationW:" + std::to_string(error));
+    }
 
     // 2. MAC Addresses - 生产环境增强：过滤虚拟网卡
     ULONG ulOutBufLen = sizeof(IP_ADAPTER_INFO);
     PIP_ADAPTER_INFO pAdapterInfo = (IP_ADAPTER_INFO*)malloc(ulOutBufLen);
+    int macCount = 0;
+    int filteredCount = 0;
+
     if (pAdapterInfo)
     {
         // 处理缓冲区大小不足的情况
@@ -102,6 +113,7 @@ bool HardwareInfoCollector::EnsureCollected()
                 // 生产环境优化：过滤虚拟网卡和无效MAC
                 if (cur->AddressLength >= 6 && cur->Type == MIB_IF_TYPE_ETHERNET)
                 {
+                    macCount++;
                     char macStr[18] = {0};
                     sprintf_s(macStr, sizeof(macStr), "%02X:%02X:%02X:%02X:%02X:%02X", cur->Address[0], cur->Address[1],
                               cur->Address[2], cur->Address[3], cur->Address[4], cur->Address[5]);
@@ -112,12 +124,43 @@ bool HardwareInfoCollector::EnsureCollected()
                     {
                         fingerprint_->add_mac_addresses(macStr);
                     }
+                    else
+                    {
+                        filteredCount++;
+                    }
                 }
                 cur = cur->Next;
             }
         }
+        else
+        {
+            LOG_WARNING_F(AntiCheatLogger::LogCategory::SYSTEM,
+                          "HardwareInfoCollector: GetAdaptersInfo failed, result=%lu (possible sandbox)", result);
+            fingerprint_->add_mac_addresses("ERROR:GetAdaptersInfo:" + std::to_string(result));
+        }
+
         if (pAdapterInfo)
             free(pAdapterInfo);
+    }
+    else
+    {
+        LOG_WARNING(AntiCheatLogger::LogCategory::SYSTEM,
+                    "HardwareInfoCollector: Failed to allocate memory for adapter info");
+        fingerprint_->add_mac_addresses("ERROR:AllocateAdapterInfoFailed");
+    }
+
+    if (macCount == 0 && fingerprint_->mac_addresses().empty())
+    {
+        fingerprint_->add_mac_addresses("ERROR:NoPhysicalMacFound");
+    }
+
+    // 如果所有MAC都被过滤，记录警告（可能是沙箱环境）
+    if (macCount > 0 && fingerprint_->mac_addresses().empty())
+    {
+        LOG_WARNING_F(AntiCheatLogger::LogCategory::SYSTEM,
+                      "HardwareInfoCollector: All %d MAC addresses were filtered (possible sandbox)", macCount);
+        fingerprint_->add_mac_addresses("ERROR:AllMacFiltered:count=" + std::to_string(macCount) +
+                                        ";filtered=" + std::to_string(filteredCount));
     }
 
     // 3. Computer Name
@@ -127,30 +170,36 @@ bool HardwareInfoCollector::EnsureCollected()
     {
         fingerprint_->set_computer_name(WideToUtf8(computerName));
     }
+    else
+    {
+        DWORD error = GetLastError();
+        LOG_WARNING_F(AntiCheatLogger::LogCategory::SYSTEM,
+                      "HardwareInfoCollector: GetComputerNameW failed, error=%lu (possible sandbox)", error);
+        fingerprint_->set_computer_name("ERROR:GetComputerNameW:" + std::to_string(error));
+    }
 
     // 4. OS Version - 使用RtlGetVersion获取准确的系统版本信息
     {
         // 定义RtlGetVersion函数指针类型
-        using RtlGetVersionFunc = NTSTATUS (WINAPI *)(PRTL_OSVERSIONINFOW);
-        
+        using RtlGetVersionFunc = NTSTATUS(WINAPI*)(PRTL_OSVERSIONINFOW);
+
         // 获取ntdll.dll模块句柄
         HMODULE hNtdll = GetModuleHandleW(L"ntdll.dll");
         if (hNtdll)
         {
             // 获取RtlGetVersion函数地址
-            RtlGetVersionFunc RtlGetVersion = reinterpret_cast<RtlGetVersionFunc>(
-                GetProcAddress(hNtdll, "RtlGetVersion"));
-            
+            RtlGetVersionFunc RtlGetVersion =
+                    reinterpret_cast<RtlGetVersionFunc>(GetProcAddress(hNtdll, "RtlGetVersion"));
+
             if (RtlGetVersion)
             {
                 RTL_OSVERSIONINFOW osInfo = {};
                 osInfo.dwOSVersionInfoSize = sizeof(osInfo);
-                
+
                 if (NT_SUCCESS(RtlGetVersion(&osInfo)))
                 {
                     std::wstringstream wss;
-                    wss << L"Windows " << osInfo.dwMajorVersion << L"." 
-                        << osInfo.dwMinorVersion << L" (Build " 
+                    wss << L"Windows " << osInfo.dwMajorVersion << L"." << osInfo.dwMinorVersion << L" (Build "
                         << osInfo.dwBuildNumber << L")";
                     fingerprint_->set_os_version(WideToUtf8(wss.str()));
                 }
@@ -184,6 +233,24 @@ bool HardwareInfoCollector::EnsureCollected()
         __cpuid(cpu_info, 0x80000004);
         memcpy(cpu_brand + 32, cpu_info, sizeof(cpu_info));
         fingerprint_->set_cpu_info(cpu_brand);
+    }
+    else
+    {
+        LOG_WARNING_F(AntiCheatLogger::LogCategory::SYSTEM,
+                      "HardwareInfoCollector: CPU info collection failed, max_id=0x%x (possible sandbox)", max_id);
+        std::ostringstream oss;
+        oss << "ERROR:CPUID:max_id=0x" << std::hex << max_id;
+        fingerprint_->set_cpu_info(oss.str());
+    }
+
+    // 检查收集结果：如果所有硬件信息都为空，可能是沙箱环境
+    bool hasAnyInfo = !fingerprint_->disk_serial().empty() || !fingerprint_->mac_addresses().empty() ||
+                      !fingerprint_->computer_name().empty() || !fingerprint_->cpu_info().empty();
+
+    if (!hasAnyInfo)
+    {
+        LOG_WARNING(AntiCheatLogger::LogCategory::SYSTEM,
+                    "HardwareInfoCollector: All hardware info collection failed (possible sandbox environment)");
     }
 
     return true;
