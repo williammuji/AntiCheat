@@ -43,7 +43,7 @@ enum CheatCategory {
 // 传感器失败原因枚举 - 统一所有传感器的失败原因分类
 enum SensorFailureReason {
   UNKNOWN_FAILURE = 0;
-  
+
   // === 通用系统级失败 (1-99) ===
   GET_MODULE_HANDLE_FAILED = 1;        // GetModuleHandle失败
   VIRTUAL_QUERY_FAILED = 2;            // VirtualQuery失败
@@ -66,7 +66,7 @@ enum SensorFailureReason {
   HEAD_POINTER_FAILED = 19;            // 头指针失败
   MEMORY_ACCESS_EXCEPTION = 20;        // 内存访问异常
   PE_CHECK_FAILED = 21;                // PE文件头检查失败
-  
+
   // === 重量级传感器特定失败 (100-199) ===
   VEH_TRAVERSE_FAILED = 100;           // VEH链表遍历失败
   MEMORY_SCAN_TIMEOUT = 101;           // 内存扫描超时
@@ -78,22 +78,22 @@ enum SensorFailureReason {
   PROCESS_HANDLE_GET_PATH_FAILED = 107; // 进程句柄检测：获取进程路径失败
   PROCESS_HANDLE_GET_PROCESS_ID_FAILED = 108; // 进程句柄检测：GetCurrentProcessId失败
   PROCESS_HANDLE_GET_PROCESS_TIMES_FAILED = 109; // 进程句柄检测：GetProcessTimes失败
-  
+
   // === VEH Hook传感器特定失败 (110-119) ===
   VEH_OS_VERSION_UNSUPPORTED = 110;    // VEH检测：OS版本不支持
   VEH_WINDOWS_VERSION_UNKNOWN = 111;   // VEH检测：Windows版本未知
   VEH_LIST_ADDRESS_FAILED = 112;       // VEH检测：链表地址获取失败
   VEH_LIST_ACCESS_FAILED = 113;        // VEH检测：链表访问失败
   VEH_HEAD_POINTER_INVALID = 114;      // VEH检测：头指针无效
-  
+
   // === 通用超时失败 (120-129) ===
   EXECUTION_TIMEOUT = 120;             // 执行超时
-  
+
   // === 内存安全传感器特定失败 (130-134) ===
   MEMORY_GET_MODULE_HANDLE_FAILED = 130;  // 内存检测：GetModuleHandleExW失败
   MEMORY_SECURITY_ACCESS_EXCEPTION = 131; // 内存检测：内存访问异常
   MEMORY_OS_VERSION_UNSUPPORTED = 132;    // 内存检测：OS版本不支持
-  
+
   // === 线程和模块活动传感器特定失败 (140-149) ===
   THREAD_MODULE_OS_VERSION_UNSUPPORTED = 140;  // 线程模块检测：OS版本不支持
   THREAD_MODULE_SYSTEM_API_FAILED = 141;       // 线程模块检测：系统API不可用
@@ -105,7 +105,7 @@ enum SensorFailureReason {
   THREAD_MODULE_CREATE_SNAPSHOT_FAILED = 147;  // 线程模块检测：CreateToolhelp32Snapshot失败
   THREAD_MODULE_GET_PROCESS_ID_FAILED = 148;   // 线程模块检测：GetCurrentProcessId失败
   THREAD_MODULE_GET_PROCESS_TIMES_FAILED = 149; // 线程模块检测：GetProcessTimes失败
-  
+
   // === 轻量级传感器特定失败 (200-210) ===
   PROCESS_ENUM_FAILED = 200;           // 进程枚举失败
   IAT_OS_VERSION_UNSUPPORTED = 201;    // IAT检测：OS版本不支持
@@ -122,7 +122,7 @@ enum SensorFailureReason {
   SYSTEM_CODE_INTEGRITY_QUERY_FAILED = 217; // 系统代码完整性：NtQuerySystemInformation失败
   ANTI_DEBUG_OS_VERSION_UNSUPPORTED = 218; // 反调试检测：OS版本不支持
   PROCESS_HANDLE_QUERY_SYSTEM_INFO_FAILED = 219; // 进程句柄检测：NtQuerySystemInformation失败
-  
+
   // === IAT Hook传感器特定失败 (220-230) ===
   IAT_DOS_HEADER_INVALID = 220;        // IAT检测：DOS头无效
   IAT_NT_HEADER_INVALID = 221;         // IAT检测：NT头无效
@@ -134,25 +134,25 @@ enum SensorFailureReason {
   IAT_GET_MODULE_HANDLE_FAILED = 227;  // IAT检测：GetModuleHandle失败
   IAT_VIRTUAL_QUERY_FAILED = 228;      // IAT检测：VirtualQuery失败
   IAT_MEMORY_STATE_ABNORMAL = 229;     // IAT检测：内存状态异常
-  
+
   // === 模块完整性传感器特定失败 (230-240) ===
   MODULE_INTEGRITY_GET_MODULE_PATH_FAILED = 230; // 模块完整性检测：GetModuleFileNameW失败
   MODULE_INTEGRITY_GET_CODE_SECTION_FAILED = 231; // 模块完整性检测：GetModuleCodeSectionInfo失败
   MODULE_INTEGRITY_MEMORY_ACCESS_EXCEPTION = 232; // 模块完整性检测：内存访问异常
-  
+
   // === 进程句柄传感器特定失败 (240-250) ===
   PROCESS_HANDLE_OPEN_PROCESS_FAILED = 240; // 进程句柄检测：OpenProcess失败
   PROCESS_HANDLE_BUFFER_SIZE_EXCEEDED = 241; // 进程句柄检测：缓冲区大小超限
   PROCESS_HANDLE_RETRY_EXCEEDED = 242; // 进程句柄检测：重试次数过多
   PROCESS_HANDLE_HANDLE_COUNT_EXCEEDED = 243; // 进程句柄检测：句柄数量超限
   PROCESS_HANDLE_SENSOR_SCAN_TIMEOUT = 244; // 进程句柄检测：扫描超时
-  
+
   // === VEH Hook传感器特定失败 (250-260) ===
   VEH_EXECUTION_TIMEOUT = 250; // VEH检测：执行超时
   VEH_POINTER_VALIDATION_FAILED = 251; // VEH检测：指针验证失败
   VEH_VIRTUAL_QUERY_FAILED = 252; // VEH检测：VirtualQuery失败
   VEH_MEMORY_STATE_ABNORMAL = 253; // VEH检测：内存状态异常
-  
+
   // === 异常相关失败 (300-399) ===
   CPP_EXCEPTION_FAILURE = 300;         // C++异常失败
   UNKNOWN_EXCEPTION_FAILURE = 301;     // 未知异常失败
@@ -207,6 +207,7 @@ enum ReportType {
   REPORT_HARDWARE = 1;    // 硬件信息上报
   REPORT_EVIDENCE = 2;    // 作弊证据上报
   REPORT_TELEMETRY = 3;   // 遥测数据上报
+  REPORT_TARGETED_SENSOR = 4; // 临时单次传感器扫描结果
 }
 
 // 硬件信息专用上报消息
@@ -216,7 +217,7 @@ message HardwareReport {
   HardwareFingerprint fingerprint = 3;
 }
 
-// 作弊证据专用上报消息  
+// 作弊证据专用上报消息
 message EvidenceReport {
   string report_id = 1;
   uint64 report_timestamp_ms = 2;
@@ -230,14 +231,27 @@ message TelemetryReport {
   TelemetryMetrics metrics = 3;
 }
 
+// 单次临时传感器扫描结果上报
+message TargetedSensorReport {
+  string report_id = 1;
+  uint64 report_timestamp_ms = 2;
+  string request_id = 3;
+  string sensor_name = 4;
+  bool success = 5;
+  SensorFailureReason failure_reason = 6;
+  uint64 duration_ms = 7;
+  string notes = 8;
+}
+
 // 统一的上报包装器
 message Report {
   ReportType type = 1;
-  
+
   oneof report_data {
     HardwareReport hardware = 2;
     EvidenceReport evidence = 3;
     TelemetryReport telemetry = 4;
+    TargetedSensorReport targeted_sensor = 5;
   }
 }
 
@@ -265,17 +279,17 @@ message SensorExecutionStats {
   uint32 avg_success_time_ms = 3;     // 平均成功执行时间(毫秒)
   uint32 max_success_time_ms = 4;     // 最大成功执行时间(毫秒)
   uint32 min_success_time_ms = 5;     // 最小成功执行时间(毫秒)
-  
+
   // 失败统计
   uint32 failure_count = 6;           // 失败次数
   uint64 total_failure_time_ms = 7;   // 总失败执行时间(毫秒)
   uint32 avg_failure_time_ms = 8;     // 平均失败执行时间(毫秒)
   uint32 max_failure_time_ms = 9;     // 最大失败执行时间(毫秒)
   uint32 min_failure_time_ms = 10;    // 最小失败执行时间(毫秒)
-  
+
   // 超时统计
   uint32 timeout_count = 11;          // 超时次数
-  
+
   // 失败原因统计
   map<int32, uint32> failure_reasons = 12; // 失败原因enum -> 次数
 
@@ -319,7 +333,7 @@ message ClientConfig {
   // --- 容量与缓存控制 ---
   optional int32 process_cache_duration_minutes = 14;
   optional int32 signature_cache_duration_minutes = 15;
-  
+
   // --- 签名验证节流控制 ---
   optional int32 signature_verification_throttle_seconds = 16;  // 签名验证成功/失败后的节流时间(秒)
   optional int32 signature_verification_failure_throttle_ms = 17;  // 签名验证失败后的节流时间(毫秒)
@@ -330,7 +344,7 @@ message ClientConfig {
   optional int32 max_processes_to_scan = 20; // 最大进程扫描数量
   optional int32 min_memory_region_size = 21; // 最小内存区域大小(字节)
   optional int32 max_memory_region_size = 22; // 最大内存区域大小(字节)
-  
+
   // --- 性能调优参数 ---
   optional int32 max_window_count = 23; // 最大窗口数量限制
   optional int32 max_handle_scan_count = 24; // 最大句柄扫描数量
@@ -341,11 +355,16 @@ message ClientConfig {
   optional OsVersion min_os_version = 27;  // 最低OS版本要求
 
   // --- 通用配置参数（所有Sensor共用） ---
-  optional int32 heavy_scan_budget_ms = 28;          // 重量级扫描预算时间(毫秒)  
+  optional int32 heavy_scan_budget_ms = 28;          // 重量级扫描预算时间(毫秒)
 
   // --- 时间片扫描限额（游标式遍历） ---
   optional int32 max_pid_attempts_per_scan = 29;     // 每次句柄扫描最多尝试的新PID数量
   optional int32 max_modules_per_scan = 30;          // 每次模块完整性扫描最多处理的模块数量
   optional int32 pid_throttle_minutes = 31;          // PID节流时长（分钟）
+}
 
+// 服务器下发的单次临时传感器扫描指令
+message TargetedSensorCommand {
+  string request_id = 1;
+  string sensor_name = 2; // 例如 "ProcessAndWindowMonitorSensor" 或 "ModuleIntegritySensor"
 }

@@ -5,6 +5,7 @@
 
 #include <sstream>
 #include <iomanip>
+#include <limits>
 
 // 定义 NOMINMAX 宏以防止 Windows.h 定义 min/max 宏,
 // 从而解决与 std::max 的编译冲突。
@@ -1086,6 +1087,16 @@ struct CheatMonitor::Pimpl
     size_t m_heavySensorIndex = 0;
     std::vector<std::unique_ptr<ISensor>> m_lightweightSensors;
     std::vector<std::unique_ptr<ISensor>> m_heavyweightSensors;
+    std::unordered_map<std::string, ISensor *> m_sensorRegistry;
+
+    struct TargetedScanRequest
+    {
+        std::string requestId;
+        std::string sensorName;
+    };
+    std::mutex m_targetedScanMutex;
+    std::deque<TargetedScanRequest> m_targetedScanQueue;
+    std::unordered_set<std::string> m_consumedTargetedScanIds;
 
     // （回退）移除轻量归因缓存与方法
 
@@ -1112,13 +1123,23 @@ struct CheatMonitor::Pimpl
     const std::chrono::milliseconds GetHeavyScanInterval() const;
     void ExecuteLightweightSensors();
     void ExecuteHeavyweightSensors();
-    void ExecuteAndMonitorSensor(ISensor *sensor, const char *name, bool isHeavyweight);
+    SensorExecutionResult ExecuteAndMonitorSensor(ISensor *sensor, const char *name, bool isHeavyweight,
+                                                  bool isTargetedScan = false,
+                                                  anti_cheat::SensorFailureReason *outFailure = nullptr,
+                                                  int *outDurationMs = nullptr);
     void AddRandomJitter();
     void WakeMonitor()
     {
         std::lock_guard<std::mutex> lk(m_cvMutex);
         m_cv.notify_all();
     }
+    void ProcessPendingTargetedScans();
+    void RunTargetedSensorScan(const TargetedScanRequest &request);
+    void SubmitTargetedScanRequest(const std::string &requestId, const std::string &sensorName);
+    bool TryDequeueTargetedScan(TargetedScanRequest &outRequest);
+    void UploadTargetedSensorReport(const std::string &requestId, const std::string &sensorName,
+                                    SensorExecutionResult result, anti_cheat::SensorFailureReason failureReason,
+                                    int duration_ms, const std::string &notes);
 
     // 新的分类上报方法
     void UploadHardwareReport();
@@ -1168,11 +1189,18 @@ class ScanContext
 {
    private:
     CheatMonitor::Pimpl *m_pimpl;  //  持有对Pimpl的指针
+    bool m_isTargetedScan = false;
 
    public:
-    explicit ScanContext(CheatMonitor::Pimpl *p)
+    explicit ScanContext(CheatMonitor::Pimpl *p, bool targetedScan = false)
     {
         m_pimpl = p;
+        m_isTargetedScan = targetedScan;
+    }
+
+    bool IsTargetedScan() const
+    {
+        return m_isTargetedScan;
     }
 
     // --- 提供给传感器的服务 ---
@@ -1911,10 +1939,13 @@ class ProcessAndWindowMonitorSensor : public ISensor
         // 重置失败原因
         m_lastFailureReason = anti_cheat::UNKNOWN_FAILURE;
 
+        const bool targetedScan = context.IsTargetedScan();
         // 获取配置参数和时间预算
-        const int budget_ms = CheatConfigManager::GetInstance().GetHeavyScanBudgetMs();
+        const int budget_ms = targetedScan ? std::numeric_limits<int>::max()
+                                           : CheatConfigManager::GetInstance().GetHeavyScanBudgetMs();
         const auto startTime = std::chrono::steady_clock::now();
-        const int maxProcessesToScan = CheatConfigManager::GetInstance().GetMaxProcessesToScan();
+        const int maxProcessesToScan = targetedScan ? std::numeric_limits<int>::max()
+                                                    : CheatConfigManager::GetInstance().GetMaxProcessesToScan();
         auto knownGoodProcesses = CheatConfigManager::GetInstance().GetKnownGoodProcesses();
 
         // 1. 首先，一次性遍历所有窗口，构建一个 PID -> WindowTitles 的映射
@@ -2015,7 +2046,7 @@ class ProcessAndWindowMonitorSensor : public ISensor
                 {
                     auto now = std::chrono::steady_clock::now();
                     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count();
-                    if (elapsed > budget_ms)
+                    if (!targetedScan && elapsed > budget_ms)
                     {
                         // 获取下一个待处理进程名
                         std::wstring nextProcessName = pe.szExeFile;
@@ -2035,7 +2066,7 @@ class ProcessAndWindowMonitorSensor : public ISensor
                 }
 
                 // 限额检查：单次扫描不超过配置的最大数量
-                if (processedCount >= (size_t)maxProcessesToScan)
+                if (!targetedScan && processedCount >= (size_t)maxProcessesToScan)
                 {
                     LOG_INFO_F(AntiCheatLogger::LogCategory::SENSOR,
                                "ProcessAndWindowMonitorSensor: 达到单次扫描限额(%d)，下次继续", maxProcessesToScan);
@@ -2498,18 +2529,21 @@ class ModuleIntegritySensor : public ISensor
         }
 
         const auto &baselineHashes = context.GetModuleBaselineHashes();
+        const bool targetedScan = context.IsTargetedScan();
 
         // 2. 内存使用限制：代码节大小限制
         // ModuleIntegritySensor专注于检测所有模块的代码完整性，但限制单个代码节大小
         const size_t MAX_CODE_SECTION_SIZE = CheatConfigManager::GetInstance().GetMaxCodeSectionSize();
-        const int budget_ms = CheatConfigManager::GetInstance().GetHeavyScanBudgetMs();
+        const int budget_ms = targetedScan ? std::numeric_limits<int>::max()
+                                           : CheatConfigManager::GetInstance().GetHeavyScanBudgetMs();
         const auto startTime = std::chrono::steady_clock::now();
 
         // 3. 使用公共扫描器枚举模块（游标 + 限额 + 时间片）
         size_t startCursor = context.GetModuleCursorOffset();
         size_t index = 0;
         size_t processed = 0;
-        const int maxModules = std::max(1, CheatConfigManager::GetInstance().GetMaxModulesPerScan());
+        const int maxModules = targetedScan ? std::numeric_limits<int>::max()
+                                            : std::max(1, CheatConfigManager::GetInstance().GetMaxModulesPerScan());
         bool timeoutOccurred = false;
         bool stopEnumerate = false;
         std::wstring lastProcessedModuleName;
@@ -2525,7 +2559,8 @@ class ModuleIntegritySensor : public ISensor
             // 如果每5个才检查，可能已经超时了500-1000ms
             {
                 auto now = std::chrono::steady_clock::now();
-                if (std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count() > budget_ms)
+                if (!targetedScan &&
+                    std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count() > budget_ms)
                 {
                     // 获取当前即将处理的模块名称（next），以及上一个已处理的模块（last）
                     wchar_t curNameW[MAX_PATH] = {0};
@@ -2562,7 +2597,7 @@ class ModuleIntegritySensor : public ISensor
 
             ProcessModuleCodeIntegrity(hModule, context, baselineHashes, MAX_CODE_SECTION_SIZE);
             processed++;
-            if (processed >= (size_t)maxModules)
+            if (!targetedScan && processed >= (size_t)maxModules)
             {
                 stopEnumerate = true;
                 return;
@@ -5403,6 +5438,18 @@ void CheatMonitor::OnServerConfigUpdated()
     }
 }
 
+void CheatMonitor::SubmitTargetedSensorRequest(const std::string &request_id, const std::string &sensor_name)
+{
+    if (!m_pimpl)
+        return;
+    m_pimpl->SubmitTargetedScanRequest(request_id, sensor_name);
+}
+
+void CheatMonitor::SubmitTargetedSensorRequest(const anti_cheat::TargetedSensorCommand &command)
+{
+    SubmitTargetedSensorRequest(command.request_id(), command.sensor_name());
+}
+
 bool CheatMonitor::IsCallerLegitimate()
 {
     if (!m_pimpl || !m_pimpl->m_isSystemActive.load())
@@ -5481,6 +5528,7 @@ void CheatMonitor::Pimpl::InitializeSystem()
     for (auto &sensor : allSensors)
     {
         SensorWeight weight = sensor->GetWeight();
+        ISensor *rawPtr = sensor.get();
         switch (weight)
         {
             case SensorWeight::LIGHT:
@@ -5490,6 +5538,10 @@ void CheatMonitor::Pimpl::InitializeSystem()
             case SensorWeight::CRITICAL:
                 m_heavyweightSensors.emplace_back(std::move(sensor));
                 break;
+        }
+        if (rawPtr)
+        {
+            m_sensorRegistry[rawPtr->GetName()] = rawPtr;
         }
     }
 
@@ -5718,6 +5770,8 @@ void CheatMonitor::Pimpl::MonitorLoop()
             continue;
         }
 
+        ProcessPendingTargetedScans();
+
         // 在循环开始时定义now变量，确保在整个循环迭代中都有效
         const auto now = std::chrono::steady_clock::now();
 
@@ -5778,6 +5832,12 @@ void CheatMonitor::Pimpl::ResetSessionState()
         std::lock_guard<std::mutex> lock(m_baselineMutex);
         m_knownThreadIds.clear();
         m_knownModules.clear();
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(m_targetedScanMutex);
+        m_targetedScanQueue.clear();
+        m_consumedTargetedScanIds.clear();
     }
 
     LOG_INFO(AntiCheatLogger::LogCategory::SYSTEM, "Session state reset completed");
@@ -6770,19 +6830,22 @@ void CheatMonitor::Pimpl::ExecuteHeavyweightSensors()
     m_heavySensorIndex = (m_heavySensorIndex + 1) % m_heavyweightSensors.size();
 }
 
-void CheatMonitor::Pimpl::ExecuteAndMonitorSensor(ISensor *sensor, const char *name, bool isHeavyweight)
+SensorExecutionResult CheatMonitor::Pimpl::ExecuteAndMonitorSensor(ISensor *sensor, const char *name,
+                                                                   bool isHeavyweight, bool isTargetedScan,
+                                                                   anti_cheat::SensorFailureReason *outFailure,
+                                                                   int *outDurationMs)
 {
     const auto startTime = std::chrono::steady_clock::now();
-    ScanContext context(this);
+    ScanContext context(this, isTargetedScan);
+    SensorExecutionResult result = SensorExecutionResult::FAILURE;
+    anti_cheat::SensorFailureReason failureReason = anti_cheat::UNKNOWN_FAILURE;
 
     try
     {
-        SensorExecutionResult result = sensor->Execute(context);
+        result = sensor->Execute(context);
         const auto end = std::chrono::steady_clock::now();
         const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(end - startTime).count();
 
-        // 获取失败原因
-        anti_cheat::SensorFailureReason failureReason = anti_cheat::UNKNOWN_FAILURE;
         if (result == SensorExecutionResult::FAILURE)
         {
             failureReason = sensor->GetLastFailureReason();
@@ -6790,6 +6853,12 @@ void CheatMonitor::Pimpl::ExecuteAndMonitorSensor(ISensor *sensor, const char *n
 
         // 统一记录传感器执行统计
         RecordSensorExecutionStats(name, (int)elapsed_ms, result, failureReason);
+
+        if (outFailure)
+            *outFailure = failureReason;
+        if (outDurationMs)
+            *outDurationMs = (int)elapsed_ms;
+        return result;
     }
     catch (const std::exception &e)
     {
@@ -6801,6 +6870,11 @@ void CheatMonitor::Pimpl::ExecuteAndMonitorSensor(ISensor *sensor, const char *n
         // 记录异常执行统计 - 使用更明确的C++异常失败原因
         RecordSensorExecutionStats(name, (int)elapsed_ms, SensorExecutionResult::FAILURE,
                                    anti_cheat::CPP_EXCEPTION_FAILURE);
+        if (outFailure)
+            *outFailure = anti_cheat::CPP_EXCEPTION_FAILURE;
+        if (outDurationMs)
+            *outDurationMs = (int)elapsed_ms;
+        return SensorExecutionResult::FAILURE;
     }
     catch (...)
     {
@@ -6812,6 +6886,11 @@ void CheatMonitor::Pimpl::ExecuteAndMonitorSensor(ISensor *sensor, const char *n
         // 记录异常执行统计 - 使用更明确的未知异常失败原因
         RecordSensorExecutionStats(name, (int)elapsed_ms, SensorExecutionResult::FAILURE,
                                    anti_cheat::UNKNOWN_EXCEPTION_FAILURE);
+        if (outFailure)
+            *outFailure = anti_cheat::UNKNOWN_EXCEPTION_FAILURE;
+        if (outDurationMs)
+            *outDurationMs = (int)elapsed_ms;
+        return SensorExecutionResult::FAILURE;
     }
 }
 
@@ -6820,4 +6899,127 @@ void CheatMonitor::Pimpl::AddRandomJitter()
     // 增加随机抖动，避免可预测的扫描周期
     std::uniform_int_distribution<long> jitter_dist(0, CheatConfigManager::GetInstance().GetJitterMilliseconds());
     std::this_thread::sleep_for(std::chrono::milliseconds(jitter_dist(m_rng)));
+}
+
+void CheatMonitor::Pimpl::SubmitTargetedScanRequest(const std::string &requestId, const std::string &sensorName)
+{
+    if (requestId.empty() || sensorName.empty())
+        return;
+
+    bool added = false;
+    {
+        std::lock_guard<std::mutex> lock(m_targetedScanMutex);
+        if (m_consumedTargetedScanIds.count(requestId) > 0)
+        {
+            return;
+        }
+        bool alreadyQueued =
+                std::any_of(m_targetedScanQueue.begin(), m_targetedScanQueue.end(),
+                            [&](const TargetedScanRequest &queued) { return queued.requestId == requestId; });
+        if (alreadyQueued)
+        {
+            return;
+        }
+
+        m_targetedScanQueue.push_back(TargetedScanRequest{requestId, sensorName});
+        added = true;
+    }
+
+    if (added)
+    {
+        WakeMonitor();
+    }
+}
+
+bool CheatMonitor::Pimpl::TryDequeueTargetedScan(TargetedScanRequest &outRequest)
+{
+    std::lock_guard<std::mutex> lock(m_targetedScanMutex);
+    if (m_targetedScanQueue.empty())
+        return false;
+    outRequest = m_targetedScanQueue.front();
+    m_targetedScanQueue.pop_front();
+    return true;
+}
+
+void CheatMonitor::Pimpl::ProcessPendingTargetedScans()
+{
+    if (!m_isSessionActive.load())
+        return;
+    TargetedScanRequest request;
+    while (TryDequeueTargetedScan(request))
+    {
+        RunTargetedSensorScan(request);
+    }
+}
+
+void CheatMonitor::Pimpl::RunTargetedSensorScan(const TargetedScanRequest &request)
+{
+    SensorExecutionResult result = SensorExecutionResult::FAILURE;
+    anti_cheat::SensorFailureReason failureReason = anti_cheat::UNKNOWN_FAILURE;
+    int durationMs = 0;
+    std::string notes;
+
+    ISensor *targetSensor = nullptr;
+    auto it = m_sensorRegistry.find(request.sensorName);
+    if (it != m_sensorRegistry.end())
+    {
+        targetSensor = it->second;
+    }
+
+    if (!targetSensor)
+    {
+        notes = "Sensor not found";
+        UploadTargetedSensorReport(request.requestId, request.sensorName, result, failureReason, durationMs, notes);
+    }
+    else if (!m_isSessionActive.load())
+    {
+        notes = "Session inactive";
+        UploadTargetedSensorReport(request.requestId, request.sensorName, result, failureReason, durationMs, notes);
+    }
+    else
+    {
+        const bool supportedSensor = (request.sensorName == std::string("ProcessAndWindowMonitorSensor") ||
+                                      request.sensorName == std::string("ModuleIntegritySensor"));
+        if (!supportedSensor)
+        {
+            notes = "Sensor not eligible for targeted scan";
+            UploadTargetedSensorReport(request.requestId, request.sensorName, result, failureReason, durationMs, notes);
+        }
+        else
+        {
+            bool isHeavy = targetSensor->GetWeight() != SensorWeight::LIGHT;
+            result = ExecuteAndMonitorSensor(targetSensor, targetSensor->GetName(), isHeavy, true, &failureReason,
+                                             &durationMs);
+            notes = (result == SensorExecutionResult::SUCCESS) ? "Completed" : "Sensor execution failed";
+            UploadTargetedSensorReport(request.requestId, request.sensorName, result, failureReason, durationMs, notes);
+        }
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(m_targetedScanMutex);
+        m_consumedTargetedScanIds.insert(request.requestId);
+    }
+}
+
+void CheatMonitor::Pimpl::UploadTargetedSensorReport(const std::string &requestId, const std::string &sensorName,
+                                                     SensorExecutionResult result,
+                                                     anti_cheat::SensorFailureReason failureReason, int duration_ms,
+                                                     const std::string &notes)
+{
+    anti_cheat::Report report;
+    report.set_type(anti_cheat::REPORT_TARGETED_SENSOR);
+
+    auto targeted = report.mutable_targeted_sensor();
+    targeted->set_report_id(Utils::GenerateUuid());
+    targeted->set_report_timestamp_ms(
+            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
+                    .count());
+    targeted->set_request_id(requestId);
+    targeted->set_sensor_name(sensorName);
+    targeted->set_success(result == SensorExecutionResult::SUCCESS);
+    targeted->set_failure_reason(failureReason);
+    targeted->set_duration_ms(duration_ms >= 0 ? static_cast<uint64_t>(duration_ms) : 0);
+    targeted->set_notes(notes);
+
+    SendReport(report);
 }
