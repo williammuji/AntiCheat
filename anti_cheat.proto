@@ -241,6 +241,7 @@ message TargetedSensorReport {
   SensorFailureReason failure_reason = 6;
   uint64 duration_ms = 7;
   string notes = 8;
+  repeated Evidence evidences = 9; // 新增: 支持附带证据
 }
 
 // 统一的上报包装器

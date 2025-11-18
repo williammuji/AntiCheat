@@ -1178,7 +1178,8 @@ struct CheatMonitor::Pimpl
     bool TryDequeueTargetedScan(TargetedScanRequest &outRequest);
     void UploadTargetedSensorReport(const std::string &requestId, const std::string &sensorName,
                                     SensorExecutionResult result, anti_cheat::SensorFailureReason failureReason,
-                                    int duration_ms, const std::string &notes);
+                                    int duration_ms, const std::string &notes,
+                                    const std::vector<anti_cheat::Evidence> &evidences);
 
     // 新的分类上报方法
     void UploadHardwareReport();
@@ -1534,7 +1535,6 @@ class ModuleScanner
         return modules;
     }
 };
-
 class ThreadScanner
 {
    public:
@@ -1961,7 +1961,6 @@ class SystemCodeIntegritySensor : public ISensor
         return SensorExecutionResult::SUCCESS;
     }
 };
-
 class ProcessAndWindowMonitorSensor : public ISensor
 {
    public:
@@ -2541,7 +2540,6 @@ class IatHookSensor : public ISensor
         return true;
     }
 };
-
 class ModuleIntegritySensor : public ISensor
 {
    public:
@@ -6153,7 +6151,6 @@ void CheatMonitor::Pimpl::UploadSensorExecutionStatsReport()
 
     UploadTelemetryMetricsReport(metrics);
 }
-
 void CheatMonitor::Pimpl::RecordSensorExecutionStats(const char *name, int duration_ms, SensorExecutionResult result,
                                                      anti_cheat::SensorFailureReason failureReason)
 {
@@ -6309,7 +6306,7 @@ void CheatMonitor::Pimpl::HardenProcessAndThreads()
     // 2. 启用进程缓解策略 (DEP, 禁止创建子进程等)
     // 动态加载 SetProcessMitigationPolicy
     typedef BOOL(WINAPI * PSetProcessMitigationPolicy)(PROCESS_MITIGATION_POLICY Policy, PVOID lpBuffer,
-                                                       SIZE_T dwLength);
+                                                        SIZE_T dwLength);
     static PSetProcessMitigationPolicy pSetProcessMitigationPolicy = (PSetProcessMitigationPolicy)GetProcAddress(
             GetModuleHandleW(L"kernel32.dll"), "SetProcessMitigationPolicy");
 
@@ -6892,7 +6889,6 @@ void CheatMonitor::Pimpl::ExecuteHeavyweightSensors()
     ExecuteAndMonitorSensor(sensor.get(), sensor->GetName(), true /*isHeavyweight*/);
     m_heavySensorIndex = (m_heavySensorIndex + 1) % m_heavyweightSensors.size();
 }
-
 SensorExecutionResult CheatMonitor::Pimpl::ExecuteAndMonitorSensor(ISensor *sensor, const char *name,
                                                                    bool isHeavyweight, bool isTargetedScan,
                                                                    anti_cheat::SensorFailureReason *outFailure,
@@ -7029,33 +7025,28 @@ void CheatMonitor::Pimpl::RunTargetedSensorScan(const TargetedScanRequest &reque
         targetSensor = it->second;
     }
 
+    size_t evidence_begin = m_evidences.size();
+
     if (!targetSensor)
     {
         notes = "Sensor not found";
-        UploadTargetedSensorReport(request.requestId, request.sensorName, result, failureReason, durationMs, notes);
+        UploadTargetedSensorReport(request.requestId, request.sensorName, result, failureReason, durationMs, notes, {});
     }
     else if (!m_isSessionActive.load())
     {
         notes = "Session inactive";
-        UploadTargetedSensorReport(request.requestId, request.sensorName, result, failureReason, durationMs, notes);
+        UploadTargetedSensorReport(request.requestId, request.sensorName, result, failureReason, durationMs, notes, {});
     }
     else
     {
-        const bool supportedSensor = (request.sensorName == std::string("ProcessAndWindowMonitorSensor") ||
-                                      request.sensorName == std::string("ModuleIntegritySensor"));
-        if (!supportedSensor)
-        {
-            notes = "Sensor not eligible for targeted scan";
-            UploadTargetedSensorReport(request.requestId, request.sensorName, result, failureReason, durationMs, notes);
-        }
-        else
-        {
-            bool isHeavy = targetSensor->GetWeight() != SensorWeight::LIGHT;
-            result = ExecuteAndMonitorSensor(targetSensor, targetSensor->GetName(), isHeavy, true, &failureReason,
-                                             &durationMs);
-            notes = (result == SensorExecutionResult::SUCCESS) ? "Completed" : "Sensor execution failed";
-            UploadTargetedSensorReport(request.requestId, request.sensorName, result, failureReason, durationMs, notes);
-        }
+        bool isHeavy = targetSensor->GetWeight() != SensorWeight::LIGHT;
+        result = ExecuteAndMonitorSensor(targetSensor, targetSensor->GetName(), isHeavy, true, &failureReason, &durationMs);
+        notes = (result == SensorExecutionResult::SUCCESS) ? "Completed" : "Sensor execution failed";
+        // 取本轮采集到的新 evidence
+        std::vector<anti_cheat::Evidence> new_evidences;
+        if (m_evidences.size() > evidence_begin)
+            new_evidences.assign(m_evidences.begin() + evidence_begin, m_evidences.end());
+        UploadTargetedSensorReport(request.requestId, request.sensorName, result, failureReason, durationMs, notes, new_evidences);
     }
 
     {
@@ -7066,12 +7057,12 @@ void CheatMonitor::Pimpl::RunTargetedSensorScan(const TargetedScanRequest &reque
 
 void CheatMonitor::Pimpl::UploadTargetedSensorReport(const std::string &requestId, const std::string &sensorName,
                                                      SensorExecutionResult result,
-                                                     anti_cheat::SensorFailureReason failureReason, int duration_ms,
-                                                     const std::string &notes)
+                                                     anti_cheat::SensorFailureReason failureReason,
+                                                     int duration_ms, const std::string &notes,
+                                                     const std::vector<anti_cheat::Evidence> &evidences)
 {
     anti_cheat::Report report;
     report.set_type(anti_cheat::REPORT_TARGETED_SENSOR);
-
     auto targeted = report.mutable_targeted_sensor();
     targeted->set_report_id(Utils::GenerateUuid());
     targeted->set_report_timestamp_ms(
@@ -7083,6 +7074,8 @@ void CheatMonitor::Pimpl::UploadTargetedSensorReport(const std::string &requestI
     targeted->set_failure_reason(failureReason);
     targeted->set_duration_ms(duration_ms >= 0 ? static_cast<uint64_t>(duration_ms) : 0);
     targeted->set_notes(notes);
-
+    for (const auto &e : evidences) {
+        *targeted->add_evidences() = e;
+    }
     SendReport(report);
 }
