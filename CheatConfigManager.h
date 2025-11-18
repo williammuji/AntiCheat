@@ -71,10 +71,9 @@ class CheatConfigManager
     int32_t GetSensorStatsUploadIntervalMinutes() const;  // 传感器统计上报间隔(分钟)
 
     // [新增] 时间片扫描限额（游标式遍历）
-    int32_t GetMaxPidAttemptsPerScan() const;   // 每次句柄扫描最多尝试的新PID数量
-    int32_t GetMaxModulesPerScan() const;       // 每次模块完整性扫描最多处理的模块数量
-    int32_t GetPidThrottleMinutes() const;      // PID节流时长（分钟）
-
+    int32_t GetMaxPidAttemptsPerScan() const;  // 每次句柄扫描最多尝试的新PID数量
+    int32_t GetMaxModulesPerScan() const;      // 每次模块完整性扫描最多处理的模块数量
+    int32_t GetPidThrottleMinutes() const;     // PID节流时长（分钟）
 
    private:
     struct ConfigData
