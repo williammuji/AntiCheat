@@ -581,6 +581,45 @@ std::vector<uint8_t> CalculateFnv1aHash(const BYTE *data, size_t size)
 
 }  // namespace SystemUtils
 
+struct MemoryReadResult
+{
+    bool success = false;
+    SIZE_T bytesRead = 0;
+    bool exceptionRaised = false;
+    DWORD exceptionCode = 0;
+    DWORD lastError = 0;
+};
+
+static MemoryReadResult ReadProcessMemorySafe(LPCVOID address, BYTE *buffer, SIZE_T size)
+{
+    MemoryReadResult result;
+    __try
+    {
+        SIZE_T bytesReadLocal = 0;
+        if (ReadProcessMemory(GetCurrentProcess(), address, buffer, size, &bytesReadLocal))
+        {
+            result.success = true;
+            result.bytesRead = bytesReadLocal;
+            result.lastError = ERROR_SUCCESS;
+        }
+        else
+        {
+            result.success = (bytesReadLocal > 0);
+            result.bytesRead = bytesReadLocal;
+            result.lastError = GetLastError();
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        result.success = false;
+        result.bytesRead = 0;
+        result.exceptionRaised = true;
+        result.exceptionCode = GetExceptionCode();
+        result.lastError = 0;
+    }
+    return result;
+}
+
 namespace Utils
 {
 
@@ -4120,18 +4159,32 @@ class ThreadAndModuleActivitySensor : public ISensor
                 }
             }
 
-            // 获取线程所属进程PID
-            if (SystemUtils::g_pNtQueryInformationThread)
+            ownerPid = GetProcessIdOfThread(hThread);
+
+            if (ownerPid == 0 && SystemUtils::g_pNtQueryInformationThread)
             {
-                THREAD_BASIC_INFORMATION tbi = {0};
+                struct ThreadBasicInformationCompat
+                {
+                    NTSTATUS ExitStatus;
+                    PVOID TebBaseAddress;
+                    struct
+                    {
+                        HANDLE UniqueProcess;
+                        HANDLE UniqueThread;
+                    } ClientId;
+                    ULONG_PTR AffinityMask;
+                    LONG Priority;
+                    LONG BasePriority;
+                };
+
+                ThreadBasicInformationCompat tbi = {};
                 ULONG returnLength = 0;
-                NTSTATUS status =
-                        SystemUtils::g_pNtQueryInformationThread(hThread,
-                                                                 (THREADINFOCLASS)0,  // ThreadBasicInformation is 0
-                                                                 &tbi, sizeof(tbi), &returnLength);
+                NTSTATUS status = SystemUtils::g_pNtQueryInformationThread(
+                        hThread, (THREADINFOCLASS)0,  // ThreadBasicInformation is 0
+                        &tbi, sizeof(tbi), &returnLength);
                 if (NT_SUCCESS(status))
                 {
-                    ownerPid = (DWORD)(ULONG_PTR)tbi.ClientId.UniqueProcess;
+                    ownerPid = static_cast<DWORD>(reinterpret_cast<ULONG_PTR>(tbi.ClientId.UniqueProcess));
                 }
             }
         }
@@ -4169,16 +4222,16 @@ class ThreadAndModuleActivitySensor : public ISensor
                 }
                 if (pGetModuleFileNameExW && pGetModuleFileNameExW(hOwnerProcess, nullptr, ownerPath, MAX_PATH) > 0)
                 {
-                    suspectedOrigin = "⚠️⚠️ 远程线程注入 (来自: " + Utils::WideToString(ownerPath) + ")";
+                    suspectedOrigin = "[CRITICAL] 远程线程注入 (来自: " + Utils::WideToString(ownerPath) + ")";
                 }
                 else if (!processName.empty())
                 {
-                    suspectedOrigin = "⚠️⚠️ 远程线程注入 (来自进程: " + Utils::WideToString(processName) +
+                    suspectedOrigin = "[CRITICAL] 远程线程注入 (来自进程: " + Utils::WideToString(processName) +
                                       ", PID: " + std::to_string(ownerPid) + ")";
                 }
                 else
                 {
-                    suspectedOrigin = "⚠️⚠️ 远程线程注入 (来自 PID: " + std::to_string(ownerPid) + ")";
+                    suspectedOrigin = "[CRITICAL] 远程线程注入 (来自 PID: " + std::to_string(ownerPid) + ")";
                 }
                 CloseHandle(hOwnerProcess);
             }
@@ -4186,12 +4239,12 @@ class ThreadAndModuleActivitySensor : public ISensor
             {
                 if (!processName.empty())
                 {
-                    suspectedOrigin = "⚠️⚠️ 远程线程注入 (来自进程: " + Utils::WideToString(processName) +
+                    suspectedOrigin = "[CRITICAL] 远程线程注入 (来自进程: " + Utils::WideToString(processName) +
                                       ", PID: " + std::to_string(ownerPid) + ", 无法打开进程)";
                 }
                 else
                 {
-                    suspectedOrigin = "⚠️⚠️ 远程线程注入 (来自 PID: " + std::to_string(ownerPid) + ", 无法打开进程)";
+                    suspectedOrigin = "[CRITICAL] 远程线程注入 (来自 PID: " + std::to_string(ownerPid) + ", 无法打开进程)";
                 }
             }
         }
@@ -4205,15 +4258,15 @@ class ThreadAndModuleActivitySensor : public ISensor
 
             if (mbi.Type == MEM_PRIVATE && isExecutable && isWritable)
             {
-                suspectedOrigin = "⚠️⚠️ Shellcode (私有可写可执行内存 - 高度可疑)";
+                suspectedOrigin = "[CRITICAL] Shellcode (私有可写可执行内存 - 高度可疑)";
             }
             else if (mbi.Type == MEM_PRIVATE && isExecutable)
             {
-                suspectedOrigin = "⚠️ Shellcode (私有可执行内存)";
+                suspectedOrigin = "[WARNING] Shellcode (私有可执行内存)";
             }
             else if (mbi.Type == MEM_MAPPED && isExecutable)
             {
-                suspectedOrigin = "⚠️ 可能的反射DLL注入 (映射文件可执行内存)";
+                suspectedOrigin = "[WARNING] 可能的反射DLL注入 (映射文件可执行内存)";
             }
 
             // 检查是否为APC注入或系统API调用
@@ -4226,7 +4279,7 @@ class ThreadAndModuleActivitySensor : public ISensor
                 FARPROC pAsmKiUserApcDispatcher = GetProcAddress(hNtdll, "AsmKiUserApcDispatcher");
                 if (startAddress == pKiUserApcDispatcher || startAddress == pAsmKiUserApcDispatcher)
                 {
-                    suspectedOrigin = "⚠️⚠️ APC注入 (起始于 ntdll APC分发函数)";
+                    suspectedOrigin = "[CRITICAL] APC注入 (起始于 ntdll APC分发函数)";
                 }
                 else
                 {
@@ -4238,7 +4291,7 @@ class ThreadAndModuleActivitySensor : public ISensor
 
                     if (startAddress == pLdrLoadDll)
                     {
-                        suspectedOrigin = "⚠️⚠️ 可疑: 线程起始于LdrLoadDll API (可能是DLL注入)";
+                        suspectedOrigin = "[CRITICAL] 可疑: 线程起始于LdrLoadDll API (可能是DLL注入)";
                     }
                     else if (startAddress == pRtlUserThreadStart)
                     {
@@ -4246,7 +4299,7 @@ class ThreadAndModuleActivitySensor : public ISensor
                     }
                     else if (startAddress == pNtCreateThread || startAddress == pNtCreateThreadEx)
                     {
-                        suspectedOrigin = "⚠️ 可疑: 线程起始于NtCreateThread API";
+                        suspectedOrigin = "[WARNING] 可疑: 线程起始于NtCreateThread API";
                     }
                 }
             }
@@ -4261,7 +4314,7 @@ class ThreadAndModuleActivitySensor : public ISensor
                 if (startAddress == pLoadLibraryA || startAddress == pLoadLibraryW || startAddress == pLoadLibraryExA ||
                     startAddress == pLoadLibraryExW)
                 {
-                    suspectedOrigin = "⚠️⚠️ 可疑: 线程起始于LoadLibrary API (可能是DLL注入)";
+                    suspectedOrigin = "[CRITICAL] 可疑: 线程起始于LoadLibrary API (可能是DLL注入)";
                 }
             }
         }
@@ -4348,7 +4401,7 @@ class ThreadAndModuleActivitySensor : public ISensor
                                                          PAGE_EXECUTE_WRITECOPY)) != 0;
                     if (wasNonExecutable && nowExecutable)
                     {
-                        oss << "⚠️ 警告: 内存保护属性已被修改为可执行 (可能的DEP绕过)\n";
+                        oss << "[WARNING] 警告: 内存保护属性已被修改为可执行 (可能的DEP绕过)\n";
                     }
                 }
             }
@@ -4414,103 +4467,113 @@ class ThreadAndModuleActivitySensor : public ISensor
             }
             else
             {
-                oss << "关联模块: <未找到已加载的模块> ⚠️\n";
+                oss << "关联模块: <未找到已加载的模块> [WARNING]\n";
             }
 
             // 尝试读取起始地址的前几个字节（用于特征分析）
-            __try
-            {
-                BYTE headerBytes[16] = {0};
-                SIZE_T bytesRead = 0;
-                if (ReadProcessMemory(GetCurrentProcess(), startAddress, headerBytes, sizeof(headerBytes),
-                                      &bytesRead) &&
-                    bytesRead > 0)
-                {
-                    oss << "内存头部特征 (前16字节): ";
-                    for (SIZE_T i = 0; i < bytesRead; i++)
-                    {
-                        oss << std::hex << std::setfill('0') << std::setw(2) << (int)headerBytes[i] << " ";
-                    }
-                    oss << "\n";
+            BYTE headerBytes[16] = {0};
+            MemoryReadResult readResult = ReadProcessMemorySafe(startAddress, headerBytes, sizeof(headerBytes));
 
-                    // 增强的shellcode特征识别
-                    if (bytesRead >= 2)
+            if (readResult.success && readResult.bytesRead > 0)
+            {
+                SIZE_T bytesRead = readResult.bytesRead;
+                oss << "内存头部特征 (前16字节): ";
+                for (SIZE_T i = 0; i < bytesRead; i++)
+                {
+                    oss << std::hex << std::setfill('0') << std::setw(2) << (int)headerBytes[i] << " ";
+                }
+                oss << "\n";
+
+                // 增强的shellcode特征识别
+                if (bytesRead >= 2)
+                {
+                    // 检查是否是PE头 (MZ)
+                    if (headerBytes[0] == 0x4D && headerBytes[1] == 0x5A)
                     {
-                        // 检查是否是PE头 (MZ)
-                        if (headerBytes[0] == 0x4D && headerBytes[1] == 0x5A)
+                        oss << "特征: 检测到PE文件头 (MZ) - 可能是反射DLL注入\n";
+                    }
+                    // 检查已知shellcode模式
+                    else if (bytesRead >= 5)
+                    {
+                        // LdrLoadDll shellcode: 0x55, 0x8B, 0xEC, 0x8D, 0x5
+                        if (headerBytes[0] == 0x55 && headerBytes[1] == 0x8B && headerBytes[2] == 0xEC &&
+                            headerBytes[3] == 0x8D && headerBytes[4] == 0x5)
                         {
-                            oss << "特征: 检测到PE文件头 (MZ) - 可能是反射DLL注入\n";
+                            oss << "特征: 检测到LdrLoadDll shellcode模式 - 可能是DLL注入\n";
                         }
-                        // 检查已知shellcode模式
-                        else if (bytesRead >= 5)
+                        // ManualMap shellcode: 0x55, 0x8B, 0xEC, 0x51, 0x53, 0x8B
+                        else if (bytesRead >= 6 && headerBytes[0] == 0x55 && headerBytes[1] == 0x8B &&
+                                 headerBytes[2] == 0xEC && headerBytes[3] == 0x51 && headerBytes[4] == 0x53 &&
+                                 headerBytes[5] == 0x8B)
                         {
-                            // LdrLoadDll shellcode: 0x55, 0x8B, 0xEC, 0x8D, 0x5
-                            if (headerBytes[0] == 0x55 && headerBytes[1] == 0x8B && headerBytes[2] == 0xEC &&
-                                headerBytes[3] == 0x8D && headerBytes[4] == 0x5)
-                            {
-                                oss << "特征: 检测到LdrLoadDll shellcode模式 - 可能是DLL注入\n";
-                            }
-                            // ManualMap shellcode: 0x55, 0x8B, 0xEC, 0x51, 0x53, 0x8B
-                            else if (bytesRead >= 6 && headerBytes[0] == 0x55 && headerBytes[1] == 0x8B &&
-                                     headerBytes[2] == 0xEC && headerBytes[3] == 0x51 && headerBytes[4] == 0x53 &&
-                                     headerBytes[5] == 0x8B)
-                            {
-                                oss << "特征: 检测到ManualMap shellcode模式 - 可能是手动映射DLL注入\n";
-                            }
-                            // Reflective DLL shellcode: 0x55, 0x89, 0xE5, 0x53, 0x83, 0xEC, 0x54, 0x8B
-                            else if (bytesRead >= 8 && headerBytes[0] == 0x55 && headerBytes[1] == 0x89 &&
-                                     headerBytes[2] == 0xE5 && headerBytes[3] == 0x53 && headerBytes[4] == 0x83 &&
-                                     headerBytes[5] == 0xEC && headerBytes[6] == 0x54 && headerBytes[7] == 0x8B)
-                            {
-                                oss << "特征: 检测到Reflective DLL shellcode模式 - 可能是反射DLL注入\n";
-                            }
-                            // Manual Load shellcode: 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x20, 0x53, 0x56
-                            else if (bytesRead >= 8 && headerBytes[0] == 0x55 && headerBytes[1] == 0x8B &&
-                                     headerBytes[2] == 0xEC && headerBytes[3] == 0x83 && headerBytes[4] == 0xEC &&
-                                     headerBytes[5] == 0x20 && headerBytes[6] == 0x53 && headerBytes[7] == 0x56)
-                            {
-                                oss << "特征: 检测到Manual Load shellcode模式 - 可能是手动加载DLL\n";
-                            }
-                            // Thread hijack shellcode: 0x68, 0xCC, 0xCC, 0xCC, 0xCC, 0x60, 0x9C, 0xBB, 0xCC, 0xCC
-                            else if (bytesRead >= 10 && headerBytes[0] == 0x68 &&
-                                     (headerBytes[1] == 0xCC || headerBytes[1] == 0x00) &&
-                                     (headerBytes[2] == 0xCC || headerBytes[2] == 0x00) &&
-                                     (headerBytes[3] == 0xCC || headerBytes[3] == 0x00) &&
-                                     (headerBytes[4] == 0xCC || headerBytes[4] == 0x00) && headerBytes[5] == 0x60 &&
-                                     headerBytes[6] == 0x9C && headerBytes[7] == 0xBB)
-                            {
-                                oss << "特征: 检测到Thread hijack shellcode模式 - 可能是线程劫持注入\n";
-                            }
-                            // CreateRemoteThreadEx shellcode: 0xE8, 0x1D, 0x00, 0x00, 0x00, 0x50, 0x68, 0x58, 0x58,
-                            // 0xC3
-                            else if (bytesRead >= 10 && headerBytes[0] == 0xE8 && headerBytes[1] == 0x1D &&
-                                     headerBytes[2] == 0x00 && headerBytes[3] == 0x00 && headerBytes[4] == 0x00 &&
-                                     headerBytes[5] == 0x50 && headerBytes[6] == 0x68 && headerBytes[7] == 0x58 &&
-                                     headerBytes[8] == 0x58 && headerBytes[9] == 0xC3)
-                            {
-                                oss << "特征: 检测到CreateRemoteThreadEx shellcode模式 - 可能是远程线程注入\n";
-                            }
-                            // 检查常见的shellcode特征（通用模式）
-                            else if (headerBytes[0] == 0xE8 || headerBytes[0] == 0xE9)  // CALL/JMP
-                            {
-                                oss << "特征: 检测到跳转指令 (CALL/JMP) - 常见于shellcode\n";
-                            }
-                            else if (headerBytes[0] == 0x55 && headerBytes[1] == 0x8B)  // PUSH EBP; MOV EBP, ESP
-                            {
-                                oss << "特征: 检测到函数序言 (PUSH EBP; MOV) - 可能是正常函数或shellcode\n";
-                            }
-                            else if (headerBytes[0] == 0xFC)  // CLD
-                            {
-                                oss << "特征: 检测到CLD指令 - 常见于shellcode\n";
-                            }
+                            oss << "特征: 检测到ManualMap shellcode模式 - 可能是手动映射DLL注入\n";
+                        }
+                        // Reflective DLL shellcode: 0x55, 0x89, 0xE5, 0x53, 0x83, 0xEC, 0x54, 0x8B
+                        else if (bytesRead >= 8 && headerBytes[0] == 0x55 && headerBytes[1] == 0x89 &&
+                                 headerBytes[2] == 0xE5 && headerBytes[3] == 0x53 && headerBytes[4] == 0x83 &&
+                                 headerBytes[5] == 0xEC && headerBytes[6] == 0x54 && headerBytes[7] == 0x8B)
+                        {
+                            oss << "特征: 检测到Reflective DLL shellcode模式 - 可能是反射DLL注入\n";
+                        }
+                        // Manual Load shellcode: 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x20, 0x53, 0x56
+                        else if (bytesRead >= 8 && headerBytes[0] == 0x55 && headerBytes[1] == 0x8B &&
+                                 headerBytes[2] == 0xEC && headerBytes[3] == 0x83 && headerBytes[4] == 0xEC &&
+                                 headerBytes[5] == 0x20 && headerBytes[6] == 0x53 && headerBytes[7] == 0x56)
+                        {
+                            oss << "特征: 检测到Manual Load shellcode模式 - 可能是手动加载DLL\n";
+                        }
+                        // Thread hijack shellcode: 0x68, 0xCC, 0xCC, 0xCC, 0xCC, 0x60, 0x9C, 0xBB, 0xCC, 0xCC
+                        else if (bytesRead >= 10 && headerBytes[0] == 0x68 &&
+                                 (headerBytes[1] == 0xCC || headerBytes[1] == 0x00) &&
+                                 (headerBytes[2] == 0xCC || headerBytes[2] == 0x00) &&
+                                 (headerBytes[3] == 0xCC || headerBytes[3] == 0x00) &&
+                                 (headerBytes[4] == 0xCC || headerBytes[4] == 0x00) && headerBytes[5] == 0x60 &&
+                                 headerBytes[6] == 0x9C && headerBytes[7] == 0xBB)
+                        {
+                            oss << "特征: 检测到Thread hijack shellcode模式 - 可能是线程劫持注入\n";
+                        }
+                        // CreateRemoteThreadEx shellcode: 0xE8, 0x1D, 0x00, 0x00, 0x00, 0x50, 0x68, 0x58, 0x58,
+                        // 0xC3
+                        else if (bytesRead >= 10 && headerBytes[0] == 0xE8 && headerBytes[1] == 0x1D &&
+                                 headerBytes[2] == 0x00 && headerBytes[3] == 0x00 && headerBytes[4] == 0x00 &&
+                                 headerBytes[5] == 0x50 && headerBytes[6] == 0x68 && headerBytes[7] == 0x58 &&
+                                 headerBytes[8] == 0x58 && headerBytes[9] == 0xC3)
+                        {
+                            oss << "特征: 检测到CreateRemoteThreadEx shellcode模式 - 可能是远程线程注入\n";
+                        }
+                        // 检查常见的shellcode特征（通用模式）
+                        else if (headerBytes[0] == 0xE8 || headerBytes[0] == 0xE9)  // CALL/JMP
+                        {
+                            oss << "特征: 检测到跳转指令 (CALL/JMP) - 常见于shellcode\n";
+                        }
+                        else if (headerBytes[0] == 0x55 && headerBytes[1] == 0x8B)  // PUSH EBP; MOV EBP, ESP
+                        {
+                            oss << "特征: 检测到函数序言 (PUSH EBP; MOV) - 可能是正常函数或shellcode\n";
+                        }
+                        else if (headerBytes[0] == 0xFC)  // CLD
+                        {
+                            oss << "特征: 检测到CLD指令 - 常见于shellcode\n";
                         }
                     }
                 }
             }
-            __except (EXCEPTION_EXECUTE_HANDLER)
+            else if (readResult.exceptionRaised)
             {
-                DWORD exceptionCode = GetExceptionCode();
-                oss << "无法读取内存内容 (异常代码: 0x" << std::hex << exceptionCode << ")\n";
+                oss << "无法读取内存内容 (异常代码: 0x" << std::hex << readResult.exceptionCode << ")\n";
+                oss << std::hex << std::uppercase;
+            }
+            else if (!readResult.success)
+            {
+                if (readResult.lastError != ERROR_SUCCESS)
+                {
+                    oss << std::dec;
+                    oss << "无法读取内存内容 (GetLastError: " << readResult.lastError << ")\n";
+                    oss << std::hex << std::uppercase;
+                }
+                else
+                {
+                    oss << "无法读取内存内容 (未知原因)\n";
+                }
             }
         }
         else
