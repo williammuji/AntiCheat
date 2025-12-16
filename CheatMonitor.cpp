@@ -5664,15 +5664,34 @@ void CheatMonitor::Pimpl::InitializeProcessBaseline()
         // 先收集所有数据，最后一次性加锁更新
         std::vector<std::wstring> modulePaths;
         std::set<HMODULE> tempKnownModules;
+        SystemUtils::WindowsVersion winVer = SystemUtils::GetWindowsVersion();
+
         for (unsigned int i = 0; i < (cbNeeded / sizeof(HMODULE)); i++)
         {
-            tempKnownModules.insert(hMods[i]);
             wchar_t szModName[MAX_PATH];
             if (GetModuleFileNameW(hMods[i], szModName, MAX_PATH))
             {
                 std::wstring path(szModName);
                 std::transform(path.begin(), path.end(), path.begin(), ::towlower);
-                modulePaths.push_back(path);
+
+                // 增强基线建立：验证模块签名
+                // 防止未签名的外挂模块混入合法模块白名单
+                // 注意：外挂可能通过提前注入混入基线，必须在此处拦截
+                Utils::SignatureStatus sigStatus = Utils::VerifyFileSignature(path, winVer);
+
+                // 仅信任拥有有效数字签名的模块
+                // 对于某些系统DLL或游戏自带DLL，如果无签名，应添加到白名单配置中，而不是盲目信任所有加载的模块
+                if (sigStatus == Utils::SignatureStatus::TRUSTED)
+                {
+                    tempKnownModules.insert(hMods[i]);
+                    modulePaths.push_back(path);
+                }
+                else
+                {
+                    LOG_WARNING_F(AntiCheatLogger::LogCategory::SYSTEM,
+                                  "基线初始化: 排除可疑模块 (签名验证未通过): %s, 状态: %d",
+                                  Utils::WideToString(path).c_str(), (int)sigStatus);
+                }
             }
         }
 
