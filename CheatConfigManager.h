@@ -75,6 +75,10 @@ class CheatConfigManager
     int32_t GetMaxModulesPerScan() const;      // 每次模块完整性扫描最多处理的模块数量
     int32_t GetPidThrottleMinutes() const;     // PID节流时长（分钟）
 
+    // [新增] 快照上报配置
+    int32_t GetSnapshotUploadIntervalMinutes() const;  // 快照上报间隔(分钟)
+    bool IsSnapshotUploadEnabled() const;              // 是否启用快照上报
+
    private:
     struct ConfigData
     {

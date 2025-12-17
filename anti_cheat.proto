@@ -19,6 +19,8 @@ enum CheatCategory {
   INTEGRITY_API_HOOK = 104; // 检测到对关键API函数的挂钩。
   INTEGRITY_SUSPICIOUS_HANDLE = 105; // 检测到可疑进程持有本进程的句柄。
   INTEGRITY_SELF_TAMPERING = 106; // 反作弊模块自身被篡改
+  INTEGRITY_SYSTEM_API_HOOKED = 107; // 检测到系统API被Hook
+  MODULE_UNTRUSTED_IN_BASELINE = 108; // 基线建立时发现不可信模块（路径+签名验证失败）
 
   // --- 外部环境与工具类别 (2xx) ---
   ENVIRONMENT_UNKNOWN = 200;
@@ -201,6 +203,57 @@ message Evidence {
   }
 }
 
+// ========== 快照数据定义 ==========
+
+// 线程快照信息
+message ThreadSnapshot {
+  uint32 thread_id = 1;                    // 线程ID
+  uint64 start_address = 2;                // 起始地址
+  uint64 creation_time = 3;                // 创建时间（FILETIME）
+
+  // 内存信息
+  uint64 memory_base_address = 4;          // 内存区域基址
+  uint64 memory_region_size = 5;           // 内存区域大小
+  uint32 memory_protect = 6;               // 保护属性
+  uint32 memory_type = 7;                  // 内存类型（MEM_PRIVATE/IMAGE/MAPPED）
+
+  // 关联模块（如果有）
+  string associated_module_path = 8;       // 关联模块路径
+  uint64 module_base_address = 9;          // 模块基址
+  int64 relative_offset = 10;              // 相对偏移
+}
+
+// 模块快照信息
+message ModuleSnapshot {
+  string module_path = 1;                  // 模块完整路径
+  uint64 base_address = 2;                 // 基址
+  uint64 module_size = 3;                  // 模块大小
+  uint32 timestamp = 4;                    // PE时间戳
+
+  // 签名信息
+  bool has_signature = 5;                  // 是否有签名
+  string cert_thumbprint = 6;              // 证书指纹（SHA-256）
+
+  // 代码哈希
+  string code_section_hash = 7;            // 代码节SHA-256哈希
+}
+
+// 快照数据上报消息
+message SnapshotReport {
+  string report_id = 1;                    // 报告ID
+  uint64 report_timestamp_ms = 2;          // 报告时间戳
+  uint32 user_id = 3;                      // 用户ID
+  string user_name = 4;                    // 用户名
+
+  // 快照数据
+  repeated ThreadSnapshot threads = 5;     // 所有线程
+  repeated ModuleSnapshot modules = 6;     // 所有模块
+
+  // 统计信息
+  uint32 total_thread_count = 7;           // 总线程数
+  uint32 total_module_count = 8;           // 总模块数
+}
+
 // 上报类型枚举
 enum ReportType {
   REPORT_UNKNOWN = 0;
@@ -208,6 +261,7 @@ enum ReportType {
   REPORT_EVIDENCE = 2;    // 作弊证据上报
   REPORT_TELEMETRY = 3;   // 遥测数据上报
   REPORT_TARGETED_SENSOR = 4; // 临时单次传感器扫描结果
+  REPORT_SNAPSHOT = 5;    // 快照数据上报
 }
 
 // 硬件信息专用上报消息
@@ -253,6 +307,7 @@ message Report {
     EvidenceReport evidence = 3;
     TelemetryReport telemetry = 4;
     TargetedSensorReport targeted_sensor = 5;
+    SnapshotReport snapshot = 6;
   }
 }
 
@@ -362,6 +417,10 @@ message ClientConfig {
   optional int32 max_pid_attempts_per_scan = 29;     // 每次句柄扫描最多尝试的新PID数量
   optional int32 max_modules_per_scan = 30;          // 每次模块完整性扫描最多处理的模块数量
   optional int32 pid_throttle_minutes = 31;          // PID节流时长（分钟）
+
+  // --- 快照上报配置 ---
+  optional int32 snapshot_upload_interval_minutes = 32;  // 快照上报间隔(分钟)，默认30
+  optional bool enable_snapshot_upload = 33;             // 是否启用快照上报，默认true
 }
 
 // 服务器下发的单次临时传感器扫描指令
