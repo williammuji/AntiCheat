@@ -25,7 +25,10 @@
 // 注意：ntstatus.h 和 winnt.h 中有重复的宏定义，会导致警告
 // 我们只包含 winternl.h，它已经包含了必要的 NTSTATUS 定义
 #include <winternl.h>  // 包含 NTSTATUS 等定义
-#include <wintrust.h>  // 为 WinVerifyTrust 添加头文件
+#include <wintrust.h>
+#include <cstdarg>
+#include <vector>
+#include <cstdio>  // 为 WinVerifyTrust 添加头文件
 
 // 定义未公开的 Windows 系统句柄相关类型
 #ifndef SystemHandleInformation
@@ -668,6 +671,22 @@ std::wstring StringToWide(const std::string &str)
     return wstrTo;
 }
 
+    std::string FormatString(const char* format, ...)
+    {
+        va_list args;
+        va_start(args, format);
+        int len = _vscprintf(format, args);
+        if (len == -1)
+        {
+            va_end(args);
+            return "";
+        }
+        std::vector<char> buffer(len + 1);
+        vsnprintf(buffer.data(), len + 1, format, args);
+        va_end(args);
+        return std::string(buffer.data(), len);
+    }
+
 // 使用单次遍历和哈希表来查找父进程，避免双重循环。
 bool GetParentProcessInfo(DWORD &parentPid, std::string &parentName)
 {
@@ -1137,6 +1156,16 @@ struct CheatMonitor::Pimpl
     std::deque<TargetedScanRequest> m_targetedScanQueue;
     std::unordered_set<std::string> m_consumedTargetedScanIds;
 
+    // === 自我完整性检查 ===
+    std::vector<uint8_t> m_isAddressInLegitimateModulePrologue;
+    void InitializeSelfIntegrityBaseline();
+    void CheckSelfIntegrity();
+
+    // === 白名单机制 ===
+    std::set<void *> m_allowedThreadStartAddresses;
+    void AllowThreadStartAddress(void *address);
+    bool IsSuspiciousThreadStartAddress(PVOID address);
+
     // （回退）移除轻量归因缓存与方法
 
     // 执行状态枚举
@@ -1310,6 +1339,16 @@ class ScanContext
         return m_pimpl->IsAddressInLegitimateModule(address);
     }
 
+    bool IsSuspiciousThreadStartAddress(PVOID address)
+    {
+        return m_pimpl->IsSuspiciousThreadStartAddress(address);
+    }
+
+    void AllowThreadStartAddress(void *address)
+    {
+        m_pimpl->AllowThreadStartAddress(address);
+    }
+
     // 获取已知良好的句柄持有者
     std::shared_ptr<const std::unordered_set<std::wstring>> GetKnownGoodHandleHolders() const
     {
@@ -1359,6 +1398,12 @@ class ScanContext
     void VerifyModuleSignature(HMODULE hModule)
     {
         m_pimpl->VerifyModuleSignature(hModule);
+    }
+
+    // 检查自身完整性（防止关键函数被Patch）
+    void CheckSelfIntegrity()
+    {
+        m_pimpl->CheckSelfIntegrity();
     }
 
     // 为自我完整性检查提供基线访问
@@ -1950,6 +1995,10 @@ class SystemCodeIntegritySensor : public ISensor
             RecordFailure(anti_cheat::SYSTEM_CODE_INTEGRITY_QUERY_FAILED);
             return SensorExecutionResult::FAILURE;
         }
+
+        // 策略2：自我完整性检查
+        // 检查关键反作弊函数是否被Patch（例如 IsAddressInLegitimateModule 被改为直接返回 true）
+        context.CheckSelfIntegrity();
 
         // 统一的执行结果判断逻辑
         // 成功条件：没有失败原因记录
@@ -3971,6 +4020,16 @@ class ThreadAndModuleActivitySensor : public ISensor
                         oss << "【检测到可疑线程】新线程的起始地址不在任何已知模块中\n" << threadDetails;
                         context.AddEvidence(anti_cheat::RUNTIME_THREAD_NEW_UNKNOWN, oss.str());
                     }
+                        // 即使在合法模块中，也要检查是否起始于LoadLibrary等敏感API
+                        // 虽然概率较低，但为了防止误报（如Overlay注入或极少数合法异步加载），提供了白名单机制
+                        if (context.IsSuspiciousThreadStartAddress(startAddress))
+                        {
+                            std::ostringstream oss;
+                            oss << "【检测到可疑线程】线程起始地址为敏感API (LoadLibrary/ExitProcess)，疑似DLL注入\n"
+                                << "Start Address: " << startAddress << "\n"
+                                << "Module: " << Utils::WideToString(modulePath);
+                            context.AddEvidence(anti_cheat::RUNTIME_THREAD_NEW_UNKNOWN, oss.str());
+                        }
                 }
             }
             else
@@ -4036,6 +4095,23 @@ class ThreadAndModuleActivitySensor : public ISensor
                     std::ostringstream oss;
                     oss << "【检测到可疑线程】线程的起始地址不在任何已知模块中\n" << threadDetails;
                     context.AddEvidence(anti_cheat::RUNTIME_THREAD_NEW_UNKNOWN, oss.str());
+                }
+                else
+                {
+                    // 完整性检查：记录合法线程信息以便分析是否存在漏报
+                     LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR,
+                               "AnalyzeThreadIntegrity: 线程 (TID=%lu) 起始地址 0x%p 位于合法模块 %s", threadId,
+                               startAddress, Utils::WideToString(modulePath).c_str());
+
+                    // 同样检查LoadLibrary bypass
+                    if (context.IsSuspiciousThreadStartAddress(startAddress))
+                    {
+                         std::ostringstream oss;
+                         oss << "【检测到可疑线程】线程起始地址为敏感API (完整性扫描)\n"
+                             << "Start Address: " << startAddress << "\n"
+                             << "Module: " << Utils::WideToString(modulePath);
+                         context.AddEvidence(anti_cheat::RUNTIME_THREAD_NEW_UNKNOWN, oss.str());
+                    }
                 }
             }
         }
@@ -5611,6 +5687,7 @@ void CheatMonitor::Pimpl::InitializeSystem()
 
     // --- 初始化 ---
     InitializeProcessBaseline();
+    InitializeSelfIntegrityBaseline(); // 初始化自我完整性基线
     // HardenProcessAndThreads();
     CheckParentProcessAtStartup();
     DetectVirtualMachine();
@@ -5685,6 +5762,8 @@ void CheatMonitor::Pimpl::InitializeProcessBaseline()
                 {
                     tempKnownModules.insert(hMods[i]);
                     modulePaths.push_back(path);
+                    LOG_INFO_F(AntiCheatLogger::LogCategory::SYSTEM, "基线初始化: 添加合法模块 %s",
+                               Utils::WideToString(path).c_str());
                 }
                 else
                 {
@@ -6713,8 +6792,8 @@ bool CheatMonitor::Pimpl::IsAddressInLegitimateModule(PVOID address, std::wstrin
     else
     {
         // GetModuleHandleExW失败
-        LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR, "IsAddressInLegitimateModule: 地址 0x%p 不属于任何模块",
-                    address);
+            LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR, "IsAddressInLegitimateModule: 地址 0x%p 不属于任何模块",
+                        address);
     }
     return false;
 }
@@ -6723,6 +6802,36 @@ bool CheatMonitor::Pimpl::IsAddressInLegitimateModule(PVOID address)
 {
     std::wstring dummyPath;  // 不需要的路径参数
     return IsAddressInLegitimateModule(address, dummyPath);
+}
+
+void CheatMonitor::Pimpl::AllowThreadStartAddress(void *address)
+{
+    std::lock_guard<std::mutex> lock(m_baselineMutex);
+    m_allowedThreadStartAddresses.insert(address);
+    LOG_INFO_F(AntiCheatLogger::LogCategory::SYSTEM, "Added allowed thread start address: 0x%p", address);
+}
+
+bool CheatMonitor::Pimpl::IsSuspiciousThreadStartAddress(PVOID address)
+{
+    {
+        std::lock_guard<std::mutex> lock(m_baselineMutex);
+        if (m_allowedThreadStartAddresses.count(address) > 0)
+        {
+            return false;
+        }
+    }
+
+    static PVOID pLoadLibA = (PVOID)GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "LoadLibraryA");
+    static PVOID pLoadLibW = (PVOID)GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "LoadLibraryW");
+    static PVOID pExitProcess = (PVOID)GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "ExitProcess");
+
+    if ((pLoadLibA && address == pLoadLibA) ||
+        (pLoadLibW && address == pLoadLibW) ||
+        (pExitProcess && address == pExitProcess))
+    {
+        return true;
+    }
+    return false;
 }
 
 uintptr_t CheatMonitor::Pimpl::FindVehListAddress()
@@ -6835,6 +6944,77 @@ uintptr_t CheatMonitor::Pimpl::FindVehListAddress()
     LOG_INFO_F(AntiCheatLogger::LogCategory::SYSTEM, "Dynamically located VEH list structure at: 0x%p",
                (void *)structBaseAddress);
     return structBaseAddress;
+}
+
+void CheatMonitor::Pimpl::InitializeSelfIntegrityBaseline()
+{
+    // 获取 IsAddressInLegitimateModule 函数的地址
+    // 注意：成员函数指针转换需要小心处理
+    union
+    {
+        bool (CheatMonitor::Pimpl::*pmf)(PVOID, std::wstring &);
+        void *p;
+    } u;
+    u.pmf = &CheatMonitor::Pimpl::IsAddressInLegitimateModule;
+
+    if (u.p)
+    {
+        // 读取函数前16个字节作为基线
+        // 这足以检测常见的 JMP/RET Patch
+        uint8_t buffer[16];
+        SIZE_T bytesRead = 0;
+        if (ReadProcessMemory(GetCurrentProcess(), u.p, buffer, sizeof(buffer), &bytesRead) && bytesRead == sizeof(buffer))
+        {
+            m_isAddressInLegitimateModulePrologue.assign(buffer, buffer + sizeof(buffer));
+            LOG_INFO_F(AntiCheatLogger::LogCategory::SYSTEM, "自我完整性基线已建立: IsAddressInLegitimateModule @ %p", u.p);
+        }
+        else
+        {
+            LOG_ERROR(AntiCheatLogger::LogCategory::SYSTEM, "无法读取 IsAddressInLegitimateModule 函数内存以建立基线");
+        }
+    }
+}
+
+void CheatMonitor::Pimpl::CheckSelfIntegrity()
+{
+    if (m_isAddressInLegitimateModulePrologue.empty())
+        return;
+
+    union
+    {
+        bool (CheatMonitor::Pimpl::*pmf)(PVOID, std::wstring &);
+        void *p;
+    } u;
+    u.pmf = &CheatMonitor::Pimpl::IsAddressInLegitimateModule;
+
+    if (!u.p)
+        return;
+
+    uint8_t currentBytes[16];
+    SIZE_T bytesRead = 0;
+    if (ReadProcessMemory(GetCurrentProcess(), u.p, currentBytes, sizeof(currentBytes), &bytesRead) &&
+        bytesRead == sizeof(currentBytes))
+    {
+        if (memcmp(currentBytes, m_isAddressInLegitimateModulePrologue.data(), sizeof(currentBytes)) != 0)
+        {
+            // 检测到篡改
+            std::string diff;
+            for (size_t i = 0; i < sizeof(currentBytes); ++i)
+            {
+                if (currentBytes[i] != m_isAddressInLegitimateModulePrologue[i])
+                {
+                    diff += Utils::FormatString(" [+%zu: %02X->%02X]", i, m_isAddressInLegitimateModulePrologue[i],
+                                                currentBytes[i]);
+                }
+            }
+
+            AddEvidence(anti_cheat::INTEGRITY_SELF_TAMPERING,
+                        "关键反作弊函数 (IsAddressInLegitimateModule) 被篡改: " + diff);
+
+            // 尝试恢复（可选，但在反外挂中通常只上报）
+            // WriteProcessMemory(GetCurrentProcess(), u.p, m_isAddressInLegitimateModulePrologue.data(), ...);
+        }
+    }
 }
 
 void CheatMonitor::Pimpl::CheckIatHooks(ScanContext &context, const BYTE *baseAddress,
