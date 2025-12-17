@@ -256,6 +256,17 @@ int32_t CheatConfigManager::GetPidThrottleMinutes() const
     return GetCurrentConfig()->config->pid_throttle_minutes();
 }
 
+// [新增] 快照上报配置
+int32_t CheatConfigManager::GetSnapshotUploadIntervalMinutes() const
+{
+    return GetCurrentConfig()->config->snapshot_upload_interval_minutes();
+}
+
+bool CheatConfigManager::IsSnapshotUploadEnabled() const
+{
+    return GetCurrentConfig()->config->enable_snapshot_upload();
+}
+
 // --- 私有辅助函数 ---
 
 void CheatConfigManager::SetDefaultValues(ConfigData& configData)
@@ -734,6 +745,10 @@ void CheatConfigManager::SetDefaultValues(ConfigData& configData)
 
     // 新增：最低OS版本要求
     configData.config->set_min_os_version(anti_cheat::OS_WIN10);  // 默认要求Windows 10+
+
+    // 新增：快照上报配置
+    configData.config->set_snapshot_upload_interval_minutes(30);  // 默认30分钟上报一次
+    configData.config->set_enable_snapshot_upload(true);          // 默认启用快照上报
 
     // 不再在客户端生成/校验配置签名：配置下发已在传输层加密与鉴权
 

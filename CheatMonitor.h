@@ -23,6 +23,9 @@ class CheatMonitor final
     void SubmitTargetedSensorRequest(const std::string &request_id, const std::string &sensor_name);
     void SubmitTargetedSensorRequest(const anti_cheat::TargetedSensorCommand &command);
 
+    // 新增：手动触发快照上报（用于测试）
+    void UploadSnapshot();
+
     struct Pimpl;
 
    private:

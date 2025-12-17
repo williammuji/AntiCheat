@@ -21,6 +21,7 @@
 #include <ShlObj.h>   // CSIDL_PROGRAM_FILES, SHGetFolderPathW
 #include <Softpub.h>  // 为 WINTRUST_ACTION_GENERIC_VERIFY_V2 GUID 添加头文件
 #include <TlHelp32.h>
+#include <Wincrypt.h>  // 为证书和哈希函数添加头文件
 #include <intrin.h>
 // 注意：ntstatus.h 和 winnt.h 中有重复的宏定义，会导致警告
 // 我们只包含 winternl.h，它已经包含了必要的 NTSTATUS 定义
@@ -114,6 +115,9 @@ typedef struct _SYSTEM_CODE_INTEGRITY_INFORMATION
 // 使用系统定义的SYSTEM_INFORMATION_CLASS
 const SYSTEM_INFORMATION_CLASS SystemKernelDebuggerInformation = (SYSTEM_INFORMATION_CLASS)35;
 // SystemCodeIntegrityInformation已在winternl.h中定义
+
+// 定义自定义的枚举值以避免与SDK冲突
+const int CustomSystemCodeIntegrityInformation = 103;
 
 // VEH相关结构体定义
 typedef struct _VECTORED_HANDLER_ENTRY
@@ -365,44 +369,12 @@ typedef struct _PS_ATTRIBUTE_LIST
 #define STATUS_NOT_IMPLEMENTED 0xC0000002L
 #endif
 
-// 为兼容旧版SDK，手动定义缺失的枚举值
-// 注释：现代Windows 10 SDK已包含SystemCodeIntegrityInformation定义
-// 但在某些开发环境中可能仍然需要手动定义
-#ifndef SystemCodeIntegrityInformation
-const int SystemCodeIntegrityInformation = 103;  // 使用标准值103
-#endif
-// 保留旧值以兼容脚本检查，但运行时不再使用该常量查询句柄信息
-
-typedef struct _SYSTEM_HANDLE_TABLE_ENTRY_INFO
-{
-    USHORT UniqueProcessId;
-    USHORT CreatorBackTraceIndex;
-    UCHAR ObjectTypeIndex;
-    UCHAR HandleAttributes;
-    USHORT HandleValue;
-    PVOID Object;
-    ULONG GrantedAccess;
-} SYSTEM_HANDLE_TABLE_ENTRY_INFO, *PSYSTEM_HANDLE_TABLE_ENTRY_INFO;
-
 // 旧版 SYSTEM_HANDLE_INFORMATION（与 TABLE_ENTRY_INFO 搭配），用于回退路径
 typedef struct _SYSTEM_HANDLE_INFORMATION_LEGACY
 {
     ULONG NumberOfHandles;
     SYSTEM_HANDLE_TABLE_ENTRY_INFO Handles[1];
 } SYSTEM_HANDLE_INFORMATION_LEGACY, *PSYSTEM_HANDLE_INFORMATION_LEGACY;
-
-// 扩展句柄信息结构（用于SystemExtendedHandleInformation）
-typedef struct _SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX
-{
-    PVOID Object;
-    ULONG_PTR UniqueProcessId;
-    ULONG_PTR HandleValue;
-    ULONG GrantedAccess;
-    USHORT CreatorBackTraceIndex;
-    USHORT ObjectTypeIndex;
-    ULONG HandleAttributes;
-    ULONG Reserved;
-} SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX, *PSYSTEM_HANDLE_TABLE_ENTRY_INFO_EX;
 
 // 扩展句柄信息容器结构
 typedef struct _SYSTEM_HANDLE_INFORMATION_EX
@@ -411,13 +383,6 @@ typedef struct _SYSTEM_HANDLE_INFORMATION_EX
     ULONG_PTR Reserved;
     SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX Handles[1];
 } SYSTEM_HANDLE_INFORMATION_EX, *PSYSTEM_HANDLE_INFORMATION_EX;
-
-// CLIENT_ID structure
-typedef struct _CLIENT_ID
-{
-    HANDLE UniqueProcess;
-    HANDLE UniqueThread;
-} CLIENT_ID;
 
 // THREAD_BASIC_INFORMATION structure
 typedef struct _THREAD_BASIC_INFORMATION
@@ -561,9 +526,6 @@ bool IsKernelDebuggerPresent_KUserSharedData()
         return false;
     }
 }
-
-// 前向声明
-bool GetModuleCodeSectionInfo(HMODULE hModule, PVOID &outBase, DWORD &outSize);
 
 // 辅助函数：计算内存块的FNV-1a哈希值
 // 注意：FNV-1a是一种快速非密码学哈希。对于高安全要求，应考虑使用密码学安全哈希（如SHA-256）。
@@ -905,8 +867,119 @@ SignatureStatus VerifyFileSignature(const std::wstring &filePath, SystemUtils::W
     }
 }
 
-// 前向声明
-class ISensor;
+// 模块验证结果结构体
+struct ModuleValidationResult
+{
+    bool isTrusted = false;
+    std::string reason;
+    SignatureStatus signatureStatus = SignatureStatus::UNKNOWN;
+};
+
+// 检查路径是否在Windows系统目录中
+static bool IsInWindowsSystemDirectory(const std::wstring &pathLower)
+{
+    wchar_t winDir[MAX_PATH] = {0};
+    if (GetWindowsDirectoryW(winDir, MAX_PATH) == 0)
+    {
+        return false;
+    }
+
+    std::wstring winDirLower = winDir;
+    std::transform(winDirLower.begin(), winDirLower.end(), winDirLower.begin(), ::towlower);
+    if (!winDirLower.empty() && winDirLower.back() != L'\\')
+    {
+        winDirLower.push_back(L'\\');
+    }
+
+    // 检查常见系统目录
+    std::vector<std::wstring> systemDirs = {
+        winDirLower + L"system32\\",
+        winDirLower + L"syswow64\\",
+        winDirLower + L"winsxs\\",
+        winDirLower + L"system32\\drivers\\"
+    };
+
+    for (const auto &dir : systemDirs)
+    {
+        if (pathLower.find(dir) == 0)
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+// 多维度模块验证函数
+static ModuleValidationResult ValidateModule(const std::wstring &modulePath, SystemUtils::WindowsVersion winVer)
+{
+    ModuleValidationResult result;
+
+    // 1. 路径规范化（防止路径伪装）
+    std::wstring normalizedPath;
+    try
+    {
+        std::filesystem::path p(modulePath);
+        std::filesystem::path canon = std::filesystem::weakly_canonical(p);
+        normalizedPath = canon.wstring();
+        std::transform(normalizedPath.begin(), normalizedPath.end(), normalizedPath.begin(), ::towlower);
+    }
+    catch (...)
+    {
+        normalizedPath = modulePath;
+        std::transform(normalizedPath.begin(), normalizedPath.end(), normalizedPath.begin(), ::towlower);
+    }
+
+    // 2. 系统目录检查
+    bool isInSystemDir = IsInWindowsSystemDirectory(normalizedPath);
+
+    // 3. 数字签名验证
+    result.signatureStatus = VerifyFileSignature(modulePath, winVer);
+
+    // 4. 多维度判断
+    if (isInSystemDir)
+    {
+        // 系统目录的DLL必须有有效签名
+        if (result.signatureStatus == SignatureStatus::TRUSTED)
+        {
+            result.isTrusted = true;
+            result.reason = "系统目录 + 可信签名";
+        }
+        else if (result.signatureStatus == SignatureStatus::FAILED_TO_VERIFY)
+        {
+            // 离线环境降噪：系统目录 + 验证失败 = 可能是合法系统DLL
+            result.isTrusted = true;
+            result.reason = "系统目录 + 离线降噪";
+        }
+        else
+        {
+            // 系统目录但签名不可信 = 高度可疑
+            result.isTrusted = false;
+            result.reason = "系统目录但签名不可信 [CRITICAL]";
+        }
+    }
+    else
+    {
+        // 非系统目录：必须有可信签名
+        if (result.signatureStatus == SignatureStatus::TRUSTED)
+        {
+            result.isTrusted = true;
+            result.reason = "非系统目录 + 可信签名";
+        }
+        else
+        {
+            result.isTrusted = false;
+            result.reason = "非系统目录 + 无可信签名 [SUSPICIOUS]";
+        }
+    }
+
+    return result;
+}
+
+}  // namespace Utils
+
+namespace SystemUtils
+{
 
 // GetModuleCodeSectionInfo 函数实现
 // 内部函数，使用C风格参数避免对象展开问题
@@ -984,7 +1057,7 @@ bool GetModuleCodeSectionInfo(HMODULE hModule, PVOID &outBase, DWORD &outSize)
     std::string modulePathStr = "未知模块";
     if (wcslen(modulePath) > 0)
     {
-        modulePathStr = WideToString(std::wstring(modulePath));
+        modulePathStr = Utils::WideToString(std::wstring(modulePath));
     }
 
     LOG_DEBUG_F(AntiCheatLogger::LogCategory::SYSTEM,
@@ -993,10 +1066,12 @@ bool GetModuleCodeSectionInfo(HMODULE hModule, PVOID &outBase, DWORD &outSize)
     return false;
 }
 
-}  // namespace Utils
+}  // namespace SystemUtils
 
 // --- 核心架构组件 ---
 
+// 前向声明
+class ISensor;
 class ScanContext;
 
 // 传感器权重分级枚举（基于专家审查建议）
@@ -1214,6 +1289,7 @@ struct CheatMonitor::Pimpl
     void UploadHardwareReport();
     void UploadEvidenceReport();
     void UploadTelemetryMetricsReport(const anti_cheat::TelemetryMetrics &metrics);
+    void UploadSnapshotReport();  // 新增：快照数据上报
     void SendReport(const anti_cheat::Report &report);
     // 统一传感器统计记录方法
     void RecordSensorExecutionStats(const char *name, int duration_ms, SensorExecutionResult result,
@@ -1247,6 +1323,13 @@ struct CheatMonitor::Pimpl
     bool IsAddressInLegitimateModule(PVOID address, std::wstring &outModulePath);
     // 只检查地址是否在合法模块中，不返回模块路径
     bool IsAddressInLegitimateModule(PVOID address);
+
+    // 新增：快照数据采集
+    std::chrono::steady_clock::time_point m_lastSnapshotUploadTime;
+    std::vector<anti_cheat::ThreadSnapshot> CollectThreadSnapshots();
+    std::vector<anti_cheat::ModuleSnapshot> CollectModuleSnapshots();
+    std::string GetCertificateThumbprint(const std::wstring &filePath);
+    std::string CalculateSHA256String(const BYTE *data, size_t size);
 
     // IAT hook检查方法
     void CheckIatHooks(ScanContext &context, const BYTE *baseAddress, const IMAGE_IMPORT_DESCRIPTOR *pImportDesc);
@@ -1325,8 +1408,7 @@ class ScanContext
     // 提供对Pimpl方法的访问
     void CheckIatHooks(const BYTE *baseAddress, const IMAGE_IMPORT_DESCRIPTOR *pImportDesc)
     {
-        ScanContext context(m_pimpl);
-        m_pimpl->CheckIatHooks(context, baseAddress, pImportDesc);
+        m_pimpl->CheckIatHooks(*this, baseAddress, pImportDesc);
     }
 
     bool IsAddressInLegitimateModule(PVOID address, std::wstring &outModulePath)
@@ -4532,11 +4614,24 @@ class ThreadAndModuleActivitySensor : public ISensor
                 wchar_t modulePath[MAX_PATH] = {0};
                 if (GetModuleFileNameW(hNearbyModule, modulePath, MAX_PATH) > 0)
                 {
+                    // 多维度验证模块
+                    SystemUtils::WindowsVersion winVer = SystemUtils::GetWindowsVersion();
+                    Utils::ModuleValidationResult validation = Utils::ValidateModule(modulePath, winVer);
+
                     oss << "关联模块: " << Utils::WideToString(modulePath) << "\n";
                     oss << "模块基址: 0x" << std::hex << reinterpret_cast<uintptr_t>(hNearbyModule) << "\n";
                     intptr_t offset =
                             reinterpret_cast<uintptr_t>(startAddress) - reinterpret_cast<uintptr_t>(hNearbyModule);
                     oss << "相对偏移: +0x" << std::hex << offset << " (" << std::dec << offset << " 字节)\n";
+
+                    // 添加验证状态
+                    oss << "验证状态: " << validation.reason << "\n";
+
+                    // 如果不可信，标记为高风险
+                    if (!validation.isTrusted)
+                    {
+                        oss << "[CRITICAL] 该模块未通过验证，可能是外挂伪装！\n";
+                    }
                 }
             }
             else
@@ -5531,6 +5626,12 @@ void CheatMonitor::OnPlayerLogin(uint32_t user_id, const std::string &user_name)
     // 玩家登录时上报硬件信息，确保每个玩家的硬件信息都能统计到
     m_pimpl->UploadHardwareReport();
 
+    // 玩家登录时上报一次快照数据
+    if (CheatConfigManager::GetInstance().IsSnapshotUploadEnabled())
+    {
+        m_pimpl->UploadSnapshotReport();
+    }
+
     // 唤醒监控线程，快速应用新的会话状态
     m_pimpl->WakeMonitor();
 }
@@ -5585,6 +5686,14 @@ void CheatMonitor::SubmitTargetedSensorRequest(const std::string &request_id, co
 void CheatMonitor::SubmitTargetedSensorRequest(const anti_cheat::TargetedSensorCommand &command)
 {
     SubmitTargetedSensorRequest(command.request_id(), command.sensor_name());
+}
+
+void CheatMonitor::UploadSnapshot()
+{
+    if (m_pimpl)
+    {
+        m_pimpl->UploadSnapshotReport();
+    }
 }
 
 bool CheatMonitor::IsCallerLegitimate()
@@ -5751,25 +5860,28 @@ void CheatMonitor::Pimpl::InitializeProcessBaseline()
                 std::wstring path(szModName);
                 std::transform(path.begin(), path.end(), path.begin(), ::towlower);
 
-                // 增强基线建立：验证模块签名
-                // 防止未签名的外挂模块混入合法模块白名单
-                // 注意：外挂可能通过提前注入混入基线，必须在此处拦截
-                Utils::SignatureStatus sigStatus = Utils::VerifyFileSignature(path, winVer);
+                // 使用多维度验证：路径 + 签名双重检查
+                // 防止外挂通过改名、伪造签名或利用系统目录混入基线
+                Utils::ModuleValidationResult validation = Utils::ValidateModule(path, winVer);
 
-                // 仅信任拥有有效数字签名的模块
-                // 对于某些系统DLL或游戏自带DLL，如果无签名，应添加到白名单配置中，而不是盲目信任所有加载的模块
-                if (sigStatus == Utils::SignatureStatus::TRUSTED)
+                if (validation.isTrusted)
                 {
                     tempKnownModules.insert(hMods[i]);
                     modulePaths.push_back(path);
-                    LOG_INFO_F(AntiCheatLogger::LogCategory::SYSTEM, "基线初始化: 添加合法模块 %s",
-                               Utils::WideToString(path).c_str());
+                    LOG_INFO_F(AntiCheatLogger::LogCategory::SYSTEM, "基线初始化: 添加可信模块 %s (%s)",
+                               Utils::WideToString(path).c_str(), validation.reason.c_str());
                 }
                 else
                 {
+                    // 不可信的模块不加入基线，并立即上报
                     LOG_WARNING_F(AntiCheatLogger::LogCategory::SYSTEM,
-                                  "基线初始化: 排除可疑模块 (签名验证未通过): %s, 状态: %d",
-                                  Utils::WideToString(path).c_str(), (int)sigStatus);
+                                  "基线初始化: 拒绝可疑模块 %s (%s)",
+                                  Utils::WideToString(path).c_str(), validation.reason.c_str());
+
+                    // 立即上报可疑模块
+                    AddEvidence(anti_cheat::MODULE_UNTRUSTED_IN_BASELINE,
+                                "基线建立时发现不可信模块: " + Utils::WideToString(path) +
+                                " (原因: " + validation.reason + ")");
                 }
             }
         }
@@ -5903,6 +6015,7 @@ void CheatMonitor::Pimpl::MonitorLoop()
     auto next_heavy_scan = std::chrono::steady_clock::now();
     auto next_report_upload = std::chrono::steady_clock::now();
     auto next_sensor_stats_upload = std::chrono::steady_clock::now();
+    auto next_snapshot_upload = std::chrono::steady_clock::now();
 
     while (m_isSystemActive.load())
     {
@@ -5912,7 +6025,7 @@ void CheatMonitor::Pimpl::MonitorLoop()
 
         if (m_isSessionActive.load() && m_hasServerConfig.load())
         {
-            earliest = std::min({next_light_scan, next_heavy_scan, next_report_upload, next_sensor_stats_upload});
+            earliest = std::min({next_light_scan, next_heavy_scan, next_report_upload, next_sensor_stats_upload, next_snapshot_upload});
         }
 
         {
@@ -5963,6 +6076,17 @@ void CheatMonitor::Pimpl::MonitorLoop()
             UploadSensorExecutionStatsReport();
             next_sensor_stats_upload =
                     now + std::chrono::minutes(CheatConfigManager::GetInstance().GetSensorStatsUploadIntervalMinutes());
+        }
+
+        // === 快照数据上报调度 (配置间隔) ===
+        if (now >= next_snapshot_upload)
+        {
+            if (CheatConfigManager::GetInstance().IsSnapshotUploadEnabled())
+            {
+                UploadSnapshotReport();
+            }
+            next_snapshot_upload =
+                    now + std::chrono::minutes(CheatConfigManager::GetInstance().GetSnapshotUploadIntervalMinutes());
         }
     }
 }
@@ -6211,6 +6335,57 @@ void CheatMonitor::Pimpl::UploadTelemetryMetricsReport(const anti_cheat::Telemet
     SendReport(report);
 }
 
+// 新增：快照数据上报
+void CheatMonitor::Pimpl::UploadSnapshotReport()
+{
+    // 检查是否启用
+    if (!CheatConfigManager::GetInstance().IsSnapshotUploadEnabled())
+    {
+        return;
+    }
+
+    LOG_INFO(AntiCheatLogger::LogCategory::SYSTEM, "开始采集快照数据...");
+
+    // 采集数据
+    auto threads = CollectThreadSnapshots();
+    auto modules = CollectModuleSnapshots();
+
+    LOG_INFO_F(AntiCheatLogger::LogCategory::SYSTEM, "采集完成: %zu个线程, %zu个模块", threads.size(), modules.size());
+
+    // 构建报告
+    anti_cheat::Report report;
+    report.set_type(anti_cheat::REPORT_SNAPSHOT);
+
+    auto snapshot_report = report.mutable_snapshot();
+    snapshot_report->set_report_id(Utils::GenerateUuid());
+    snapshot_report->set_report_timestamp_ms(
+            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
+                    .count());
+    snapshot_report->set_user_id(m_currentUserId);
+    snapshot_report->set_user_name(m_currentUserName);
+
+    // 填充线程数据
+    for (const auto &thread : threads)
+    {
+        *snapshot_report->add_threads() = thread;
+    }
+
+    // 填充模块数据
+    for (const auto &module : modules)
+    {
+        *snapshot_report->add_modules() = module;
+    }
+
+    // 统计信息
+    snapshot_report->set_total_thread_count(static_cast<uint32_t>(threads.size()));
+    snapshot_report->set_total_module_count(static_cast<uint32_t>(modules.size()));
+
+    // 发送报告
+    SendReport(report);
+
+    LOG_INFO(AntiCheatLogger::LogCategory::SYSTEM, "快照数据上报完成");
+}
+
 void CheatMonitor::Pimpl::UploadSensorExecutionStatsReport()
 {
     // 创建TelemetryMetrics并填充统一传感器统计数据
@@ -6367,6 +6542,13 @@ void CheatMonitor::Pimpl::SendReport(const anti_cheat::Report &report)
             if (report.has_telemetry())
             {
                 content_size = 1;  // 1个遥测包
+            }
+            break;
+        case anti_cheat::REPORT_SNAPSHOT:
+            report_type_name = "Snapshot";
+            if (report.has_snapshot())
+            {
+                content_size = report.snapshot().threads_size() + report.snapshot().modules_size();
             }
             break;
         default:
@@ -7277,4 +7459,268 @@ void CheatMonitor::Pimpl::UploadTargetedSensorReport(const std::string &requestI
         *targeted->add_evidences() = e;
     }
     SendReport(report);
+}
+
+// ========== 快照数据采集实现 ==========
+
+std::vector<anti_cheat::ThreadSnapshot> CheatMonitor::Pimpl::CollectThreadSnapshots()
+{
+    std::vector<anti_cheat::ThreadSnapshot> snapshots;
+    DWORD currentPid = GetCurrentProcessId();
+
+    HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+    if (hSnapshot == INVALID_HANDLE_VALUE)
+    {
+        return snapshots;
+    }
+
+    THREADENTRY32 te;
+    te.dwSize = sizeof(te);
+
+    if (Thread32First(hSnapshot, &te))
+    {
+        do
+        {
+            if (te.th32OwnerProcessID != currentPid)
+            {
+                continue;
+            }
+
+            anti_cheat::ThreadSnapshot snapshot;
+            snapshot.set_thread_id(te.th32ThreadID);
+
+            HANDLE hThread = OpenThread(THREAD_QUERY_INFORMATION, FALSE, te.th32ThreadID);
+            if (hThread)
+            {
+                PVOID startAddress = nullptr;
+                if (SystemUtils::g_pNtQueryInformationThread)
+                {
+                    SystemUtils::g_pNtQueryInformationThread(hThread, (THREADINFOCLASS)9, &startAddress,
+                                                             sizeof(startAddress), nullptr);
+                }
+
+                if (startAddress)
+                {
+                    snapshot.set_start_address(reinterpret_cast<uint64_t>(startAddress));
+
+                    FILETIME creationTime, exitTime, kernelTime, userTime;
+                    if (GetThreadTimes(hThread, &creationTime, &exitTime, &kernelTime, &userTime))
+                    {
+                        ULARGE_INTEGER uli;
+                        uli.LowPart = creationTime.dwLowDateTime;
+                        uli.HighPart = creationTime.dwHighDateTime;
+                        snapshot.set_creation_time(uli.QuadPart);
+                    }
+
+                    MEMORY_BASIC_INFORMATION mbi = {0};
+                    if (VirtualQuery(startAddress, &mbi, sizeof(mbi)))
+                    {
+                        snapshot.set_memory_base_address(reinterpret_cast<uint64_t>(mbi.BaseAddress));
+                        snapshot.set_memory_region_size(mbi.RegionSize);
+                        snapshot.set_memory_protect(mbi.Protect);
+                        snapshot.set_memory_type(mbi.Type);
+                    }
+
+                    HMODULE hModule = nullptr;
+                    if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                                   GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                           (LPCWSTR)startAddress, &hModule) &&
+                        hModule)
+                    {
+                        wchar_t modulePath[MAX_PATH];
+                        if (GetModuleFileNameW(hModule, modulePath, MAX_PATH) > 0)
+                        {
+                            snapshot.set_associated_module_path(Utils::WideToString(modulePath));
+                            snapshot.set_module_base_address(reinterpret_cast<uint64_t>(hModule));
+                            snapshot.set_relative_offset(snapshot.start_address() - snapshot.module_base_address());
+                        }
+                    }
+                }
+
+                CloseHandle(hThread);
+            }
+
+            snapshots.push_back(snapshot);
+
+        } while (Thread32Next(hSnapshot, &te));
+    }
+
+    CloseHandle(hSnapshot);
+    return snapshots;
+}
+
+// 辅助函数：安全读取PE时间戳（使用SEH保护，不能有C++对象）
+static DWORD SafeReadPETimestamp(HMODULE hModule)
+{
+    DWORD timestamp = 0;
+    __try
+    {
+        const BYTE *baseAddress = reinterpret_cast<const BYTE *>(hModule);
+        const auto *pDosHeader = reinterpret_cast<const IMAGE_DOS_HEADER *>(baseAddress);
+        if (pDosHeader->e_magic == IMAGE_DOS_SIGNATURE)
+        {
+            const auto *pNtHeaders =
+                    reinterpret_cast<const IMAGE_NT_HEADERS *>(baseAddress + pDosHeader->e_lfanew);
+            if (pNtHeaders->Signature == IMAGE_NT_SIGNATURE)
+            {
+                timestamp = pNtHeaders->FileHeader.TimeDateStamp;
+            }
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+    }
+    return timestamp;
+}
+
+std::vector<anti_cheat::ModuleSnapshot> CheatMonitor::Pimpl::CollectModuleSnapshots()
+{
+    std::vector<anti_cheat::ModuleSnapshot> snapshots;
+
+    std::vector<HMODULE> hMods(1024);
+    DWORD cbNeeded = 0;
+
+    if (!EnumProcessModules(GetCurrentProcess(), hMods.data(), hMods.size() * sizeof(HMODULE), &cbNeeded))
+    {
+        return snapshots;
+    }
+
+    size_t moduleCount = cbNeeded / sizeof(HMODULE);
+
+    for (size_t i = 0; i < moduleCount; i++)
+    {
+        anti_cheat::ModuleSnapshot snapshot;
+
+        wchar_t modulePath[MAX_PATH];
+        if (GetModuleFileNameW(hMods[i], modulePath, MAX_PATH) > 0)
+        {
+            snapshot.set_module_path(Utils::WideToString(modulePath));
+            snapshot.set_base_address(reinterpret_cast<uint64_t>(hMods[i]));
+
+            MODULEINFO modInfo;
+            if (GetModuleInformation(GetCurrentProcess(), hMods[i], &modInfo, sizeof(modInfo)))
+            {
+                snapshot.set_module_size(modInfo.SizeOfImage);
+            }
+
+            // 读取PE时间戳
+            DWORD peTimestamp = SafeReadPETimestamp(hMods[i]);
+            if (peTimestamp != 0)
+            {
+                snapshot.set_timestamp(peTimestamp);
+            }
+
+            Utils::SignatureStatus sigStatus = Utils::VerifyFileSignature(modulePath, m_windowsVersion);
+            snapshot.set_has_signature(sigStatus == Utils::SignatureStatus::TRUSTED);
+
+            if (snapshot.has_signature())
+            {
+                std::string thumbprint = GetCertificateThumbprint(modulePath);
+                snapshot.set_cert_thumbprint(thumbprint);
+            }
+
+            PVOID codeBase = nullptr;
+            DWORD codeSize = 0;
+            if (SystemUtils::GetModuleCodeSectionInfo(hMods[i], codeBase, codeSize))
+            {
+                std::string hash = CalculateSHA256String(static_cast<BYTE *>(codeBase), codeSize);
+                snapshot.set_code_section_hash(hash);
+            }
+
+            snapshots.push_back(snapshot);
+        }
+    }
+
+    return snapshots;
+}
+
+std::string CheatMonitor::Pimpl::GetCertificateThumbprint(const std::wstring &filePath)
+{
+    HCERTSTORE hStore = NULL;
+    HCRYPTMSG hMsg = NULL;
+    PCCERT_CONTEXT pCertContext = NULL;
+    std::string thumbprint;
+
+    if (!CryptQueryObject(CERT_QUERY_OBJECT_FILE, filePath.c_str(), CERT_QUERY_CONTENT_FLAG_PKCS7_SIGNED_EMBED,
+                          CERT_QUERY_FORMAT_FLAG_BINARY, 0, NULL, NULL, NULL, &hStore, &hMsg, NULL))
+    {
+        return "";
+    }
+
+    DWORD dwSignerInfo = 0;
+    CryptMsgGetParam(hMsg, CMSG_SIGNER_INFO_PARAM, 0, NULL, &dwSignerInfo);
+    std::vector<BYTE> signerInfo(dwSignerInfo);
+    CryptMsgGetParam(hMsg, CMSG_SIGNER_INFO_PARAM, 0, signerInfo.data(), &dwSignerInfo);
+
+    CMSG_SIGNER_INFO *pSignerInfo = (CMSG_SIGNER_INFO *)signerInfo.data();
+    CERT_INFO certInfo = {0};
+    certInfo.Issuer = pSignerInfo->Issuer;
+    certInfo.SerialNumber = pSignerInfo->SerialNumber;
+
+    pCertContext = CertFindCertificateInStore(hStore, X509_ASN_ENCODING | PKCS_7_ASN_ENCODING, 0,
+                                              CERT_FIND_SUBJECT_CERT, &certInfo, NULL);
+
+    if (pCertContext)
+    {
+        BYTE hash[32];
+        DWORD hashLen = sizeof(hash);
+        CertGetCertificateContextProperty(pCertContext, CERT_SHA256_HASH_PROP_ID, hash, &hashLen);
+
+        std::ostringstream oss;
+        for (DWORD i = 0; i < hashLen; i++)
+        {
+            oss << std::hex << std::setw(2) << std::setfill('0') << (int)hash[i];
+        }
+        thumbprint = oss.str();
+        CertFreeCertificateContext(pCertContext);
+    }
+
+    if (hStore)
+        CertCloseStore(hStore, 0);
+    if (hMsg)
+        CryptMsgClose(hMsg);
+    return thumbprint;
+}
+
+std::string CheatMonitor::Pimpl::CalculateSHA256String(const BYTE *data, size_t size)
+{
+    HCRYPTPROV hProv = 0;
+    HCRYPTHASH hHash = 0;
+
+    if (!CryptAcquireContext(&hProv, NULL, NULL, PROV_RSA_AES, CRYPT_VERIFYCONTEXT))
+    {
+        return "";
+    }
+
+    if (!CryptCreateHash(hProv, CALG_SHA_256, 0, 0, &hHash))
+    {
+        CryptReleaseContext(hProv, 0);
+        return "";
+    }
+
+    if (!CryptHashData(hHash, data, size, 0))
+    {
+        CryptDestroyHash(hHash);
+        CryptReleaseContext(hProv, 0);
+        return "";
+    }
+
+    BYTE hash[32];
+    DWORD hashLen = sizeof(hash);
+    if (!CryptGetHashParam(hHash, HP_HASHVAL, hash, &hashLen, 0))
+    {
+        CryptDestroyHash(hHash);
+        CryptReleaseContext(hProv, 0);
+        return "";
+    }
+
+    std::ostringstream oss;
+    for (DWORD i = 0; i < hashLen; i++)
+    {
+        oss << std::hex << std::setw(2) << std::setfill('0') << (int)hash[i];
+    }
+
+    CryptDestroyHash(hHash);
+    CryptReleaseContext(hProv, 0);
+    return oss.str();
 }
