@@ -757,7 +757,6 @@ void CheatConfigManager::SetDefaultValues(ConfigData& configData)
     auto* fmod_module = configData.config->add_trusted_third_party_modules();
     fmod_module->set_module_name("fmodex.dll");
     fmod_module->set_module_size(0);  // 0表示不检查大小
-    fmod_module->add_code_hashes("");  // 空哈希表示暂时不验证哈希，仅基于文件名
     fmod_module->add_code_hashes("sha256:placeholder_fmodex_hash");  // 实际部署时需要替换为真实哈希
     fmod_module->add_code_hashes("sha1:placeholder_fmodex_hash_sha1");  // Windows XP兼容
     fmod_module->set_description("FMOD音频引擎");
@@ -767,7 +766,6 @@ void CheatConfigManager::SetDefaultValues(ConfigData& configData)
     auto* ak_module = configData.config->add_trusted_third_party_modules();
     ak_module->set_module_name("aksoundenginedll_d.dll");
     ak_module->set_module_size(0);  // 0表示不检查大小
-    ak_module->add_code_hashes("");  // 空哈希表示暂时不验证哈希，仅基于文件名
     ak_module->add_code_hashes("sha256:placeholder_ak_hash");  // 实际部署时需要替换为真实哈希
     ak_module->add_code_hashes("sha1:placeholder_ak_hash_sha1");  // Windows XP兼容
     ak_module->set_description("Audiokinetic Wwise音频引擎");
