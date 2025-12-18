@@ -79,6 +79,21 @@ class CheatConfigManager
     int32_t GetSnapshotUploadIntervalMinutes() const;  // 快照上报间隔(分钟)
     bool IsSnapshotUploadEnabled() const;              // 是否启用快照上报
 
+    // [新增] 官方第三方库白名单配置
+    struct TrustedThirdPartyModule
+    {
+        std::wstring module_name;           // 模块文件名（不区分大小写）
+        uint64_t module_size;               // 模块大小（字节），0表示不检查大小
+        std::vector<std::string> code_hashes; // 支持的代码哈希列表（支持sha256:xxx或sha1:xxx格式）
+        std::string description;            // 描述信息
+        bool enabled;                       // 是否启用此白名单项
+
+        TrustedThirdPartyModule() : module_size(0), enabled(true) {}
+    };
+
+    std::shared_ptr<const std::vector<TrustedThirdPartyModule>> GetTrustedThirdPartyModules() const;
+    bool IsTrustedThirdPartyModule(const std::wstring& module_name, uint64_t module_size, const std::string& code_hash) const;
+
    private:
     struct ConfigData
     {
@@ -89,6 +104,7 @@ class CheatConfigManager
         std::unordered_set<std::wstring> whitelistedProcessPaths_w;
         std::unordered_set<std::wstring> whitelistedWindowKeywords_w;
         std::unordered_set<std::wstring> knownGoodProcesses_w;
+        std::vector<TrustedThirdPartyModule> trustedThirdPartyModules; // 官方第三方库白名单
         // 简化版：无禁用名单
 
         ConfigData() : config(std::make_unique<anti_cheat::ClientConfig>())
