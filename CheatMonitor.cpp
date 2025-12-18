@@ -961,6 +961,91 @@ static std::string CalculateModuleHash(const BYTE *data, size_t size)
     return "";
 }
 
+// 从磁盘文件读取代码节并计算哈希（避免内存重定位影响）
+static std::string CalculateModuleHashFromFile(const std::wstring &filePath)
+{
+    HANDLE hFile = CreateFileW(filePath.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hFile == INVALID_HANDLE_VALUE)
+    {
+        return "";
+    }
+
+    DWORD fileSize = GetFileSize(hFile, NULL);
+    if (fileSize == INVALID_FILE_SIZE || fileSize == 0)
+    {
+        CloseHandle(hFile);
+        return "";
+    }
+
+    std::vector<BYTE> fileData(fileSize);
+    DWORD bytesRead = 0;
+    if (!ReadFile(hFile, fileData.data(), fileSize, &bytesRead, NULL) || bytesRead != fileSize)
+    {
+        CloseHandle(hFile);
+        return "";
+    }
+    CloseHandle(hFile);
+
+    // 解析PE结构
+    const BYTE *baseAddress = fileData.data();
+    const auto *pDosHeader = reinterpret_cast<const IMAGE_DOS_HEADER *>(baseAddress);
+    if (pDosHeader->e_magic != IMAGE_DOS_SIGNATURE)
+    {
+        return "";
+    }
+
+    const auto *pNtHeaders = reinterpret_cast<const IMAGE_NT_HEADERS *>(baseAddress + pDosHeader->e_lfanew);
+    if (pNtHeaders->Signature != IMAGE_NT_SIGNATURE)
+    {
+        return "";
+    }
+
+    // 查找代码节（与GetModuleCodeSectionInfoInternal相同逻辑）
+    PIMAGE_SECTION_HEADER pSectionHeader = IMAGE_FIRST_SECTION(pNtHeaders);
+    PIMAGE_SECTION_HEADER pFirstCodeSection = nullptr;
+    PIMAGE_SECTION_HEADER pTextSection = nullptr;
+    PIMAGE_SECTION_HEADER pFirstExecutableSection = nullptr;
+
+    for (int i = 0; i < pNtHeaders->FileHeader.NumberOfSections; i++, pSectionHeader++)
+    {
+        if (!pFirstCodeSection && (pSectionHeader->Characteristics & IMAGE_SCN_CNT_CODE))
+        {
+            pFirstCodeSection = pSectionHeader;
+        }
+
+        if (!pTextSection && strncmp((const char *)pSectionHeader->Name, ".text", 8) == 0)
+        {
+            pTextSection = pSectionHeader;
+        }
+
+        if (!pFirstExecutableSection && (pSectionHeader->Characteristics & IMAGE_SCN_MEM_EXECUTE))
+        {
+            pFirstExecutableSection = pSectionHeader;
+        }
+    }
+
+    PIMAGE_SECTION_HEADER pSelectedSection = pFirstCodeSection ? pFirstCodeSection
+                                              : pTextSection   ? pTextSection
+                                                               : pFirstExecutableSection;
+
+    if (!pSelectedSection)
+    {
+        return "";
+    }
+
+    // 从文件中读取原始代码节数据（使用PointerToRawData，不是VirtualAddress）
+    DWORD rawOffset = pSelectedSection->PointerToRawData;
+    DWORD rawSize = pSelectedSection->SizeOfRawData;
+
+    if (rawOffset + rawSize > fileSize)
+    {
+        return "";
+    }
+
+    // 计算原始代码节的哈希
+    return CalculateModuleHash(baseAddress + rawOffset, rawSize);
+}
+
 // 模块验证结果结构体
 struct ModuleValidationResult
 {
@@ -1079,18 +1164,8 @@ static ModuleValidationResult ValidateModule(const std::wstring &modulePath, Sys
                     moduleSize = static_cast<uint64_t>(fileSize);
                 }
 
-                // 获取模块句柄以计算代码哈希
-                HMODULE hModule = GetModuleHandleW(modulePath.c_str());
-                if (hModule)
-                {
-                    LPVOID codeBase = nullptr;
-                    DWORD codeSize = 0;
-                    if (SystemUtils::GetModuleCodeSectionInfo(hModule, codeBase, codeSize))
-                    {
-                        // 计算代码节哈希（支持Windows XP兼容性）
-                        codeHash = CalculateModuleHash(static_cast<BYTE*>(codeBase), codeSize);
-                    }
-                }
+                // 从磁盘文件计算代码节哈希（避免内存重定位影响）
+                codeHash = CalculateModuleHashFromFile(modulePath);
             }
             catch (...)
             {
