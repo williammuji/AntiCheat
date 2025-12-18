@@ -421,6 +421,19 @@ message ClientConfig {
   // --- 快照上报配置 ---
   optional int32 snapshot_upload_interval_minutes = 32;  // 快照上报间隔(分钟)，默认30
   optional bool enable_snapshot_upload = 33;             // 是否启用快照上报，默认true
+
+  // --- 官方第三方库白名单配置 ---
+  repeated TrustedThirdPartyModule trusted_third_party_modules = 34;  // 官方认可的第三方库列表
+}
+
+// 官方认可的第三方库配置
+// 用于配置游戏官方使用的第三方库，避免被误识别为可疑模块
+message TrustedThirdPartyModule {
+  string module_name = 1;           // 模块文件名（不区分大小写），例如 "fmodex.dll"
+  optional uint64 module_size = 2;  // 模块大小（字节），用于进一步验证，0表示不检查大小
+  repeated string code_hashes = 3;  // 支持的代码哈希列表（支持sha256:xxx或sha1:xxx格式）
+  optional string description = 4;  // 描述信息，例如 "FMOD音频引擎"
+  optional bool enabled = 5;        // 是否启用此白名单项，默认true
 }
 
 // 服务器下发的单次临时传感器扫描指令

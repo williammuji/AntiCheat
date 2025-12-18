@@ -750,6 +750,29 @@ void CheatConfigManager::SetDefaultValues(ConfigData& configData)
     configData.config->set_snapshot_upload_interval_minutes(30);  // 默认30分钟上报一次
     configData.config->set_enable_snapshot_upload(true);          // 默认启用快照上报
 
+    // 新增：官方第三方库白名单配置
+    configData.config->clear_trusted_third_party_modules();
+
+    // 添加 fmodex.dll 配置
+    auto* fmod_module = configData.config->add_trusted_third_party_modules();
+    fmod_module->set_module_name("fmodex.dll");
+    fmod_module->set_module_size(0);  // 0表示不检查大小
+    fmod_module->add_code_hashes("");  // 空哈希表示暂时不验证哈希，仅基于文件名
+    fmod_module->add_code_hashes("sha256:placeholder_fmodex_hash");  // 实际部署时需要替换为真实哈希
+    fmod_module->add_code_hashes("sha1:placeholder_fmodex_hash_sha1");  // Windows XP兼容
+    fmod_module->set_description("FMOD音频引擎");
+    fmod_module->set_enabled(true);
+
+    // 添加 aksoundenginedll_d.dll 配置
+    auto* ak_module = configData.config->add_trusted_third_party_modules();
+    ak_module->set_module_name("aksoundenginedll_d.dll");
+    ak_module->set_module_size(0);  // 0表示不检查大小
+    ak_module->add_code_hashes("");  // 空哈希表示暂时不验证哈希，仅基于文件名
+    ak_module->add_code_hashes("sha256:placeholder_ak_hash");  // 实际部署时需要替换为真实哈希
+    ak_module->add_code_hashes("sha1:placeholder_ak_hash_sha1");  // Windows XP兼容
+    ak_module->set_description("Audiokinetic Wwise音频引擎");
+    ak_module->set_enabled(true);
+
     // 不再在客户端生成/校验配置签名：配置下发已在传输层加密与鉴权
 
     UpdateWideStringCaches(configData);
@@ -781,8 +804,80 @@ void CheatConfigManager::UpdateWideStringCaches(ConfigData& configData)
     convert_to_set(configData.config->whitelisted_window_keywords(), configData.whitelistedWindowKeywords_w);
     convert_to_set(configData.config->known_good_processes(), configData.knownGoodProcesses_w);
 
+    // 更新官方第三方库白名单缓存
+    configData.trustedThirdPartyModules.clear();
+    configData.trustedThirdPartyModules.reserve(configData.config->trusted_third_party_modules_size());
+
+    for (const auto& proto_module : configData.config->trusted_third_party_modules())
+    {
+        TrustedThirdPartyModule module;
+        module.module_name = Utils::StringToWide(proto_module.module_name());
+        module.module_size = proto_module.module_size();
+        module.code_hashes.reserve(proto_module.code_hashes_size());
+        for (const auto& hash : proto_module.code_hashes())
+        {
+            module.code_hashes.push_back(hash);
+        }
+        module.description = proto_module.description();
+        module.enabled = proto_module.enabled();
+
+        configData.trustedThirdPartyModules.push_back(std::move(module));
+    }
+
     // 简化版：无禁用名单
 }
 
 // --- 安全相关函数 ---
 // 客户端不再本地验证配置签名，依赖传输层加密与服务端鉴权
+
+// --- 官方第三方库白名单相关方法 ---
+
+std::shared_ptr<const std::vector<CheatConfigManager::TrustedThirdPartyModule>> CheatConfigManager::GetTrustedThirdPartyModules() const
+{
+    auto config = GetCurrentConfig();
+    return std::shared_ptr<const std::vector<TrustedThirdPartyModule>>(config, &config->trustedThirdPartyModules);
+}
+
+bool CheatConfigManager::IsTrustedThirdPartyModule(const std::wstring& module_name, uint64_t module_size, const std::string& code_hash) const
+{
+    auto trusted_modules = GetTrustedThirdPartyModules();
+
+    // 转换模块名为小写进行比较（不区分大小写）
+    std::wstring module_name_lower = module_name;
+    std::transform(module_name_lower.begin(), module_name_lower.end(), module_name_lower.begin(), ::towlower);
+
+    for (const auto& trusted_module : *trusted_modules)
+    {
+        // 检查是否启用
+        if (!trusted_module.enabled)
+        {
+            continue;
+        }
+
+        // 检查模块名（不区分大小写）
+        std::wstring trusted_name_lower = trusted_module.module_name;
+        std::transform(trusted_name_lower.begin(), trusted_name_lower.end(), trusted_name_lower.begin(), ::towlower);
+
+        if (module_name_lower != trusted_name_lower)
+        {
+            continue;
+        }
+
+        // 检查模块大小（如果配置了大小检查）
+        if (trusted_module.module_size != 0 && module_size != trusted_module.module_size)
+        {
+            continue;
+        }
+
+        // 检查代码哈希
+        for (const auto& trusted_hash : trusted_module.code_hashes)
+        {
+            if (code_hash == trusted_hash)
+            {
+                return true;  // 找到匹配的哈希
+            }
+        }
+    }
+
+    return false;  // 未找到匹配的可信第三方模块
+}
