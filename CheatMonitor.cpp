@@ -23,6 +23,25 @@
 #include <TlHelp32.h>
 #include <Wincrypt.h>  // 为证书和哈希函数添加头文件
 #include <intrin.h>
+
+// Windows XP/Vista 兼容性定义
+// 这些宏在较新的 Windows SDK 中定义，但在 XP/Vista 时代的 SDK 中可能不存在
+#ifndef CALG_SHA_256
+#define CALG_SHA_256 (ALG_CLASS_HASH | ALG_TYPE_ANY | ALG_SID_SHA_256)
+#endif
+
+#ifndef ALG_SID_SHA_256
+#define ALG_SID_SHA_256 12
+#endif
+
+#ifndef CERT_SHA256_HASH_PROP_ID
+#define CERT_SHA256_HASH_PROP_ID 107
+#endif
+
+// 如果系统不支持 PROV_RSA_AES，回退到 PROV_RSA_FULL
+#ifndef PROV_RSA_AES
+#define PROV_RSA_AES PROV_RSA_FULL
+#endif
 // 注意：ntstatus.h 和 winnt.h 中有重复的宏定义，会导致警告
 // 我们只包含 winternl.h，它已经包含了必要的 NTSTATUS 定义
 #include <winternl.h>  // 包含 NTSTATUS 等定义
@@ -7662,11 +7681,41 @@ std::string CheatMonitor::Pimpl::GetCertificateThumbprint(const std::wstring &fi
 
     if (pCertContext)
     {
+        // 首先尝试获取 SHA-256 指纹
         BYTE hash[32];
         DWORD hashLen = sizeof(hash);
-        CertGetCertificateContextProperty(pCertContext, CERT_SHA256_HASH_PROP_ID, hash, &hashLen);
+        bool useSHA256 = CertGetCertificateContextProperty(pCertContext, CERT_SHA256_HASH_PROP_ID, hash, &hashLen);
+
+        if (!useSHA256)
+        {
+            // 如果 SHA-256 不支持，降级使用 SHA-1 指纹（Windows XP 兼容）
+            LOG_DEBUG(AntiCheatLogger::LogCategory::SYSTEM,
+                     "GetCertificateThumbprint: SHA-256 证书属性不支持，降级使用 SHA-1");
+
+            hashLen = 20;  // SHA-1 哈希长度
+            if (!CertGetCertificateContextProperty(pCertContext, CERT_SHA1_HASH_PROP_ID, hash, &hashLen))
+            {
+                LOG_WARNING_F(AntiCheatLogger::LogCategory::SYSTEM,
+                             "GetCertificateThumbprint: 获取 SHA-1 证书指纹也失败，错误码: 0x%08X", GetLastError());
+                CertFreeCertificateContext(pCertContext);
+                if (hStore) CertCloseStore(hStore, 0);
+                if (hMsg) CryptMsgClose(hMsg);
+                return "";
+            }
+        }
 
         std::ostringstream oss;
+
+        // 添加哈希类型前缀
+        if (useSHA256)
+        {
+            oss << "sha256:";
+        }
+        else
+        {
+            oss << "sha1:";
+        }
+
         for (DWORD i = 0; i < hashLen; i++)
         {
             oss << std::hex << std::setw(2) << std::setfill('0') << (int)hash[i];
@@ -7687,34 +7736,93 @@ std::string CheatMonitor::Pimpl::CalculateSHA256String(const BYTE *data, size_t 
     HCRYPTPROV hProv = 0;
     HCRYPTHASH hHash = 0;
 
-    if (!CryptAcquireContext(&hProv, NULL, NULL, PROV_RSA_AES, CRYPT_VERIFYCONTEXT))
+    // 首先尝试获取支持 AES 的加密提供程序（Windows Vista+）
+    bool useAES = CryptAcquireContext(&hProv, NULL, NULL, PROV_RSA_AES, CRYPT_VERIFYCONTEXT);
+
+    // 如果失败，回退到传统的 RSA 提供程序（Windows XP 兼容）
+    if (!useAES)
     {
-        return "";
+        if (!CryptAcquireContext(&hProv, NULL, NULL, PROV_RSA_FULL, CRYPT_VERIFYCONTEXT))
+        {
+            LOG_DEBUG(AntiCheatLogger::LogCategory::SYSTEM,
+                     "CalculateSHA256String: 无法获取加密上下文，可能不支持加密API");
+            return "";
+        }
     }
 
+    // 尝试创建 SHA-256 哈希
     if (!CryptCreateHash(hProv, CALG_SHA_256, 0, 0, &hHash))
     {
-        CryptReleaseContext(hProv, 0);
-        return "";
+        DWORD error = GetLastError();
+
+        // 如果 SHA-256 不支持，尝试使用 SHA-1 作为降级方案
+        if (error == NTE_BAD_ALGID || error == ERROR_INVALID_PARAMETER)
+        {
+            LOG_DEBUG(AntiCheatLogger::LogCategory::SYSTEM,
+                     "CalculateSHA256String: SHA-256 不支持，降级使用 SHA-1");
+
+            if (!CryptCreateHash(hProv, CALG_SHA1, 0, 0, &hHash))
+            {
+                LOG_WARNING_F(AntiCheatLogger::LogCategory::SYSTEM,
+                             "CalculateSHA256String: SHA-1 也不支持，错误码: 0x%08X", GetLastError());
+                CryptReleaseContext(hProv, 0);
+                return "";
+            }
+        }
+        else
+        {
+            LOG_WARNING_F(AntiCheatLogger::LogCategory::SYSTEM,
+                         "CalculateSHA256String: 创建哈希失败，错误码: 0x%08X", error);
+            CryptReleaseContext(hProv, 0);
+            return "";
+        }
     }
 
     if (!CryptHashData(hHash, data, size, 0))
     {
+        LOG_WARNING_F(AntiCheatLogger::LogCategory::SYSTEM,
+                     "CalculateSHA256String: 哈希数据失败，错误码: 0x%08X", GetLastError());
         CryptDestroyHash(hHash);
         CryptReleaseContext(hProv, 0);
         return "";
     }
 
-    BYTE hash[32];
-    DWORD hashLen = sizeof(hash);
-    if (!CryptGetHashParam(hHash, HP_HASHVAL, hash, &hashLen, 0))
+    // 获取哈希值长度
+    DWORD hashLen = 0;
+    DWORD paramLen = sizeof(hashLen);
+    if (!CryptGetHashParam(hHash, HP_HASHSIZE, (BYTE*)&hashLen, &paramLen, 0))
     {
+        LOG_WARNING_F(AntiCheatLogger::LogCategory::SYSTEM,
+                     "CalculateSHA256String: 获取哈希长度失败，错误码: 0x%08X", GetLastError());
         CryptDestroyHash(hHash);
         CryptReleaseContext(hProv, 0);
         return "";
     }
 
+    // 分配适当大小的缓冲区（SHA-256=32字节，SHA-1=20字节）
+    std::vector<BYTE> hash(hashLen);
+    if (!CryptGetHashParam(hHash, HP_HASHVAL, hash.data(), &hashLen, 0))
+    {
+        LOG_WARNING_F(AntiCheatLogger::LogCategory::SYSTEM,
+                     "CalculateSHA256String: 获取哈希值失败，错误码: 0x%08X", GetLastError());
+        CryptDestroyHash(hHash);
+        CryptReleaseContext(hProv, 0);
+        return "";
+    }
+
+    // 构建十六进制字符串
     std::ostringstream oss;
+
+    // 如果使用的是 SHA-1，添加前缀标识
+    if (hashLen == 20)
+    {
+        oss << "sha1:";
+    }
+    else if (hashLen == 32)
+    {
+        oss << "sha256:";
+    }
+
     for (DWORD i = 0; i < hashLen; i++)
     {
         oss << std::hex << std::setw(2) << std::setfill('0') << (int)hash[i];
