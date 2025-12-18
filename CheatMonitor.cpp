@@ -886,6 +886,81 @@ SignatureStatus VerifyFileSignature(const std::wstring &filePath, SystemUtils::W
     }
 }
 
+// 计算模块代码哈希（支持Windows XP兼容性）
+static std::string CalculateModuleHash(const BYTE *data, size_t size)
+{
+    HCRYPTPROV hProv = 0;
+    HCRYPTHASH hHash = 0;
+
+    // 获取加密上下文
+    if (!CryptAcquireContext(&hProv, NULL, NULL, PROV_RSA_AES, CRYPT_VERIFYCONTEXT))
+    {
+        if (!CryptAcquireContext(&hProv, NULL, NULL, PROV_RSA_FULL, CRYPT_VERIFYCONTEXT))
+        {
+            return "";
+        }
+    }
+
+    // 尝试SHA-256
+    if (CryptCreateHash(hProv, CALG_SHA_256, 0, 0, &hHash))
+    {
+        if (CryptHashData(hHash, data, (DWORD)size, 0))
+        {
+            DWORD hashLen = 0;
+            DWORD hashLenSize = sizeof(DWORD);
+            if (CryptGetHashParam(hHash, HP_HASHSIZE, (BYTE*)&hashLen, &hashLenSize, 0))
+            {
+                std::vector<BYTE> hash(hashLen);
+                if (CryptGetHashParam(hHash, HP_HASHVAL, hash.data(), &hashLen, 0))
+                {
+                    CryptDestroyHash(hHash);
+                    CryptReleaseContext(hProv, 0);
+
+                    std::ostringstream oss;
+                    oss << "sha256:";
+                    for (DWORD i = 0; i < hashLen; i++)
+                    {
+                        oss << std::hex << std::setw(2) << std::setfill('0') << (int)hash[i];
+                    }
+                    return oss.str();
+                }
+            }
+        }
+        CryptDestroyHash(hHash);
+    }
+
+    // SHA-256失败，降级到SHA-1（Windows XP兼容）
+    if (CryptCreateHash(hProv, CALG_SHA1, 0, 0, &hHash))
+    {
+        if (CryptHashData(hHash, data, (DWORD)size, 0))
+        {
+            DWORD hashLen = 0;
+            DWORD hashLenSize = sizeof(DWORD);
+            if (CryptGetHashParam(hHash, HP_HASHSIZE, (BYTE*)&hashLen, &hashLenSize, 0))
+            {
+                std::vector<BYTE> hash(hashLen);
+                if (CryptGetHashParam(hHash, HP_HASHVAL, hash.data(), &hashLen, 0))
+                {
+                    CryptDestroyHash(hHash);
+                    CryptReleaseContext(hProv, 0);
+
+                    std::ostringstream oss;
+                    oss << "sha1:";
+                    for (DWORD i = 0; i < hashLen; i++)
+                    {
+                        oss << std::hex << std::setw(2) << std::setfill('0') << (int)hash[i];
+                    }
+                    return oss.str();
+                }
+            }
+        }
+        CryptDestroyHash(hHash);
+    }
+
+    CryptReleaseContext(hProv, 0);
+    return "";
+}
+
 // 模块验证结果结构体
 struct ModuleValidationResult
 {
@@ -1013,10 +1088,7 @@ static ModuleValidationResult ValidateModule(const std::wstring &modulePath, Sys
                     if (SystemUtils::GetModuleCodeSectionInfo(hModule, codeBase, codeSize))
                     {
                         // 计算代码节哈希（支持Windows XP兼容性）
-                        // 注意：这里需要访问CheatMonitor实例的CalculateSHA256String方法
-                        // 由于这是静态函数，我们需要重新实现哈希计算或者简化验证逻辑
-                        // 暂时跳过哈希验证，仅基于文件名和大小进行白名单检查
-                        codeHash = ""; // 暂时不计算哈希
+                        codeHash = CalculateModuleHash(static_cast<BYTE*>(codeBase), codeSize);
                     }
                 }
             }
@@ -1025,9 +1097,8 @@ static ModuleValidationResult ValidateModule(const std::wstring &modulePath, Sys
                 // 忽略异常，继续使用默认验证逻辑
             }
 
-            // 检查官方第三方库白名单（暂时不验证哈希，仅基于文件名）
-            // 注意：为了安全起见，这里使用空哈希进行检查，配置中应该包含空哈希选项
-            if (CheatConfigManager::GetInstance().IsTrustedThirdPartyModule(fileName, moduleSize, ""))
+            // 检查官方第三方库白名单（包含哈希验证）
+            if (CheatConfigManager::GetInstance().IsTrustedThirdPartyModule(fileName, moduleSize, codeHash))
             {
                 result.isTrusted = true;
                 result.reason = "官方第三方库白名单 + 文件名匹配";
