@@ -1143,20 +1143,42 @@ static bool GetModuleCodeSectionInfoInternal(HMODULE hModule, PVOID *outBase, DW
         }
 
         PIMAGE_SECTION_HEADER pSectionHeader = IMAGE_FIRST_SECTION(pNtHeaders);
-        int codeSectionCount = 0;
+        PIMAGE_SECTION_HEADER pFirstCodeSection = nullptr;
+        PIMAGE_SECTION_HEADER pTextSection = nullptr;
+        PIMAGE_SECTION_HEADER pFirstExecutableSection = nullptr;
+
+        // 遍历所有节，收集候选代码节
         for (int i = 0; i < pNtHeaders->FileHeader.NumberOfSections; i++, pSectionHeader++)
         {
-            // 寻找第一个可执行代码节 (通常是 .text)
-            if (pSectionHeader->Characteristics & IMAGE_SCN_CNT_CODE)
+            // 方案1: 查找带IMAGE_SCN_CNT_CODE标志的节
+            if (!pFirstCodeSection && (pSectionHeader->Characteristics & IMAGE_SCN_CNT_CODE))
             {
-                codeSectionCount++;
-                if (codeSectionCount == 1)  // 只取第一个代码节
-                {
-                    *outBase = (PVOID)(baseAddress + pSectionHeader->VirtualAddress);
-                    *outSize = pSectionHeader->Misc.VirtualSize;
-                    return true;
-                }
+                pFirstCodeSection = pSectionHeader;
             }
+
+            // 方案2: 查找名为".text"的节
+            if (!pTextSection && strncmp((const char *)pSectionHeader->Name, ".text", 8) == 0)
+            {
+                pTextSection = pSectionHeader;
+            }
+
+            // 方案3: 查找第一个可执行节
+            if (!pFirstExecutableSection && (pSectionHeader->Characteristics & IMAGE_SCN_MEM_EXECUTE))
+            {
+                pFirstExecutableSection = pSectionHeader;
+            }
+        }
+
+        // 优先级: IMAGE_SCN_CNT_CODE > .text节 > 可执行节
+        PIMAGE_SECTION_HEADER pSelectedSection = pFirstCodeSection ? pFirstCodeSection
+                                                  : pTextSection   ? pTextSection
+                                                                   : pFirstExecutableSection;
+
+        if (pSelectedSection)
+        {
+            *outBase = (PVOID)(baseAddress + pSelectedSection->VirtualAddress);
+            *outSize = pSelectedSection->Misc.VirtualSize;
+            return true;
         }
 
         return false;
