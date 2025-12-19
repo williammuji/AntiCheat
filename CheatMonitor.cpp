@@ -886,165 +886,7 @@ SignatureStatus VerifyFileSignature(const std::wstring &filePath, SystemUtils::W
     }
 }
 
-// 计算模块代码哈希（支持Windows XP兼容性）
-static std::string CalculateModuleHash(const BYTE *data, size_t size)
-{
-    HCRYPTPROV hProv = 0;
-    HCRYPTHASH hHash = 0;
 
-    // 获取加密上下文
-    if (!CryptAcquireContext(&hProv, NULL, NULL, PROV_RSA_AES, CRYPT_VERIFYCONTEXT))
-    {
-        if (!CryptAcquireContext(&hProv, NULL, NULL, PROV_RSA_FULL, CRYPT_VERIFYCONTEXT))
-        {
-            return "";
-        }
-    }
-
-    // 尝试SHA-256
-    if (CryptCreateHash(hProv, CALG_SHA_256, 0, 0, &hHash))
-    {
-        if (CryptHashData(hHash, data, (DWORD)size, 0))
-        {
-            DWORD hashLen = 0;
-            DWORD hashLenSize = sizeof(DWORD);
-            if (CryptGetHashParam(hHash, HP_HASHSIZE, (BYTE*)&hashLen, &hashLenSize, 0))
-            {
-                std::vector<BYTE> hash(hashLen);
-                if (CryptGetHashParam(hHash, HP_HASHVAL, hash.data(), &hashLen, 0))
-                {
-                    CryptDestroyHash(hHash);
-                    CryptReleaseContext(hProv, 0);
-
-                    std::ostringstream oss;
-                    oss << "sha256:";
-                    for (DWORD i = 0; i < hashLen; i++)
-                    {
-                        oss << std::hex << std::setw(2) << std::setfill('0') << (int)hash[i];
-                    }
-                    return oss.str();
-                }
-            }
-        }
-        CryptDestroyHash(hHash);
-    }
-
-    // SHA-256失败，降级到SHA-1（Windows XP兼容）
-    if (CryptCreateHash(hProv, CALG_SHA1, 0, 0, &hHash))
-    {
-        if (CryptHashData(hHash, data, (DWORD)size, 0))
-        {
-            DWORD hashLen = 0;
-            DWORD hashLenSize = sizeof(DWORD);
-            if (CryptGetHashParam(hHash, HP_HASHSIZE, (BYTE*)&hashLen, &hashLenSize, 0))
-            {
-                std::vector<BYTE> hash(hashLen);
-                if (CryptGetHashParam(hHash, HP_HASHVAL, hash.data(), &hashLen, 0))
-                {
-                    CryptDestroyHash(hHash);
-                    CryptReleaseContext(hProv, 0);
-
-                    std::ostringstream oss;
-                    oss << "sha1:";
-                    for (DWORD i = 0; i < hashLen; i++)
-                    {
-                        oss << std::hex << std::setw(2) << std::setfill('0') << (int)hash[i];
-                    }
-                    return oss.str();
-                }
-            }
-        }
-        CryptDestroyHash(hHash);
-    }
-
-    CryptReleaseContext(hProv, 0);
-    return "";
-}
-
-// 从磁盘文件读取代码节并计算哈希（避免内存重定位影响）
-static std::string CalculateModuleHashFromFile(const std::wstring &filePath)
-{
-    HANDLE hFile = CreateFileW(filePath.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (hFile == INVALID_HANDLE_VALUE)
-    {
-        return "";
-    }
-
-    DWORD fileSize = GetFileSize(hFile, NULL);
-    if (fileSize == INVALID_FILE_SIZE || fileSize == 0)
-    {
-        CloseHandle(hFile);
-        return "";
-    }
-
-    std::vector<BYTE> fileData(fileSize);
-    DWORD bytesRead = 0;
-    if (!ReadFile(hFile, fileData.data(), fileSize, &bytesRead, NULL) || bytesRead != fileSize)
-    {
-        CloseHandle(hFile);
-        return "";
-    }
-    CloseHandle(hFile);
-
-    // 解析PE结构
-    const BYTE *baseAddress = fileData.data();
-    const auto *pDosHeader = reinterpret_cast<const IMAGE_DOS_HEADER *>(baseAddress);
-    if (pDosHeader->e_magic != IMAGE_DOS_SIGNATURE)
-    {
-        return "";
-    }
-
-    const auto *pNtHeaders = reinterpret_cast<const IMAGE_NT_HEADERS *>(baseAddress + pDosHeader->e_lfanew);
-    if (pNtHeaders->Signature != IMAGE_NT_SIGNATURE)
-    {
-        return "";
-    }
-
-    // 查找代码节（与GetModuleCodeSectionInfoInternal相同逻辑）
-    PIMAGE_SECTION_HEADER pSectionHeader = IMAGE_FIRST_SECTION(pNtHeaders);
-    PIMAGE_SECTION_HEADER pFirstCodeSection = nullptr;
-    PIMAGE_SECTION_HEADER pTextSection = nullptr;
-    PIMAGE_SECTION_HEADER pFirstExecutableSection = nullptr;
-
-    for (int i = 0; i < pNtHeaders->FileHeader.NumberOfSections; i++, pSectionHeader++)
-    {
-        if (!pFirstCodeSection && (pSectionHeader->Characteristics & IMAGE_SCN_CNT_CODE))
-        {
-            pFirstCodeSection = pSectionHeader;
-        }
-
-        if (!pTextSection && strncmp((const char *)pSectionHeader->Name, ".text", 8) == 0)
-        {
-            pTextSection = pSectionHeader;
-        }
-
-        if (!pFirstExecutableSection && (pSectionHeader->Characteristics & IMAGE_SCN_MEM_EXECUTE))
-        {
-            pFirstExecutableSection = pSectionHeader;
-        }
-    }
-
-    PIMAGE_SECTION_HEADER pSelectedSection = pFirstCodeSection ? pFirstCodeSection
-                                              : pTextSection   ? pTextSection
-                                                               : pFirstExecutableSection;
-
-    if (!pSelectedSection)
-    {
-        return "";
-    }
-
-    // 从文件中读取原始代码节数据（使用PointerToRawData，不是VirtualAddress）
-    DWORD rawOffset = pSelectedSection->PointerToRawData;
-    DWORD rawSize = pSelectedSection->SizeOfRawData;
-
-    if (rawOffset + rawSize > fileSize)
-    {
-        return "";
-    }
-
-    // 计算原始代码节的哈希
-    return CalculateModuleHash(baseAddress + rawOffset, rawSize);
-}
 
 // 模块验证结果结构体
 struct ModuleValidationResult
@@ -1164,8 +1006,24 @@ static ModuleValidationResult ValidateModule(const std::wstring &modulePath, Sys
                     moduleSize = static_cast<uint64_t>(fileSize);
                 }
 
-                // 从磁盘文件计算代码节哈希（避免内存重定位影响）
-                codeHash = CalculateModuleHashFromFile(modulePath);
+                // 使用FNV-1a哈希计算代码节哈希
+                HMODULE hMod = GetModuleHandleW(modulePath.c_str());
+                if (hMod)
+                {
+                    PVOID codeBase = nullptr;
+                    DWORD codeSize = 0;
+                    if (SystemUtils::GetModuleCodeSectionInfo(hMod, codeBase, codeSize) && codeBase && codeSize > 0)
+                    {
+                        std::vector<uint8_t> hashBytes = SystemUtils::CalculateFnv1aHash((const BYTE*)codeBase, codeSize);
+                        std::ostringstream oss;
+                        oss << "fnv1a:";
+                        for (auto byte : hashBytes)
+                        {
+                            oss << std::hex << std::setw(2) << std::setfill('0') << (int)byte;
+                        }
+                        codeHash = oss.str();
+                    }
+                }
             }
             catch (...)
             {
@@ -1218,42 +1076,20 @@ static bool GetModuleCodeSectionInfoInternal(HMODULE hModule, PVOID *outBase, DW
         }
 
         PIMAGE_SECTION_HEADER pSectionHeader = IMAGE_FIRST_SECTION(pNtHeaders);
-        PIMAGE_SECTION_HEADER pFirstCodeSection = nullptr;
-        PIMAGE_SECTION_HEADER pTextSection = nullptr;
-        PIMAGE_SECTION_HEADER pFirstExecutableSection = nullptr;
-
-        // 遍历所有节，收集候选代码节
+        int codeSectionCount = 0;
         for (int i = 0; i < pNtHeaders->FileHeader.NumberOfSections; i++, pSectionHeader++)
         {
-            // 方案1: 查找带IMAGE_SCN_CNT_CODE标志的节
-            if (!pFirstCodeSection && (pSectionHeader->Characteristics & IMAGE_SCN_CNT_CODE))
+            // 寻找第一个可执行代码节 (通常是 .text)
+            if (pSectionHeader->Characteristics & IMAGE_SCN_CNT_CODE)
             {
-                pFirstCodeSection = pSectionHeader;
+                codeSectionCount++;
+                if (codeSectionCount == 1)  // 只取第一个代码节
+                {
+                    *outBase = (PVOID)(baseAddress + pSectionHeader->VirtualAddress);
+                    *outSize = pSectionHeader->Misc.VirtualSize;
+                    return true;
+                }
             }
-
-            // 方案2: 查找名为".text"的节
-            if (!pTextSection && strncmp((const char *)pSectionHeader->Name, ".text", 8) == 0)
-            {
-                pTextSection = pSectionHeader;
-            }
-
-            // 方案3: 查找第一个可执行节
-            if (!pFirstExecutableSection && (pSectionHeader->Characteristics & IMAGE_SCN_MEM_EXECUTE))
-            {
-                pFirstExecutableSection = pSectionHeader;
-            }
-        }
-
-        // 优先级: IMAGE_SCN_CNT_CODE > .text节 > 可执行节
-        PIMAGE_SECTION_HEADER pSelectedSection = pFirstCodeSection ? pFirstCodeSection
-                                                  : pTextSection   ? pTextSection
-                                                                   : pFirstExecutableSection;
-
-        if (pSelectedSection)
-        {
-            *outBase = (PVOID)(baseAddress + pSelectedSection->VirtualAddress);
-            *outSize = pSelectedSection->Misc.VirtualSize;
-            return true;
         }
 
         return false;
@@ -1471,11 +1307,6 @@ struct CheatMonitor::Pimpl
     void InitializeSelfIntegrityBaseline();
     void CheckSelfIntegrity();
 
-    // === 白名单机制 ===
-    std::set<void *> m_allowedThreadStartAddresses;
-    void AllowThreadStartAddress(void *address);
-    bool IsSuspiciousThreadStartAddress(PVOID address);
-
     // （回退）移除轻量归因缓存与方法
 
     // 执行状态枚举
@@ -1656,15 +1487,7 @@ class ScanContext
         return m_pimpl->IsAddressInLegitimateModule(address);
     }
 
-    bool IsSuspiciousThreadStartAddress(PVOID address)
-    {
-        return m_pimpl->IsSuspiciousThreadStartAddress(address);
-    }
 
-    void AllowThreadStartAddress(void *address)
-    {
-        m_pimpl->AllowThreadStartAddress(address);
-    }
 
     // 获取已知良好的句柄持有者
     std::shared_ptr<const std::unordered_set<std::wstring>> GetKnownGoodHandleHolders() const
@@ -4337,16 +4160,6 @@ class ThreadAndModuleActivitySensor : public ISensor
                         oss << "【检测到可疑线程】新线程的起始地址不在任何已知模块中\n" << threadDetails;
                         context.AddEvidence(anti_cheat::RUNTIME_THREAD_NEW_UNKNOWN, oss.str());
                     }
-                        // 即使在合法模块中，也要检查是否起始于LoadLibrary等敏感API
-                        // 虽然概率较低，但为了防止误报（如Overlay注入或极少数合法异步加载），提供了白名单机制
-                        if (context.IsSuspiciousThreadStartAddress(startAddress))
-                        {
-                            std::ostringstream oss;
-                            oss << "【检测到可疑线程】线程起始地址为敏感API (LoadLibrary/ExitProcess)，疑似DLL注入\n"
-                                << "Start Address: " << startAddress << "\n"
-                                << "Module: " << Utils::WideToString(modulePath);
-                            context.AddEvidence(anti_cheat::RUNTIME_THREAD_NEW_UNKNOWN, oss.str());
-                        }
                 }
             }
             else
@@ -4419,16 +4232,6 @@ class ThreadAndModuleActivitySensor : public ISensor
                      LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR,
                                "AnalyzeThreadIntegrity: 线程 (TID=%lu) 起始地址 0x%p 位于合法模块 %s", threadId,
                                startAddress, Utils::WideToString(modulePath).c_str());
-
-                    // 同样检查LoadLibrary bypass
-                    if (context.IsSuspiciousThreadStartAddress(startAddress))
-                    {
-                         std::ostringstream oss;
-                         oss << "【检测到可疑线程】线程起始地址为敏感API (完整性扫描)\n"
-                             << "Start Address: " << startAddress << "\n"
-                             << "Module: " << Utils::WideToString(modulePath);
-                         context.AddEvidence(anti_cheat::RUNTIME_THREAD_NEW_UNKNOWN, oss.str());
-                    }
                 }
             }
         }
@@ -7212,36 +7015,6 @@ bool CheatMonitor::Pimpl::IsAddressInLegitimateModule(PVOID address)
 {
     std::wstring dummyPath;  // 不需要的路径参数
     return IsAddressInLegitimateModule(address, dummyPath);
-}
-
-void CheatMonitor::Pimpl::AllowThreadStartAddress(void *address)
-{
-    std::lock_guard<std::mutex> lock(m_baselineMutex);
-    m_allowedThreadStartAddresses.insert(address);
-    LOG_INFO_F(AntiCheatLogger::LogCategory::SYSTEM, "Added allowed thread start address: 0x%p", address);
-}
-
-bool CheatMonitor::Pimpl::IsSuspiciousThreadStartAddress(PVOID address)
-{
-    {
-        std::lock_guard<std::mutex> lock(m_baselineMutex);
-        if (m_allowedThreadStartAddresses.count(address) > 0)
-        {
-            return false;
-        }
-    }
-
-    static PVOID pLoadLibA = (PVOID)GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "LoadLibraryA");
-    static PVOID pLoadLibW = (PVOID)GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "LoadLibraryW");
-    static PVOID pExitProcess = (PVOID)GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "ExitProcess");
-
-    if ((pLoadLibA && address == pLoadLibA) ||
-        (pLoadLibW && address == pLoadLibW) ||
-        (pExitProcess && address == pExitProcess))
-    {
-        return true;
-    }
-    return false;
 }
 
 uintptr_t CheatMonitor::Pimpl::FindVehListAddress()
