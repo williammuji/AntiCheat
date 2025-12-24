@@ -272,87 +272,84 @@ bool CheatConfigManager::IsSnapshotUploadEnabled() const
 void CheatConfigManager::SetDefaultValues(ConfigData& configData)
 {
     // 生产环境优化：调整扫描和上报间隔，平衡性能与安全
-    configData.config->set_base_scan_interval_seconds(45);            // 轻量级扫描间隔45秒
-    configData.config->set_heavy_scan_interval_minutes(8);            // 重量级扫描间隔8分钟
-    configData.config->set_report_upload_interval_minutes(30);        // 证据上报间隔30分钟
+    configData.config->set_base_scan_interval_seconds(15);            // 轻量级扫描间隔15秒 (高频监测)
+    configData.config->set_heavy_scan_interval_minutes(2);            // 重量级扫描间隔2分钟 (CPU低负载)
+    configData.config->set_report_upload_interval_minutes(10);        // 证据上报间隔10分钟 (快速响应)
     configData.config->set_sensor_stats_upload_interval_minutes(60);  // 传感器统计上报间隔60分钟
 
     // 1. 有害进程名 (Harmful Process Names)
     configData.config->clear_harmful_process_names();
-    // 调试器 (Debuggers) - 补充常见调试器
+    // 调试器 (Debuggers)
     configData.config->add_harmful_process_names("ollydbg");
     configData.config->add_harmful_process_names("ollyice");
     configData.config->add_harmful_process_names("x64dbg");
     configData.config->add_harmful_process_names("x32dbg");
     configData.config->add_harmful_process_names("windbg");
     configData.config->add_harmful_process_names("immunitydebugger");
-    configData.config->add_harmful_process_names("dnspy");        // .NET 反编译器/调试器
-    configData.config->add_harmful_process_names("reflexil");     // .NET 字节码编辑器
-    configData.config->add_harmful_process_names("ollyice.exe");  // 带扩展名
-    configData.config->add_harmful_process_names("x64dbg.exe");   // 带扩展名
-    configData.config->add_harmful_process_names("x32dbg.exe");   // 带扩展名
+    configData.config->add_harmful_process_names("dnspy");
+    configData.config->add_harmful_process_names("reflexil");
+    configData.config->add_harmful_process_names("ollyice.exe");
+    configData.config->add_harmful_process_names("x64dbg.exe");
+    configData.config->add_harmful_process_names("x32dbg.exe");
     // 逆向工程 (Reverse Engineering)
     configData.config->add_harmful_process_names("ida64");
     configData.config->add_harmful_process_names("ida");
     configData.config->add_harmful_process_names("ghidra");
     configData.config->add_harmful_process_names("binaryninja");
-    // 内存修改 (Memory Editors) - 补充更多内存修改工具
+    // 内存修改 (Memory Editors)
     configData.config->add_harmful_process_names("cheatengine");
     configData.config->add_harmful_process_names("cheatengine-x86_64");
-    configData.config->add_harmful_process_names("cheatengine.exe");  // 带扩展名
+    configData.config->add_harmful_process_names("cheatengine.exe");
     configData.config->add_harmful_process_names("artmoney");
     configData.config->add_harmful_process_names("artmoney.exe");
     configData.config->add_harmful_process_names("wemod");
     configData.config->add_harmful_process_names("wemod.exe");
     configData.config->add_harmful_process_names("memoryedit");
-    configData.config->add_harmful_process_names("processtoolkit");  // 进程工具包
-    configData.config->add_harmful_process_names("gameguardian");    // 手机端知名工具
-    configData.config->add_harmful_process_names("scanmem");         // Linux工具也防一下
+    configData.config->add_harmful_process_names("processtoolkit");
+    configData.config->add_harmful_process_names("gameguardian");
+    configData.config->add_harmful_process_names("scanmem");
     // 网络抓包 (Packet Sniffers)
     configData.config->add_harmful_process_names("fiddler");
     configData.config->add_harmful_process_names("wireshark");
     configData.config->add_harmful_process_names("charles");
-    // 国内常见工具/模拟器 (China-Specific Tools/Emulators) - 大幅补充
-    configData.config->add_harmful_process_names("anjianjingling");  // 按键精灵
-    configData.config->add_harmful_process_names("ajjl");            // 按键精灵缩写
-    configData.config->add_harmful_process_names("guaji");           // 挂机
-    configData.config->add_harmful_process_names("fuzhu");           // 辅助
-    configData.config->add_harmful_process_names("xiugaiqi");        // 修改器
-    configData.config->add_harmful_process_names("ydark");           // 远控
-    configData.config->add_harmful_process_names("duniu");           // 毒牛/雷电模拟器
-    configData.config->add_harmful_process_names("dnplayer");        // 雷电模拟器
-    configData.config->add_harmful_process_names("ldplayer");        // 雷电模拟器新版本
-    configData.config->add_harmful_process_names("bluestacks");      // 蓝叠模拟器正确名称
-    configData.config->add_harmful_process_names("bstweaker");       // 蓝叠调优工具
-    configData.config->add_harmful_process_names("mumu");            // 网易MUMU
-    configData.config->add_harmful_process_names("nemuplayerui");    // MUMU模拟器
-    configData.config->add_harmful_process_names("nox");             // 夜神模拟器
-    configData.config->add_harmful_process_names("noxplayer");       // 夜神模拟器完整名
-    configData.config->add_harmful_process_names("xiaoyao");         // 逍遥模拟器
-    configData.config->add_harmful_process_names("microvirt");       // 逍遥模拟器进程
-    configData.config->add_harmful_process_names("memu");            // 逍遥模拟器新版
-    // 新增其他知名作弊工具
-    configData.config->add_harmful_process_names("gameassistant");  // 游戏助手类
-    configData.config->add_harmful_process_names("autohotkey");     // AHK自动化工具
-    configData.config->add_harmful_process_names("ahk");            // AHK缩写
-    configData.config->add_harmful_process_names("autoit3");        // AutoIt自动化
-    // 专业进程分析工具
-    configData.config->add_harmful_process_names("procexp");         // Process Explorer
-    configData.config->add_harmful_process_names("procexp64");       // Process Explorer 64位
-    configData.config->add_harmful_process_names("procexp.exe");     // Process Explorer带扩展名
-    configData.config->add_harmful_process_names("prochacker");      // Process Hacker
-    configData.config->add_harmful_process_names("prochacker.exe");  // Process Hacker带扩展名
-    configData.config->add_harmful_process_names("apimonitor");      // API Monitor
-    configData.config->add_harmful_process_names("apimonitor.exe");  // API Monitor带扩展名
-    configData.config->add_harmful_process_names("regmon");          // Registry Monitor
-    configData.config->add_harmful_process_names("filemon");         // File Monitor
+    // 国内常见工具/模拟器
+    configData.config->add_harmful_process_names("anjianjingling");
+    configData.config->add_harmful_process_names("ajjl");
+    configData.config->add_harmful_process_names("guaji");
+    configData.config->add_harmful_process_names("fuzhu");
+    configData.config->add_harmful_process_names("xiugaiqi");
+    configData.config->add_harmful_process_names("ydark");
+    configData.config->add_harmful_process_names("duniu");
+    configData.config->add_harmful_process_names("dnplayer");
+    configData.config->add_harmful_process_names("ldplayer");
+    configData.config->add_harmful_process_names("bluestacks");
+    configData.config->add_harmful_process_names("bstweaker");
+    configData.config->add_harmful_process_names("mumu");
+    configData.config->add_harmful_process_names("nemuplayerui");
+    configData.config->add_harmful_process_names("nox");
+    configData.config->add_harmful_process_names("noxplayer");
+    configData.config->add_harmful_process_names("xiaoyao");
+    configData.config->add_harmful_process_names("microvirt");
+    configData.config->add_harmful_process_names("memu");
+    // 其他作弊工具
+    configData.config->add_harmful_process_names("gameassistant");
+    configData.config->add_harmful_process_names("autohotkey");
+    configData.config->add_harmful_process_names("ahk");
+    configData.config->add_harmful_process_names("autoit3");
+    // 进程分析工具
+    configData.config->add_harmful_process_names("procexp");
+    configData.config->add_harmful_process_names("procexp64");
+    configData.config->add_harmful_process_names("procexp.exe");
+    configData.config->add_harmful_process_names("prochacker");
+    configData.config->add_harmful_process_names("prochacker.exe");
+    configData.config->add_harmful_process_names("apimonitor");
+    configData.config->add_harmful_process_names("apimonitor.exe");
+    configData.config->add_harmful_process_names("regmon");
+    configData.config->add_harmful_process_names("filemon");
     // 网络分析工具
-    configData.config->add_harmful_process_names("netmon");       // Network Monitor
-    configData.config->add_harmful_process_names("tcpview");      // TCPView
-    configData.config->add_harmful_process_names("tcpview.exe");  // TCPView带扩展名
-    // 注意：Python和AHK可能误杀合法开发者/用户，建议通过服务端配置控制
-    // configData.config->add_harmful_process_names("python");      // Python脚本(风险高，可能误杀)
-    // configData.config->add_harmful_process_names("py");          // Python简写(风险高，可能误杀)
+    configData.config->add_harmful_process_names("netmon");
+    configData.config->add_harmful_process_names("tcpview");
+    configData.config->add_harmful_process_names("tcpview.exe");
 
     // 2. 有害关键词 (Harmful Keywords)
     configData.config->clear_harmful_keywords();
@@ -385,7 +382,7 @@ void CheatConfigManager::SetDefaultValues(ConfigData& configData)
     configData.config->add_harmful_keywords("风灵月影");
     configData.config->add_harmful_keywords("小幸修改器");
     configData.config->add_harmful_keywords("模拟器");
-    // 英文关键词 - 大幅补充
+    // 英文关键词
     configData.config->add_harmful_keywords("cheat engine");
     configData.config->add_harmful_keywords("memory editor");
     configData.config->add_harmful_keywords("hack");
@@ -497,7 +494,7 @@ void CheatConfigManager::SetDefaultValues(ConfigData& configData)
 
     // 3. 窗口白名单 (Whitelisted Window Keywords)
     configData.config->clear_whitelisted_window_keywords();
-    // IDEs & 开发者工具 - 补充更多开发工具
+    // IDEs & 开发者工具
     configData.config->add_whitelisted_window_keywords("visual studio");
     configData.config->add_whitelisted_window_keywords("vs code");
     configData.config->add_whitelisted_window_keywords("vscode");
@@ -538,7 +535,7 @@ void CheatConfigManager::SetDefaultValues(ConfigData& configData)
     configData.config->add_whitelisted_window_keywords("酷狗音乐");
     configData.config->add_whitelisted_window_keywords("task manager");
     configData.config->add_whitelisted_window_keywords("process explorer");
-    // 游戏平台 - 补充更多游戏平台
+    // 游戏平台
     configData.config->add_whitelisted_window_keywords("steam");
     configData.config->add_whitelisted_window_keywords("epic games");
     configData.config->add_whitelisted_window_keywords("epic games launcher");
@@ -549,7 +546,7 @@ void CheatConfigManager::SetDefaultValues(ConfigData& configData)
     configData.config->add_whitelisted_window_keywords("battle.net");
     configData.config->add_whitelisted_window_keywords("battlenet");
     configData.config->add_whitelisted_window_keywords("blizzard");
-    configData.config->add_whitelisted_window_keywords("wegame");  // Tencent WeGame
+    configData.config->add_whitelisted_window_keywords("wegame");
     configData.config->add_whitelisted_window_keywords("xbox");
     configData.config->add_whitelisted_window_keywords("microsoft store");
     configData.config->add_whitelisted_window_keywords("gog galaxy");
@@ -595,7 +592,7 @@ void CheatConfigManager::SetDefaultValues(ConfigData& configData)
 
     // 4. VEH模块白名单 (Whitelisted VEH Modules)
     configData.config->clear_whitelisted_veh_modules();
-    // 显卡驱动 - 补充更多显卡驱动和相关DLL
+    // 显卡驱动
     configData.config->add_whitelisted_veh_modules("nvwgf2umx.dll");
     configData.config->add_whitelisted_veh_modules("nvd3dumx.dll");
     configData.config->add_whitelisted_veh_modules("nvoglv64.dll");
@@ -609,10 +606,10 @@ void CheatConfigManager::SetDefaultValues(ConfigData& configData)
     configData.config->add_whitelisted_veh_modules("ig9icd64.dll");
     configData.config->add_whitelisted_veh_modules("ig4icd64.dll");
     // 游戏平台与覆盖
-    configData.config->add_whitelisted_veh_modules("gameoverlayrenderer64.dll");  // Steam
+    configData.config->add_whitelisted_veh_modules("gameoverlayrenderer64.dll");
     configData.config->add_whitelisted_veh_modules("discord_hook.dll");
-    configData.config->add_whitelisted_veh_modules("rtsshooks64.dll");    // RivaTuner
-    configData.config->add_whitelisted_veh_modules("wegame_helper.dll");  // WeGame
+    configData.config->add_whitelisted_veh_modules("rtsshooks64.dll");
+    configData.config->add_whitelisted_veh_modules("wegame_helper.dll");
     // 输入法与安全软件
     configData.config->add_whitelisted_veh_modules("sogouimebroker.dll");
     configData.config->add_whitelisted_veh_modules("sogoucloud.dll");
@@ -651,11 +648,11 @@ void CheatConfigManager::SetDefaultValues(ConfigData& configData)
     configData.config->add_known_good_processes("360sd.exe");
     configData.config->add_known_good_processes("qqpctray.exe");
     configData.config->add_known_good_processes("huorong.exe");
-    configData.config->add_known_good_processes("ksafe.exe");  // Kingsoft
+    configData.config->add_known_good_processes("ksafe.exe");
     // 游戏平台与通讯
     configData.config->add_known_good_processes("steam.exe");
     configData.config->add_known_good_processes("wegame.exe");
-    configData.config->add_known_good_processes("rail.exe");  // WeGame component
+    configData.config->add_known_good_processes("rail.exe");
     configData.config->add_known_good_processes("discord.exe");
     configData.config->add_known_good_processes("yy.exe");
     configData.config->add_known_good_processes("qq.exe");
@@ -701,11 +698,11 @@ void CheatConfigManager::SetDefaultValues(ConfigData& configData)
     }
 
     // --- 行为控制参数 ---
-    configData.config->set_report_cooldown_minutes(60);  // 从30min增加到60min，避免上报风暴
-    configData.config->set_jitter_milliseconds(3000);    // 从5s减少到3s，提高响应性
+    configData.config->set_report_cooldown_minutes(10);  // 从60min减少到10min，允许更快上报不同作弊行为
+    configData.config->set_jitter_milliseconds(2000);    // 从3000ms减少到2000ms，检测周期更紧凑
 
     // --- 容量与预算控制 ---
-    configData.config->set_max_evidences_per_session(512);
+    configData.config->set_max_evidences_per_session(1024);
 
     // --- 容量与缓存控制 ---
     configData.config->set_process_cache_duration_minutes(30);    // 增加到30分钟，提高效率
@@ -721,7 +718,7 @@ void CheatConfigManager::SetDefaultValues(ConfigData& configData)
     // --- 通用配置参数（所有Sensor共用） ---
     configData.config->set_max_code_section_size(100 * 1024 * 1024);  // 最大代码节大小(100MB) - 覆盖大部分游戏模块
     configData.config->set_heavy_scan_budget_ms(
-            2000);  // HEAVY级传感器预算(2000ms) - ThreadAndModuleActivity, MemorySecurity
+            2500);  // HEAVY级传感器预算(2500ms) - 为了允许扫描所有模块，增加预算
 
     // 注意：CRITICAL级传感器使用相同的heavy_scan_budget_ms，但通过分段扫描机制确保单次不超时
     // CRITICAL级传感器：ProcessHandle, ModuleIntegrity, ProcessAndWindowMonitor
@@ -731,17 +728,17 @@ void CheatConfigManager::SetDefaultValues(ConfigData& configData)
     configData.config->set_max_memory_region_size(16 * 1024 * 1024);  // 最大内存区域大小(16MB)
 
     // [新增] ProcessAndWindowMonitorSensor配置参数 (CRITICAL级 - 分段扫描)
-    configData.config->set_max_processes_to_scan(100);  // 单次扫描进程数(100个) - 基于A/B测试优化
-    configData.config->set_max_window_count(80);        // 最大窗口数量限制(80个)
+    configData.config->set_max_processes_to_scan(2000);  // 单次扫描进程数(2000个) - 优化后可覆盖绝大多数用户的所有进程
+    configData.config->set_max_window_count(300);        // 最大窗口数量限制(300个) - 适应多窗口环境
 
     // [新增] ProcessHandleSensor配置参数 (CRITICAL级 - 分段扫描)
     configData.config->set_max_handle_scan_count(
-            800000);                                   // 最大句柄扫描数量(800K) - 基于A/B测试，成功耗时仅116ms，可增加
-    configData.config->set_initial_buffer_size_mb(4);  // 初始缓冲区大小(4MB) - 减少扩容次数
-    configData.config->set_max_buffer_size_mb(32);     // 最大缓冲区大小(32MB) - 处理大量句柄场景
-    configData.config->set_max_pid_attempts_per_scan(200);  // 单次扫描最多尝试的新PID数量(200个)
-    configData.config->set_max_modules_per_scan(50);  // ModuleIntegritySensor单次扫描模块数(50个) - CRITICAL级分段扫描
-    configData.config->set_pid_throttle_minutes(10);  // PID节流时长(10分钟) - 避免重复扫描同一PID
+            800000);                                   // 最大句柄扫描数量(800K) - 基于A/B测试，成功耗时仅116ms
+    configData.config->set_initial_buffer_size_mb(16); // 初始缓冲区大小(16MB) - 增加以覆盖90k+句柄场景, 减少扩容
+    configData.config->set_max_buffer_size_mb(64);     // 最大缓冲区大小(64MB) - 处理大量句柄场景
+    configData.config->set_max_pid_attempts_per_scan(2000);  // 单次扫描最多尝试的新PID数量(2000个) - 性能富余，大幅增加覆盖率
+    configData.config->set_max_modules_per_scan(512); // ModuleIntegritySensor单次扫描模块数(512个) - 尝试扫描所有模块
+    configData.config->set_pid_throttle_minutes(30);  // PID节流时长(30分钟) - 避免重复扫描同一PID
 
     // 新增：最低OS版本要求
     configData.config->set_min_os_version(anti_cheat::OS_WIN10);  // 默认要求Windows 10+

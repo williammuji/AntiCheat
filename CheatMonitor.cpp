@@ -165,6 +165,10 @@ typedef struct _VECTORED_HANDLER_LIST_WIN8
     LIST_ENTRY ContinueList;
 } VECTORED_HANDLER_LIST_WIN8, *PVECTORED_HANDLER_LIST_WIN8;
 
+namespace Utils {
+    std::string WideToString(const std::wstring &wstr);
+}
+
 namespace SystemUtils
 {
 // NT API函数指针定义
@@ -563,6 +567,191 @@ std::vector<uint8_t> CalculateFnv1aHash(const BYTE *data, size_t size)
     return result;
 }
 
+// 调试函数：打印PE文件的所有节信息
+void DumpPESections(const std::wstring &filePath)
+{
+    HANDLE hFile = CreateFileW(filePath.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hFile == INVALID_HANDLE_VALUE)
+    {
+        LOG_WARNING_F(AntiCheatLogger::LogCategory::SYSTEM, "DumpPESections: 无法打开文件 %s", Utils::WideToString(filePath).c_str());
+        return;
+    }
+
+    DWORD fileSize = GetFileSize(hFile, NULL);
+    if (fileSize == INVALID_FILE_SIZE || fileSize == 0)
+    {
+        CloseHandle(hFile);
+        return;
+    }
+
+    std::vector<BYTE> fileData(fileSize);
+    DWORD bytesRead = 0;
+    if (!ReadFile(hFile, fileData.data(), fileSize, &bytesRead, NULL) || bytesRead != fileSize)
+    {
+        CloseHandle(hFile);
+        return;
+    }
+    CloseHandle(hFile);
+
+    const BYTE *baseAddress = fileData.data();
+    const auto *pDosHeader = reinterpret_cast<const IMAGE_DOS_HEADER *>(baseAddress);
+    if (pDosHeader->e_magic != IMAGE_DOS_SIGNATURE)
+    {
+        return;
+    }
+
+    const auto *pNtHeaders = reinterpret_cast<const IMAGE_NT_HEADERS *>(baseAddress + pDosHeader->e_lfanew);
+    if (pNtHeaders->Signature != IMAGE_NT_SIGNATURE)
+    {
+        return;
+    }
+
+    LOG_INFO_F(AntiCheatLogger::LogCategory::SYSTEM, "=== PE节信息: %s ===", Utils::WideToString(filePath).c_str());
+    LOG_INFO_F(AntiCheatLogger::LogCategory::SYSTEM, "节数量: %d", pNtHeaders->FileHeader.NumberOfSections);
+
+    PIMAGE_SECTION_HEADER pSectionHeader = IMAGE_FIRST_SECTION(pNtHeaders);
+    for (int i = 0; i < pNtHeaders->FileHeader.NumberOfSections; i++, pSectionHeader++)
+    {
+        char sectionName[9] = {0};
+        strncpy(sectionName, (const char *)pSectionHeader->Name, 8);
+
+        LOG_INFO_F(AntiCheatLogger::LogCategory::SYSTEM,
+                   "节[%d]: 名称=%-8s, 特征=0x%08X, VirtualSize=%u, RawSize=%u, RawOffset=0x%08X",
+                   i, sectionName, pSectionHeader->Characteristics,
+                   pSectionHeader->Misc.VirtualSize, pSectionHeader->SizeOfRawData,
+                   pSectionHeader->PointerToRawData);
+
+        // 解析特征标志
+        std::string flags;
+        if (pSectionHeader->Characteristics & IMAGE_SCN_CNT_CODE) flags += "CODE ";
+        if (pSectionHeader->Characteristics & IMAGE_SCN_CNT_INITIALIZED_DATA) flags += "INIT_DATA ";
+        if (pSectionHeader->Characteristics & IMAGE_SCN_CNT_UNINITIALIZED_DATA) flags += "UNINIT_DATA ";
+        if (pSectionHeader->Characteristics & IMAGE_SCN_MEM_EXECUTE) flags += "EXECUTE ";
+        if (pSectionHeader->Characteristics & IMAGE_SCN_MEM_READ) flags += "READ ";
+        if (pSectionHeader->Characteristics & IMAGE_SCN_MEM_WRITE) flags += "WRITE ";
+
+        if (!flags.empty())
+        {
+            LOG_INFO_F(AntiCheatLogger::LogCategory::SYSTEM, "      标志: %s", flags.c_str());
+        }
+    }
+    LOG_INFO_F(AntiCheatLogger::LogCategory::SYSTEM, "=== 节信息结束 ===");
+}
+
+// 从磁盘文件读取代码节并计算FNV-1a哈希（避免内存重定位/修改影响）
+std::string CalculateModuleHashFromDisk(const std::wstring &filePath)
+{
+    HANDLE hFile = CreateFileW(filePath.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hFile == INVALID_HANDLE_VALUE)
+    {
+        return "";
+    }
+
+    DWORD fileSize = GetFileSize(hFile, NULL);
+    if (fileSize == INVALID_FILE_SIZE || fileSize == 0)
+    {
+        CloseHandle(hFile);
+        return "";
+    }
+
+    std::vector<BYTE> fileData(fileSize);
+    DWORD bytesRead = 0;
+    if (!ReadFile(hFile, fileData.data(), fileSize, &bytesRead, NULL) || bytesRead != fileSize)
+    {
+        CloseHandle(hFile);
+        return "";
+    }
+    CloseHandle(hFile);
+
+    // 解析PE结构
+    const BYTE *baseAddress = fileData.data();
+    const auto *pDosHeader = reinterpret_cast<const IMAGE_DOS_HEADER *>(baseAddress);
+    if (pDosHeader->e_magic != IMAGE_DOS_SIGNATURE)
+    {
+        return "";
+    }
+
+    const auto *pNtHeaders = reinterpret_cast<const IMAGE_NT_HEADERS *>(baseAddress + pDosHeader->e_lfanew);
+    if (pNtHeaders->Signature != IMAGE_NT_SIGNATURE)
+    {
+        return "";
+    }
+
+    // 使用多种策略查找代码节
+    PIMAGE_SECTION_HEADER pSectionHeader = IMAGE_FIRST_SECTION(pNtHeaders);
+    PIMAGE_SECTION_HEADER pFirstCodeSection = nullptr;      // 策略1: IMAGE_SCN_CNT_CODE标志
+    PIMAGE_SECTION_HEADER pTextSection = nullptr;           // 策略2: .text节名
+    PIMAGE_SECTION_HEADER pFirstExecutableSection = nullptr; // 策略3: 可执行标志
+
+    for (int i = 0; i < pNtHeaders->FileHeader.NumberOfSections; i++, pSectionHeader++)
+    {
+        // 策略1: 查找带IMAGE_SCN_CNT_CODE标志的节
+        if (!pFirstCodeSection && (pSectionHeader->Characteristics & IMAGE_SCN_CNT_CODE))
+        {
+            pFirstCodeSection = pSectionHeader;
+        }
+
+        // 策略2: 查找名为".text"的节
+        if (!pTextSection && strncmp((const char *)pSectionHeader->Name, ".text", 8) == 0)
+        {
+            pTextSection = pSectionHeader;
+        }
+
+        // 策略3: 查找第一个可执行节
+        if (!pFirstExecutableSection && (pSectionHeader->Characteristics & IMAGE_SCN_MEM_EXECUTE))
+        {
+            pFirstExecutableSection = pSectionHeader;
+        }
+    }
+
+    // 优先级: IMAGE_SCN_CNT_CODE > .text节 > 可执行节
+    PIMAGE_SECTION_HEADER pSelectedSection = pFirstCodeSection ? pFirstCodeSection
+                                              : pTextSection   ? pTextSection
+                                                               : pFirstExecutableSection;
+
+    if (pSelectedSection)
+    {
+        // 从文件中读取原始代码节数据（使用PointerToRawData，不是VirtualAddress）
+        DWORD rawOffset = pSelectedSection->PointerToRawData;
+        DWORD rawSize = pSelectedSection->SizeOfRawData;
+
+        if (rawOffset + rawSize > fileSize)
+        {
+            LOG_WARNING_F(AntiCheatLogger::LogCategory::SYSTEM,
+                          "CalculateModuleHashFromDisk: 代码节超出文件范围 %s (offset=%u, size=%u, fileSize=%u)",
+                          Utils::WideToString(filePath).c_str(), rawOffset, rawSize, fileSize);
+            return "";
+        }
+
+        // 记录使用的策略
+        const char* strategy = pSelectedSection == pFirstCodeSection ? "IMAGE_SCN_CNT_CODE" :
+                               pSelectedSection == pTextSection ? ".text节名" : "可执行标志";
+        char sectionName[9] = {0};
+        strncpy(sectionName, (const char *)pSelectedSection->Name, 8);
+
+        LOG_DEBUG_F(AntiCheatLogger::LogCategory::SYSTEM,
+                    "CalculateModuleHashFromDisk: %s 使用策略[%s] 节名[%s] offset=%u size=%u",
+                    Utils::WideToString(filePath).c_str(), strategy, sectionName, rawOffset, rawSize);
+
+        // 计算原始代码节的FNV-1a哈希
+        std::vector<uint8_t> hashBytes = CalculateFnv1aHash(baseAddress + rawOffset, rawSize);
+        std::ostringstream oss;
+        oss << "fnv1a:";
+        for (auto byte : hashBytes)
+        {
+            oss << std::hex << std::setw(2) << std::setfill('0') << (int)byte;
+        }
+        return oss.str();
+    }
+
+    // 未找到代码节，打印详细信息帮助调试
+    LOG_WARNING_F(AntiCheatLogger::LogCategory::SYSTEM,
+                  "CalculateModuleHashFromDisk: 未找到代码节 %s",
+                  Utils::WideToString(filePath).c_str());
+    DumpPESections(filePath);
+    return "";
+}
+
 }  // namespace SystemUtils
 
 struct MemoryReadResult
@@ -811,7 +1000,7 @@ SignatureStatus VerifyFileSignature(const std::wstring &filePath, SystemUtils::W
     winTrustData.dwUIChoice = WTD_UI_NONE;
     // 关闭在线吊销检查并启用本地缓存，避免离线环境误判
     winTrustData.fdwRevocationChecks = WTD_REVOKE_NONE;
-    winTrustData.dwProvFlags = WTD_CACHE_ONLY_URL_RETRIEVAL;  // 使用本地缓存，不访问网络
+    winTrustData.dwProvFlags = WTD_SAFER_FLAG | WTD_CACHE_ONLY_URL_RETRIEVAL;  // 强化安全检查，同时强制使用本地缓存，禁止联网检查CRL
     winTrustData.dwUnionChoice = WTD_CHOICE_FILE;
     winTrustData.pFile = &fileInfo;
     winTrustData.dwStateAction = WTD_STATEACTION_VERIFY;
@@ -1006,24 +1195,8 @@ static ModuleValidationResult ValidateModule(const std::wstring &modulePath, Sys
                     moduleSize = static_cast<uint64_t>(fileSize);
                 }
 
-                // 使用FNV-1a哈希计算代码节哈希
-                HMODULE hMod = GetModuleHandleW(modulePath.c_str());
-                if (hMod)
-                {
-                    PVOID codeBase = nullptr;
-                    DWORD codeSize = 0;
-                    if (SystemUtils::GetModuleCodeSectionInfo(hMod, codeBase, codeSize) && codeBase && codeSize > 0)
-                    {
-                        std::vector<uint8_t> hashBytes = SystemUtils::CalculateFnv1aHash((const BYTE*)codeBase, codeSize);
-                        std::ostringstream oss;
-                        oss << "fnv1a:";
-                        for (auto byte : hashBytes)
-                        {
-                            oss << std::hex << std::setw(2) << std::setfill('0') << (int)byte;
-                        }
-                        codeHash = oss.str();
-                    }
-                }
+                // 从磁盘文件计算代码节哈希（避免内存重定位/修改影响）
+                codeHash = SystemUtils::CalculateModuleHashFromDisk(modulePath);
             }
             catch (...)
             {
@@ -2159,7 +2332,7 @@ class ProcessAndWindowMonitorSensor : public ISensor
     }
     SensorWeight GetWeight() const override
     {
-        return SensorWeight::CRITICAL;  // 1000-10000ms: 进程和窗口监控（大量进程时耗时长）
+        return SensorWeight::CRITICAL;  // 1000-10000ms: 进程和窗口监控（大量进程时耗时长，即使有缓存也不适合高频）
     }
     SensorExecutionResult Execute(ScanContext &context) override
     {
@@ -2315,6 +2488,8 @@ class ProcessAndWindowMonitorSensor : public ISensor
 
                 // 可信签名优先：先做昂贵的进程路径与签名检查
                 Utils::SignatureStatus signatureStatus = Utils::SignatureStatus::UNKNOWN;
+                bool isTrusted = false;
+
                 // 检查点 2: 昂贵的进程路径白名单检查 (仅在需要时执行)
                 HANDLE hProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pe.th32ProcessID);
                 if (hProcess)
@@ -2325,17 +2500,64 @@ class ProcessAndWindowMonitorSensor : public ISensor
                     {
                         std::transform(fullProcessPath.begin(), fullProcessPath.end(), fullProcessPath.begin(),
                                        ::towlower);
+
+                        // 1. 路径白名单检查
                         auto whitelistedPaths = context.GetWhitelistedProcessPaths();
                         if (whitelistedPaths && whitelistedPaths->count(fullProcessPath) > 0)
                         {
-                            continue;  // 进程在路径白名单中，安全，继续检查下一个进程
+                            isTrusted = true;
                         }
 
-                        // 可信签名优先：若签名可信，则不触发黑名单/窗口关键词告警
-                        signatureStatus = Utils::VerifyFileSignature(fullProcessPath, context.GetWindowsVersion());
-                        if (signatureStatus == Utils::SignatureStatus::TRUSTED)
+                        // 2. 签名缓存检查 (性能优化核心)
+                        if (!isTrusted)
                         {
-                            continue;  // 已签名可信，跳过此进程
+                            auto& sigCache = context.GetProcessSigCache();
+                            auto& throttleMap = context.GetProcessSigThrottleUntil();
+                            auto now = std::chrono::steady_clock::now();
+                            const auto ttl = std::chrono::minutes(
+                                    CheatConfigManager::GetInstance().GetSignatureCacheDurationMinutes());
+
+                            // 检查是否在节流期
+                            auto throttleIt = throttleMap.find(fullProcessPath);
+                            if (throttleIt != throttleMap.end() && now < throttleIt->second)
+                            {
+                                signatureStatus = Utils::SignatureStatus::FAILED_TO_VERIFY; // 视为失败/未知，避免频繁重试
+                            }
+                            else
+                            {
+                                // 检查缓存
+                                auto cacheIt = sigCache.find(fullProcessPath);
+                                if (cacheIt != sigCache.end() && now < cacheIt->second.second + ttl)
+                                {
+                                    signatureStatus = cacheIt->second.first;
+                                }
+                                else
+                                {
+                                    // 缓存未命中，执行昂贵的验证
+                                    signatureStatus = Utils::VerifyFileSignature(fullProcessPath, context.GetWindowsVersion());
+
+                                    if (signatureStatus == Utils::SignatureStatus::FAILED_TO_VERIFY)
+                                    {
+                                        throttleMap[fullProcessPath] = now + std::chrono::milliseconds(
+                                            CheatConfigManager::GetInstance().GetSignatureVerificationFailureThrottleMs());
+                                    }
+                                    else
+                                    {
+                                        sigCache[fullProcessPath] = {signatureStatus, now};
+                                        throttleMap.erase(fullProcessPath); // 清除节流
+                                    }
+                                }
+                            }
+
+                            if (signatureStatus == Utils::SignatureStatus::TRUSTED)
+                            {
+                                isTrusted = true;
+                            }
+                        }
+
+                        if (isTrusted)
+                        {
+                             continue;  // 已签名可信或在白名单中，跳过此进程后续检查
                         }
                     }
                     else
@@ -2780,31 +3002,90 @@ class ModuleIntegritySensor : public ISensor
             if (index++ < startCursor)
                 return;
 
-            // 【关键优化】超时检查：在处理模块之前检查，每个模块都检查
-            // 原因：某些大型模块（如Unreal Engine）单个模块可能耗时100-200ms
-            // 如果每5个才检查，可能已经超时了500-1000ms
+            // 缓存机制：如果HMODULE未变且路径一致，复用CodeSection信息，避免重复解析PE头
+            CachedModuleInfo modInfo = {};
+            auto it = m_moduleCache.find(hModule);
+            wchar_t curNameW[MAX_PATH] = {0};
+            bool needsUpdate = true;
+
+            // 总是先快速获取文件名，用于验证缓存有效性
+            if (GetModuleFileNameW(hModule, curNameW, MAX_PATH) != 0)
+            {
+                if (it != m_moduleCache.end())
+                {
+                    // 检查路径是否匹配（处理DLL卸载重加载情况）
+                    if (it->second.modulePath == curNameW)
+                    {
+                        modInfo = it->second;
+                        needsUpdate = false;
+                    }
+                }
+            }
+            else
+            {
+                // 获取文件名失败，无法继续
+                RecordFailure(anti_cheat::MODULE_INTEGRITY_GET_MODULE_PATH_FAILED);
+                return;
+            }
+
+            // 如果需要更新缓存（新模块或模块变更）
+            if (needsUpdate)
+            {
+                modInfo.modulePath = curNameW;
+                modInfo.valid = SystemUtils::GetModuleCodeSectionInfo(hModule, modInfo.codeBase, modInfo.codeSize);
+
+                // 检查特殊模块逻辑（用于标记）
+                if (!modInfo.valid)
+                {
+                    std::wstring lowerName = curNameW;
+                    std::transform(lowerName.begin(), lowerName.end(), lowerName.begin(), ::towlower);
+                    static const std::unordered_set<std::wstring> specialModuleKeywords = {
+                            // 第三方覆盖层/注入库 (通常会有保护或特殊加载方式)
+                            L"gameoverlayrenderer.dll", L"gameoverlayrenderer64.dll",
+                            L"discord_hook.dll", L"discord_hook64.dll",
+                            L"rtsshooks.dll", L"rtsshooks64.dll",
+                            L"wegame_helper.dll",
+                            // 音频中间件 (FMOD/Wwise等有时会加壳或加密节)
+                            L"fmodex.dll", L"fmodex64.dll", L"fmod_event.dll", L"fmod_event64.dll",
+                            L"aksoundengine.dll",
+                            // Windows 系统受保护模块 (Protected Processes / PPL)
+                            // 这些模块的CodeSection通常无法被UserMode进程读取
+                            L"sfc.dll", L"sfc_os.dll", L"wfp.dll", L"wfpdiag.dll",
+                            L"sppc.dll", L"slc.dll", // Software Licensing
+                            L"bcrypt.dll", L"crypt32.dll", L"cryptbase.dll",
+                            L"ntdll.dll", L"kernel32.dll", L"kernelbase.dll", // 核心库有时会被系统锁定
+                            L"ci.dll", // Code Integrity
+                            // 显卡驱动组件 (通常有自保护)
+                            L"nvwgf2umx.dll", L"nvwgf2um.dll",
+                            L"atcuf64.dll", L"atcuf32.dll"};
+
+                    bool isSpecial = false;
+                    for (const auto &kw : specialModuleKeywords)
+                    {
+                        if (lowerName.find(kw) != std::wstring::npos) { isSpecial = true; break; }
+                    }
+                    modInfo.isSpecial = isSpecial;
+                }
+                m_moduleCache[hModule] = modInfo;
+            }
+
+            // 更新lastProcessedModuleName用于日志（使用缓存的路径）
+            lastProcessedModuleName = modInfo.modulePath;
+            std::transform(lastProcessedModuleName.begin(), lastProcessedModuleName.end(),
+                           lastProcessedModuleName.begin(), ::towlower);
+
+            // 超时检查
             {
                 auto now = std::chrono::steady_clock::now();
                 if (!targetedScan &&
                     std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count() > budget_ms)
                 {
-                    // 获取当前即将处理的模块名称（next），以及上一个已处理的模块（last）
-                    wchar_t curNameW[MAX_PATH] = {0};
-                    std::wstring nextModuleName;
-                    if (GetModuleFileNameW(hModule, curNameW, MAX_PATH) != 0)
-                    {
-                        nextModuleName = curNameW;
-                        std::transform(nextModuleName.begin(), nextModuleName.end(), nextModuleName.begin(),
-                                       ::towlower);
-                    }
                     const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count();
                     LOG_WARNING_F(
                             AntiCheatLogger::LogCategory::SENSOR,
-                            "ModuleIntegritySensor超时: elapsed=%lldms budget=%dms processed=%zu index=%zu last='%s' "
-                            "next='%s'",
+                            "ModuleIntegritySensor超时: elapsed=%lldms budget=%dms processed=%zu index=%zu current='%s'",
                             (long long)elapsed, budget_ms, processed, index,
-                            lastProcessedModuleName.empty() ? "" : Utils::WideToString(lastProcessedModuleName).c_str(),
-                            nextModuleName.empty() ? "" : Utils::WideToString(nextModuleName).c_str());
+                            Utils::WideToString(lastProcessedModuleName).c_str());
                     RecordFailure(anti_cheat::MODULE_SCAN_TIMEOUT);
                     timeoutOccurred = true;
                     stopEnumerate = true;
@@ -2812,16 +3093,7 @@ class ModuleIntegritySensor : public ISensor
                 }
             }
 
-            // 记录当前处理的模块名（作为 last）
-            wchar_t nameW[MAX_PATH] = {0};
-            if (GetModuleFileNameW(hModule, nameW, MAX_PATH) != 0)
-            {
-                lastProcessedModuleName = nameW;
-                std::transform(lastProcessedModuleName.begin(), lastProcessedModuleName.end(),
-                               lastProcessedModuleName.begin(), ::towlower);
-            }
-
-            ProcessModuleCodeIntegrity(hModule, context, baselineHashes, MAX_CODE_SECTION_SIZE);
+            ProcessModuleCodeIntegrity(hModule, modInfo, context, baselineHashes, MAX_CODE_SECTION_SIZE);
             processed++;
             if (!targetedScan && processed >= (size_t)maxModules)
             {
@@ -2873,74 +3145,30 @@ class ModuleIntegritySensor : public ISensor
     }
 
    private:
+    struct CachedModuleInfo
+    {
+        std::wstring modulePath;
+        PVOID codeBase;
+        DWORD codeSize;
+        bool valid;
+        bool isSpecial; // 缓存特殊模块标记
+    };
+    std::unordered_map<HMODULE, CachedModuleInfo> m_moduleCache;
+
     // 处理单个模块的逻辑
-    void ProcessModuleCodeIntegrity(HMODULE hModule, ScanContext &context,
+    void ProcessModuleCodeIntegrity(HMODULE hModule, const CachedModuleInfo &info, ScanContext &context,
                                     const std::unordered_map<std::wstring, std::vector<uint8_t>> &baselineHashes,
                                     size_t maxCodeSectionSize)
     {
         // 注意：不再跳过自身模块，让ModuleCodeIntegritySensor也检测自身完整性
-        if (!hModule)
+        if (!info.valid)
         {
-            LOG_DEBUG(AntiCheatLogger::LogCategory::SENSOR, "ModuleIntegritySensor: 跳过空模块句柄");
-            return;  // 空句柄，直接返回
-        }
-
-        // 获取模块路径
-        wchar_t modulePath_w[MAX_PATH] = {0};
-        if (GetModuleFileNameW(hModule, modulePath_w, MAX_PATH) == 0)
-        {
-            RecordFailure(anti_cheat::MODULE_INTEGRITY_GET_MODULE_PATH_FAILED);
-            LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR,
-                          "ModuleIntegritySensor: 获取模块路径失败, hModule=0x%p, 错误=0x%08X", hModule,
-                          GetLastError());
-            return;  // 获取路径失败，直接返回
-        }
-
-        // 获取代码节信息
-        PVOID codeBase = nullptr;
-        DWORD codeSize = 0;
-        if (!SystemUtils::GetModuleCodeSectionInfo(hModule, codeBase, codeSize))
-        {
-            // 对于某些特殊模块（如音频库、驱动等），获取代码节失败可能是正常的
-            std::wstring moduleName = modulePath_w;
-            std::transform(moduleName.begin(), moduleName.end(), moduleName.begin(), ::towlower);
-
-            // 检查是否为已知的特殊模块类型（包括系统保护模块）
-            // 优化：使用静态集合提高查找效率
-            static const std::unordered_set<std::wstring> specialModuleKeywords = {
-                    L"fmodex", L"fmod", L"audio", L"sound", L"driver", L"resource.dll",
-                    // 系统保护模块（被Windows系统保护，无法访问代码节）
-                    L"sfc.dll", L"sfc_os.dll", L"wfp.dll", L"wfpdiag.dll", L"ntdll.dll", L"kernel32.dll",
-                    L"kernelbase.dll", L"user32.dll", L"gdi32.dll", L"advapi32.dll", L"ole32.dll", L"oleaut32.dll",
-                    L"shell32.dll", L"comctl32.dll", L"msvcrt.dll", L"ucrtbase.dll", L"sppc.dll", L"slc.dll",
-                    // 新增：更多可能导致失败的系统模块
-                    L"win32u.dll", L"bcrypt.dll", L"crypt32.dll", L"cryptbase.dll", L"sechost.dll", L"rpcrt4.dll",
-                    L"imm32.dll", L"msctf.dll", L"clbcatq.dll", L"propsys.dll", L"profapi.dll", L"powrprof.dll",
-                    L"uxtheme.dll", L"dwmapi.dll", L"wintrust.dll", L"imagehlp.dll", L"dbghelp.dll", L"version.dll",
-                    L"winmm.dll", L"ws2_32.dll", L"mswsock.dll", L"iphlpapi.dll", L"dnsapi.dll", L"rasapi32.dll",
-                    // 显卡驱动相关
-                    L"nvoglv", L"nvd3d", L"nvwgf", L"amdvlk", L"amdxc", L"atiumd", L"igd10iumd", L"igdmcl", L"ig9icd",
-                    L"ig4icd",
-                    // 游戏平台覆盖层
-                    L"gameoverlayrenderer", L"discord_hook", L"rtss", L"wegame_helper"};
-
-            bool isSpecialModule = false;
-            for (const auto &keyword : specialModuleKeywords)
-            {
-                if (moduleName.find(keyword) != std::wstring::npos)
-                {
-                    isSpecialModule = true;
-                    break;
-                }
-            }
-
-            if (isSpecialModule)
+            if (info.isSpecial)
             {
                 // 特殊模块的代码节获取失败是正常情况，记录调试信息
                 LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR,
                             "ModuleIntegritySensor: 特殊模块代码节获取失败（正常情况）, 模块=%s, hModule=0x%p",
-                            Utils::WideToString(modulePath_w).c_str(), hModule);
-                return;
+                            Utils::WideToString(info.modulePath).c_str(), hModule);
             }
             else
             {
@@ -2948,23 +3176,24 @@ class ModuleIntegritySensor : public ISensor
                 RecordFailure(anti_cheat::MODULE_INTEGRITY_GET_CODE_SECTION_FAILED);
                 LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR,
                               "ModuleIntegritySensor: 获取代码节信息失败, 模块=%s, hModule=0x%p",
-                              Utils::WideToString(modulePath_w).c_str(), hModule);
-                return;
+                              Utils::WideToString(info.modulePath).c_str(), hModule);
             }
+            return;
         }
 
         // 检查代码节大小是否超过限制
-        if (codeSize > maxCodeSectionSize)
+        if (info.codeSize > maxCodeSectionSize)
         {
             LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR,
                           "ModuleIntegritySensor: 代码节过大，跳过模块: %s (大小: %lu > %zu MB)",
-                          Utils::WideToString(modulePath_w).c_str(), codeSize / (1024 * 1024),
+                          Utils::WideToString(info.modulePath).c_str(), info.codeSize / (1024 * 1024),
                           maxCodeSectionSize / (1024 * 1024));
             return;
         }
 
         // 将复杂逻辑移到外部处理
-        ValidateModuleCodeIntegrity(modulePath_w, hModule, codeBase, codeSize, context, baselineHashes);
+        ValidateModuleCodeIntegrity(info.modulePath.c_str(), hModule, info.codeBase, info.codeSize, context,
+                                    baselineHashes);
     }
 
     // 处理模块代码完整性验证的逻辑
@@ -3114,7 +3343,7 @@ class ProcessHandleSensor : public ISensor
     }
     SensorWeight GetWeight() const override
     {
-        return SensorWeight::CRITICAL;  // 1000-10000ms: 进程句柄扫描（分段扫描）
+        return SensorWeight::CRITICAL;  // 1000-10000ms: 进程句柄扫描（分段扫描，虽然平均较快但有峰值风险）
     }
 
     // 获取进程创建时间标识（用于缓存验证）
@@ -7253,11 +7482,12 @@ void CheatMonitor::Pimpl::ExecuteLightweightSensors()
     if (m_lightweightSensors.empty())
         return;
 
-    // 轻量级传感器：依次按index扫描
-    m_lightSensorIndex %= m_lightweightSensors.size();
-    const auto &sensor = m_lightweightSensors[m_lightSensorIndex];
-    ExecuteAndMonitorSensor(sensor.get(), sensor->GetName(), false /*isHeavyweight*/);
-    m_lightSensorIndex = (m_lightSensorIndex + 1) % m_lightweightSensors.size();
+    // 轻量级传感器：执行所有传感器，实现高频全面检测
+    for (const auto &sensor : m_lightweightSensors)
+    {
+        ExecuteAndMonitorSensor(sensor.get(), sensor->GetName(), false /*isHeavyweight*/);
+    }
+    // 移除Round Robin索引更新
 }
 
 void CheatMonitor::Pimpl::ExecuteHeavyweightSensors()
@@ -7265,11 +7495,12 @@ void CheatMonitor::Pimpl::ExecuteHeavyweightSensors()
     if (m_heavyweightSensors.empty())
         return;
 
-    // 重量级传感器：依次按index扫描
-    m_heavySensorIndex %= m_heavyweightSensors.size();
-    const auto &sensor = m_heavyweightSensors[m_heavySensorIndex];
-    ExecuteAndMonitorSensor(sensor.get(), sensor->GetName(), true /*isHeavyweight*/);
-    m_heavySensorIndex = (m_heavySensorIndex + 1) % m_heavyweightSensors.size();
+    // 重量级传感器：执行所有传感器
+    for (const auto &sensor : m_heavyweightSensors)
+    {
+        ExecuteAndMonitorSensor(sensor.get(), sensor->GetName(), true /*isHeavyweight*/);
+    }
+    // 移除Round Robin索引更新
 }
 SensorExecutionResult CheatMonitor::Pimpl::ExecuteAndMonitorSensor(ISensor *sensor, const char *name,
                                                                    bool isHeavyweight, bool isTargetedScan,
