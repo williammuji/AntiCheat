@@ -5111,8 +5111,8 @@ class MemorySecuritySensor : public ISensor
         bool timeoutOccurred = false;
         size_t regionsScanned = 0;
         MemoryScanner::ScanMemoryRegions([&](const MEMORY_BASIC_INFORMATION &mbi) -> bool {
-            // 优化：每50个内存区域检查一次超时（减少时间检查开销）
-            if (regionsScanned++ % 50 == 0)
+            // 优化：每100个内存区域检查一次超时（降低检查开销）
+            if (regionsScanned++ % 100 == 0)
             {
                 auto now = std::chrono::steady_clock::now();
                 if (std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count() > budget_ms)
@@ -5121,7 +5121,7 @@ class MemorySecuritySensor : public ISensor
                                   "MemorySecuritySensor: 内存扫描超时，已扫描%zu个区域", regionsScanned);
                     RecordFailure(anti_cheat::MEMORY_SCAN_TIMEOUT);
                     timeoutOccurred = true;
-                    return false;  // 返回 false 立即停止扫描
+                    return false;
                 }
             }
 
@@ -5129,27 +5129,48 @@ class MemorySecuritySensor : public ISensor
             uintptr_t currentAddr = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
             if (IsKnownSafeRegion(currentAddr, mbi.RegionSize))
             {
-                return true;  // 继续扫描
+                return true;
             }
 
-            // 核心检测逻辑：专注于内存安全检测，不重复模块完整性检测
+            // 核心检测逻辑：统一处理所有可执行内存
             if (mbi.State == MEM_COMMIT)
             {
-                // 检测隐藏模块（不在模块列表中的可执行内存）
-                if ((mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE)))
-                {
-                    DetectHiddenModule(context, mbi);
-                }
+                const bool isExecutable = (mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ |
+                                                          PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY));
 
-                // 检测私有可执行内存（动态分配的可执行代码）
-                if (mbi.Type == MEM_PRIVATE && (mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ |
-                                                               PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)))
+                if (isExecutable)
                 {
-                    DetectPrivateExecutableMemory(context, mbi);
+                    // 【优化】统一模块检查，避免DetectHiddenModule内部重复调用
+                    HMODULE hMod = nullptr;
+                    BOOL inModule = GetModuleHandleExW(
+                        GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                        (LPCWSTR)mbi.BaseAddress, &hMod);
+
+                    DWORD lastError = GetLastError();
+                    bool belongsToModule = (inModule && hMod != nullptr);
+
+                    // 只对不在模块中的可执行内存进行深度检测
+                    if (!belongsToModule && (lastError == ERROR_MOD_NOT_FOUND || lastError == ERROR_INVALID_ADDRESS))
+                    {
+                        // A. 检测隐藏模块（大尺寸或包含MZ头）
+                        DetectHiddenModule(context, mbi);
+
+                        // B. 检测私有可执行内存（RWX权限）
+                        if (mbi.Type == MEM_PRIVATE)
+                        {
+                            DetectPrivateExecutableMemory(context, mbi);
+                        }
+
+                        // C. 【新增】检测内存映射文件（反序列化攻击、FileLess恶意代码）
+                        if (mbi.Type == MEM_MAPPED)
+                        {
+                            DetectMappedExecutableMemory(context, mbi);
+                        }
+                    }
                 }
             }
 
-            return true;  // 继续扫描
+            return true;
         });
 
         // 如果发生超时，直接返回失败
@@ -5169,72 +5190,61 @@ class MemorySecuritySensor : public ISensor
     }
 
    private:
-    // 检测隐藏模块
+    // 检测隐藏模块（已在主循环完成GetModuleHandleExW检查，此处仅验证MZ头）
     void DetectHiddenModule(ScanContext &context, const MEMORY_BASIC_INFORMATION &mbi)
     {
-        HMODULE hMod = nullptr;
-        DWORD lastError = 0;
-
-        // 尝试获取模块句柄，区分真正的API失败和正常的"不属于任何模块"情况
-        BOOL result = GetModuleHandleExW(
-                GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                (LPCWSTR)mbi.BaseAddress, &hMod);
-
-        if (!result)
-        {
-            lastError = GetLastError();
-            // 只有在真正的API错误时才记录失败，以下错误码是正常情况：
-            // ERROR_INVALID_ADDRESS (487) - 地址无效
-            // ERROR_MOD_NOT_FOUND (126) - 找不到模块（地址不属于任何已加载模块）
-            if (lastError != ERROR_INVALID_ADDRESS && lastError != ERROR_MOD_NOT_FOUND)
-            {
-                LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR, "GetModuleHandleExW失败: 错误码=%lu, 地址=0x%p",
-                              lastError, mbi.BaseAddress);
-                RecordFailure(anti_cheat::MEMORY_GET_MODULE_HANDLE_FAILED);
-                return;
-            }
-            else
-            {
-                // 记录调试信息，说明这是正常的"地址不属于任何模块"情况
-                LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR,
-                            "GetModuleHandleExW: 地址0x%p不属于任何已加载模块 (错误码=%lu)，继续检测隐藏模块",
-                            mbi.BaseAddress, lastError);
-            }
-        }
-
-        // 如果GetModuleHandleExW成功，说明地址属于已知模块，不是隐藏模块
-        if (result && hMod != nullptr)
-        {
-            return;  // 地址在已知模块中，跳过检测
-        }
-
-        // 地址不属于任何已知模块，继续检测是否为隐藏模块
         uintptr_t baseAddr = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
         SIZE_T regionSize = mbi.RegionSize;
 
-        // 使用配置化的检测阈值
         const uint32_t minRegionSize = CheatConfigManager::GetInstance().GetMinMemoryRegionSize();
         const uint32_t maxRegionSize = CheatConfigManager::GetInstance().GetMaxMemoryRegionSize();
 
-        if (baseAddr > 0x200000 && regionSize >= minRegionSize && regionSize <= maxRegionSize)
+        // 过滤掉过小或超大的区域
+        if (baseAddr < 0x200000 || regionSize < minRegionSize || regionSize > maxRegionSize)
         {
-            auto peCheckResult = CheckHiddenMemoryRegion(mbi.BaseAddress, regionSize);
-            if (peCheckResult.shouldReport)
+            return;
+        }
+
+        // 检查是否包含PE头（MZ标识）
+        auto peCheckResult = CheckHiddenMemoryRegion(mbi.BaseAddress, regionSize);
+        if (peCheckResult.shouldReport)
+        {
+            std::ostringstream oss;
+            if (peCheckResult.accessible)
             {
-                // 使用 std::ostringstream 替代 sprintf_s，避免格式化问题和缓冲区溢出风险
-                std::ostringstream oss;
-                if (peCheckResult.accessible)
-                {
-                    oss << "检测到隐藏的可执行内存区域: 0x" << std::hex << baseAddr << " 大小: " << std::dec
-                        << regionSize << " 字节";
-                }
-                else
-                {
-                    oss << "检测到隐藏的可执行内存区域（无法读取）: 0x" << std::hex << baseAddr << " 大小: " << std::dec
-                        << regionSize << " 字节";
-                }
-                context.AddEvidence(anti_cheat::INTEGRITY_MEMORY_PATCH, oss.str());
+                oss << "检测到隐藏的可执行模块 (MZ头): 0x" << std::hex << baseAddr
+                    << " 大小: " << std::dec << regionSize << " 字节";
             }
+            else
+            {
+                oss << "检测到隐藏的可执行模块 (不可读): 0x" << std::hex << baseAddr
+                    << " 大小: " << std::dec << regionSize << " 字节";
+            }
+            context.AddEvidence(anti_cheat::INTEGRITY_MEMORY_PATCH, oss.str());
+        }
+    }
+
+    // 【新增】检测内存映射文件中的可执行代码
+    void DetectMappedExecutableMemory(ScanContext &context, const MEMORY_BASIC_INFORMATION &mbi)
+    {
+        const uint32_t minRegionSize = CheatConfigManager::GetInstance().GetMinMemoryRegionSize();
+        const uint32_t maxRegionSize = CheatConfigManager::GetInstance().GetMaxMemoryRegionSize();
+
+        if (mbi.RegionSize < minRegionSize || mbi.RegionSize > maxRegionSize)
+        {
+            return;
+        }
+
+        const uintptr_t base = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
+        const bool isRWX = (mbi.Protect & PAGE_EXECUTE_READWRITE) || (mbi.Protect & PAGE_EXECUTE_WRITECOPY);
+
+        // MEM_MAPPED + RWX = 高度可疑（FileLess攻击常用手法）
+        if (isRWX)
+        {
+            std::ostringstream oss;
+            oss << "检测到可疑的内存映射可执行区域 (RWX). 地址: 0x" << std::hex << base
+                << ", 大小: " << std::dec << mbi.RegionSize << " 字节";
+            context.AddEvidence(anti_cheat::RUNTIME_MEMORY_EXEC_MAPPED, oss.str());
         }
     }
 

@@ -723,9 +723,9 @@ void CheatConfigManager::SetDefaultValues(ConfigData& configData)
     // 注意：CRITICAL级传感器使用相同的heavy_scan_budget_ms，但通过分段扫描机制确保单次不超时
     // CRITICAL级传感器：ProcessHandle, ModuleIntegrity, ProcessAndWindowMonitor
 
-    // [新增] MemorySecuritySensor配置参数 (HEAVY级)
-    configData.config->set_min_memory_region_size(128 * 1024);        // 最小内存区域大小(128KB)
-    configData.config->set_max_memory_region_size(16 * 1024 * 1024);  // 最大内存区域大小(16MB)
+    // [新增] MemorySecuritySensor配置参数 (HEAVY级 - 全量检测)
+    configData.config->set_min_memory_region_size(64 * 1024);         // 最小内存区域大小(64KB - 覆盖中小型Shellcode)
+    configData.config->set_max_memory_region_size(32 * 1024 * 1024);  // 最大内存区域大小(32MB - 覆盖大型注入模块)
 
     // [新增] ProcessAndWindowMonitorSensor配置参数 (CRITICAL级 - 分段扫描)
     configData.config->set_max_processes_to_scan(2000);  // 单次扫描进程数(2000个) - 优化后可覆盖绝大多数用户的所有进程

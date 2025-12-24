@@ -36,6 +36,7 @@ enum CheatCategory {
   RUNTIME_MODULE_NEW_UNKNOWN = 302; // 检测到新的、未知的模块（DLL）被加载到游戏进程中。
   RUNTIME_MEMORY_EXEC_PRIVATE = 303; // 发现不属于任何模块的私有可执行内存区域，这是DLL注入或Shellcode的典型特征。
   RUNTIME_ILLEGAL_FUNCTION_CALL = 304; // 检测到对关键游戏函数的非法调用（例如，来自未知模块或Shellcode）。
+  RUNTIME_MEMORY_EXEC_MAPPED = 305; // 发现不属于任何模块的内存映射可执行区域，可能是FileLess攻击手法。
   RUNTIME_ERROR = 399; // 反作弊系统内部发生非致命错误。
 
   // --- 系统信息与状态类别 (5xx) ---
