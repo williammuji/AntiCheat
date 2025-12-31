@@ -4123,22 +4123,29 @@ class ThreadAndModuleActivitySensor : public ISensor
 
     void AnalyzeNewThread(ScanContext &context, DWORD threadId)
     {
+        // 检查NT API是否可用
+        if (!SystemUtils::g_pNtQueryInformationThread)
+        {
+            // API不可用，这是正常情况，不记录失败
+            LOG_DEBUG(AntiCheatLogger::LogCategory::SENSOR,
+                      "NtQueryInformationThread API不可用，跳过线程起始地址检测");
+            return;
+        }
+
+        // 尝试打开线程句柄，先用高权限，失败后降级
         HANDLE hThread = OpenThread(THREAD_QUERY_INFORMATION, FALSE, threadId);
+        if (!hThread)
+        {
+            // 降级尝试：使用较低权限
+            hThread = OpenThread(THREAD_QUERY_LIMITED_INFORMATION, FALSE, threadId);
+        }
+
         if (hThread)
         {
             auto thread_closer = [](HANDLE h) { CloseHandle(h); };
             std::unique_ptr<void, decltype(thread_closer)> thread_handle(hThread, thread_closer);
 
             PVOID startAddress = nullptr;
-
-            // 检查NT API是否可用
-            if (!SystemUtils::g_pNtQueryInformationThread)
-            {
-                // API不可用，这是正常情况，不记录失败
-                LOG_DEBUG(AntiCheatLogger::LogCategory::SENSOR,
-                          "NtQueryInformationThread API不可用，跳过线程起始地址检测");
-                return;
-            }
 
             // 尝试查询线程起始地址
             NTSTATUS status =
@@ -4160,12 +4167,29 @@ class ThreadAndModuleActivitySensor : public ISensor
                         oss << "【检测到可疑线程】新线程的起始地址不在任何已知模块中\n" << threadDetails;
                         context.AddEvidence(anti_cheat::RUNTIME_THREAD_NEW_UNKNOWN, oss.str());
                     }
+                    else
+                    {
+                        // 记录合法新线程信息
+                        LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR,
+                                  "AnalyzeNewThread: 新线程 (TID=%lu) 起始地址 0x%p 位于合法模块 %s", threadId,
+                                  startAddress, Utils::WideToString(modulePath).c_str());
+                    }
+                }
+                else
+                {
+                    // startAddress为nullptr是异常情况
+                    LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR,
+                              "AnalyzeNewThread: 新线程 (TID=%lu) 起始地址为nullptr", threadId);
                 }
             }
             else
             {
                 // 只有在真正的API错误时才记录失败，某些NTSTATUS值是正常情况
-                if (status != 0xC000000D && status != 0xC0000022)  // STATUS_INVALID_PARAMETER, STATUS_ACCESS_DENIED
+                if (status != 0xC000000D &&  // STATUS_INVALID_PARAMETER
+                    status != 0xC0000022 &&  // STATUS_ACCESS_DENIED
+                    status != 0xC0000003 &&  // STATUS_INVALID_INFO_CLASS
+                    status != 0xC0000002 &&  // STATUS_NOT_IMPLEMENTED
+                    status != 0xC0000004)    // STATUS_INFO_LENGTH_MISMATCH
                 {
                     LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR,
                                   "NtQueryInformationThread失败: NTSTATUS=0x%08X, TID=%lu", status, threadId);
@@ -4181,10 +4205,10 @@ class ThreadAndModuleActivitySensor : public ISensor
         }
         else
         {
-            // OpenThread失败，但检测到新线程本身就算检测成功
-            // 注意：不统计为m_openThreadFailures，因为检测到新线程就算成功
-            context.AddEvidence(anti_cheat::RUNTIME_THREAD_NEW_UNKNOWN,
-                                "检测到新线程 (TID: " + std::to_string(threadId) + "), 无法获取其起始地址。");
+            // OpenThread完全失败（包括降级尝试）
+            // 这通常是系统保护线程或权限不足，属于正常情况
+            LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR,
+                       "AnalyzeNewThread: 无法打开新线程句柄 (TID=%lu)，可能是系统保护线程", threadId);
         }
     }
 
