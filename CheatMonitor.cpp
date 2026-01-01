@@ -1310,6 +1310,51 @@ bool GetModuleCodeSectionInfo(HMODULE hModule, PVOID &outBase, DWORD &outSize)
     return false;
 }
 
+// 检查路径是否在Windows系统目录中（可复用的辅助函数）
+bool IsSystemDirectoryPath(const std::wstring &path)
+{
+    // 系统目录缓存结构
+    struct SysDirs
+    {
+        std::wstring sys32, syswow64, winsxs, drivers;
+        bool initialized = false;
+    };
+    static SysDirs s_sysDirs;
+
+    // 初始化系统目录缓存
+    if (!s_sysDirs.initialized)
+    {
+        wchar_t winDirBuf[MAX_PATH] = {0};
+        if (GetWindowsDirectoryW(winDirBuf, MAX_PATH) > 0)
+        {
+            std::wstring winDir = winDirBuf;
+            std::transform(winDir.begin(), winDir.end(), winDir.begin(), ::towlower);
+            if (!winDir.empty() && winDir.back() != L'\\')
+                winDir.push_back(L'\\');
+            s_sysDirs.sys32 = winDir + L"system32\\";
+            s_sysDirs.syswow64 = winDir + L"syswow64\\";
+            s_sysDirs.winsxs = winDir + L"winsxs\\";
+            s_sysDirs.drivers = winDir + L"system32\\drivers\\";
+        }
+        s_sysDirs.initialized = true;
+    }
+
+    // 转换为小写并检查
+    std::wstring lower = path;
+    std::transform(lower.begin(), lower.end(), lower.begin(), ::towlower);
+
+    if (lower.rfind(s_sysDirs.sys32, 0) == 0)
+        return true;
+    if (lower.rfind(s_sysDirs.syswow64, 0) == 0)
+        return true;
+    if (lower.rfind(s_sysDirs.winsxs, 0) == 0)
+        return true;
+    if (lower.rfind(s_sysDirs.drivers, 0) == 0)
+        return true;
+
+    return false;
+}
+
 }  // namespace SystemUtils
 
 // --- 核心架构组件 ---
@@ -3214,6 +3259,9 @@ class ModuleIntegritySensor : public ISensor
         }
         bool isSelfModule = (hModule == selfModule);
 
+        // 检查是否为Windows系统DLL（使用SystemUtils中的可复用函数）
+        bool isSystemDll = SystemUtils::IsSystemDirectoryPath(modulePath);
+
         auto it = baselineHashes.find(modulePath);
 
         if (it == baselineHashes.end())
@@ -3266,9 +3314,20 @@ class ModuleIntegritySensor : public ISensor
                     context.AddEvidence(anti_cheat::INTEGRITY_SELF_TAMPERING,
                                         "检测到反作弊模块自身被篡改: " + Utils::WideToString(modulePath));
                 }
+                else if (isSystemDll)
+                {
+                    // Windows系统DLL被修改：降级为警告日志，不产生证据
+                    // 原因：Windows热补丁、安全软件Hook、兼容性Shim等合法场景会修改系统DLL
+                    LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR,
+                                "ModuleIntegritySensor: 检测到系统DLL代码节变化（可能是合法修改）: %s | 当前Hash: %s | 基线Hash: %s | "
+                                "代码节大小: %lu bytes",
+                                Utils::WideToString(modulePath).c_str(), currentHash_str.c_str(),
+                                baselineHash_str.c_str(), codeSize);
+                    // 不调用 AddEvidence，避免误报
+                }
                 else
                 {
-                    // 其他模块被篡改
+                    // 非系统DLL被篡改：这才是真正可疑的情况
                     LOG_ERROR_F(AntiCheatLogger::LogCategory::SENSOR,
                                 "ModuleIntegritySensor: 检测到模块代码节被篡改: %s | 当前Hash: %s | 基线Hash: %s | "
                                 "代码节大小: %lu bytes",
@@ -3538,45 +3597,6 @@ class ProcessHandleSensor : public ISensor
         auto &processSigCache = context.GetProcessSigCache();
         auto &processSigThrottleUntil = context.GetProcessSigThrottleUntil();
 
-        // 系统目录前缀缓存（小工具）
-        struct SysDirs
-        {
-            std::wstring sys32, syswow64, winsxs, drivers;
-            bool initialized = false;
-        };
-        static SysDirs s_sysDirs;
-        auto ensureSysDirs = [&]() {
-            if (!s_sysDirs.initialized)
-            {
-                wchar_t winDirBuf[MAX_PATH] = {0};
-                if (GetWindowsDirectoryW(winDirBuf, MAX_PATH) > 0)
-                {
-                    std::wstring winDir = winDirBuf;
-                    std::transform(winDir.begin(), winDir.end(), winDir.begin(), ::towlower);
-                    if (!winDir.empty() && winDir.back() != L'\\')
-                        winDir.push_back(L'\\');
-                    s_sysDirs.sys32 = winDir + L"system32\\";
-                    s_sysDirs.syswow64 = winDir + L"syswow64\\";
-                    s_sysDirs.winsxs = winDir + L"winsxs\\";
-                    s_sysDirs.drivers = winDir + L"system32\\drivers\\";
-                }
-                s_sysDirs.initialized = true;
-            }
-        };
-        auto isSystemDirPath = [&](const std::wstring &path) -> bool {
-            ensureSysDirs();
-            std::wstring lower = path;
-            std::transform(lower.begin(), lower.end(), lower.begin(), ::towlower);
-            if (lower.rfind(s_sysDirs.sys32, 0) == 0)
-                return true;
-            if (lower.rfind(s_sysDirs.syswow64, 0) == 0)
-                return true;
-            if (lower.rfind(s_sysDirs.winsxs, 0) == 0)
-                return true;
-            if (lower.rfind(s_sysDirs.drivers, 0) == 0)
-                return true;
-            return false;
-        };
         std::unordered_set<DWORD> processedPidsThisScan;
         ULONG handlesProcessed = 0;
         ULONG openProcDeniedCount = 0;     // ERROR_ACCESS_DENIED
@@ -3781,7 +3801,7 @@ class ProcessHandleSensor : public ISensor
 
                     // 白名单或系统目录：直接视为可信，无需签名验证
                     const auto &knownGoodProcesses = CheatConfigManager::GetInstance().GetKnownGoodProcesses();
-                    if (knownGoodProcesses->count(lowerProcessName) > 0 || isSystemDirPath(ownerProcessPath))
+                    if (knownGoodProcesses->count(lowerProcessName) > 0 || SystemUtils::IsSystemDirectoryPath(ownerProcessPath))
                     {
                         signatureStatus = Utils::SignatureStatus::TRUSTED;
                     }
@@ -4031,7 +4051,7 @@ class ProcessHandleSensor : public ISensor
                                    ::towlower);
 
                     const auto &knownGoodProcesses = CheatConfigManager::GetInstance().GetKnownGoodProcesses();
-                    if (knownGoodProcesses->count(lowerProcessName) > 0 || isSystemDirPath(ownerProcessPath))
+                    if (knownGoodProcesses->count(lowerProcessName) > 0 || SystemUtils::IsSystemDirectoryPath(ownerProcessPath))
                     {
                         signatureStatus = Utils::SignatureStatus::TRUSTED;
                     }
