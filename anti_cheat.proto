@@ -263,6 +263,7 @@ enum ReportType {
   REPORT_TELEMETRY = 3;   // 遥测数据上报
   REPORT_TARGETED_SENSOR = 4; // 临时单次传感器扫描结果
   REPORT_SNAPSHOT = 5;    // 快照数据上报
+  REPORT_SERVER_LOG = 6;  // 服务器后台日志（客户端日志上传，服务器打印用）
 }
 
 // 硬件信息专用上报消息
@@ -299,6 +300,15 @@ message TargetedSensorReport {
   repeated Evidence evidences = 9; // 新增: 支持附带证据
 }
 
+// 服务器后台日志上报（客户端日志上传，服务器打印用）
+message ServerLogReport {
+  string report_id = 1;
+  uint64 report_timestamp_ms = 2;
+  string log_level = 3;      // 日志级别：INFO, WARNING, ERROR, DEBUG
+  string log_category = 4;   // 日志分类：SENSOR, MODULE, THREAD, etc.
+  string log_message = 5;    // 日志内容
+}
+
 // 统一的上报包装器
 message Report {
   ReportType type = 1;
@@ -309,6 +319,7 @@ message Report {
     TelemetryReport telemetry = 4;
     TargetedSensorReport targeted_sensor = 5;
     SnapshotReport snapshot = 6;
+    ServerLogReport server_log = 7;
   }
 }
 
