@@ -1575,6 +1575,7 @@ struct CheatMonitor::Pimpl
     void UploadTelemetryMetricsReport(const anti_cheat::TelemetryMetrics &metrics);
     void UploadSnapshotReport();  // 新增：快照数据上报
     void SendReport(const anti_cheat::Report &report);
+    void SendServerLog(const std::string &log_level, const std::string &log_category, const std::string &log_message);
     // 统一传感器统计记录方法
     void RecordSensorExecutionStats(const char *name, int duration_ms, SensorExecutionResult result,
                                     anti_cheat::SensorFailureReason failureReason = anti_cheat::UNKNOWN_FAILURE);
@@ -1716,6 +1717,11 @@ class ScanContext
     void UploadTelemetryMetricsReport(const anti_cheat::TelemetryMetrics &metrics)
     {
         m_pimpl->UploadTelemetryMetricsReport(metrics);
+    }
+
+    void SendServerLog(const std::string &log_level, const std::string &log_category, const std::string &log_message)
+    {
+        m_pimpl->SendServerLog(log_level, log_category, log_message);
     }
 
     // 记录每轮传感器工作量计数（便于遥测调参）
@@ -3277,10 +3283,15 @@ class ModuleIntegritySensor : public ISensor
                     sprintf_s(buf, sizeof(buf), "%02x", byte);
                     hash_str += buf;
                 }
-                // 基线学习是正常行为，记录到日志中，不产生证据
-                LOG_INFO_F(AntiCheatLogger::LogCategory::SENSOR,
-                           "ModuleIntegritySensor: 学习新模块基线: %s | Hash: %s | 代码节大小: %lu bytes",
-                           Utils::WideToString(modulePath).c_str(), hash_str.c_str(), codeSize);
+                // 基线学习是正常行为，通过服务器日志记录，不产生证据
+                std::ostringstream log_msg;
+                log_msg << "学习新模块基线: " << Utils::WideToString(modulePath)
+                       << " | Hash: " << hash_str
+                       << " | 代码节大小: " << codeSize << " bytes";
+
+                // 使用SendServerLog上传到服务器
+                context.SendServerLog("INFO", "MODULE_LEARNING", log_msg.str());
+
                 learned_modules.insert(modulePath);
             }
         }
@@ -5086,10 +5097,40 @@ class ThreadAndModuleActivitySensor : public ISensor
             }
             moduleCount++;
 
-            if (context.InsertKnownModule(hModule))
+            // ===== 修改：每次都检查模块，不只是新模块 =====
+            // 检查是否为新模块（仍然记录状态）
+            bool isNewModule = context.InsertKnownModule(hModule);
+
+            // 每次都验证模块签名（不管是否为新模块）
+            // 获取模块路径
+            wchar_t modulePath[MAX_PATH] = {0};
+            if (GetModuleFileNameW(hModule, modulePath, MAX_PATH) == 0)
             {
-                // New module detected, verify its signature
-                context.VerifyModuleSignature(hModule);
+                return;  // 无法获取路径，跳过
+            }
+
+            // 验证模块签名
+            SystemUtils::WindowsVersion winVer = SystemUtils::GetWindowsVersion();
+            Utils::ModuleValidationResult validation = Utils::ValidateModule(modulePath, winVer);
+
+            // 如果模块不可信，报告证据
+            if (!validation.isTrusted)
+            {
+                std::ostringstream oss;
+                oss << "检测到不可信模块: " << Utils::WideToString(modulePath);
+                oss << " (原因: " << validation.reason << ")";
+                if (isNewModule)
+                {
+                    oss << " [新模块]";
+                }
+
+                context.AddEvidence(anti_cheat::RUNTIME_MODULE_NEW_UNKNOWN, oss.str());
+
+                LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR,
+                             "ThreadAndModuleActivitySensor: 发现不可信模块 %s (原因: %s)%s",
+                             Utils::WideToString(modulePath).c_str(),
+                             validation.reason.c_str(),
+                             isNewModule ? " [新模块]" : "");
             }
         });
 
@@ -6872,6 +6913,13 @@ void CheatMonitor::Pimpl::SendReport(const anti_cheat::Report &report)
                 content_size = report.snapshot().threads_size() + report.snapshot().modules_size();
             }
             break;
+        case anti_cheat::REPORT_SERVER_LOG:
+            report_type_name = "ServerLog";
+            if (report.has_server_log())
+            {
+                content_size = 1;  // 1条日志
+            }
+            break;
         default:
             break;
     }
@@ -6881,6 +6929,31 @@ void CheatMonitor::Pimpl::SendReport(const anti_cheat::Report &report)
 
     // TODO: 将 report 序列化并通过网络发送到服务器
     // HttpSend(server_url, serialized_report);
+}
+
+void CheatMonitor::Pimpl::SendServerLog(const std::string &log_level, const std::string &log_category,
+                                        const std::string &log_message)
+{
+    anti_cheat::Report report;
+    report.set_type(anti_cheat::REPORT_SERVER_LOG);
+
+    // 生成唯一的report_id
+    static std::atomic<uint64_t> log_counter{0};
+    std::string report_id = "LOG_" + std::to_string(++log_counter);
+
+    // 获取当前时间戳（毫秒）
+    auto now = std::chrono::system_clock::now();
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
+
+    // 填充ServerLogReport
+    anti_cheat::ServerLogReport *server_log = report.mutable_server_log();
+    server_log->set_report_id(report_id);
+    server_log->set_report_timestamp_ms(ms);
+    server_log->set_log_level(log_level);
+    server_log->set_log_category(log_category);
+    server_log->set_log_message(log_message);
+
+    SendReport(report);
 }
 
 void CheatMonitor::Pimpl::HardenProcessAndThreads()
