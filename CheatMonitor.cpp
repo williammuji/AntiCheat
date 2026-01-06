@@ -1106,7 +1106,11 @@ static bool IsInWindowsSystemDirectory(const std::wstring &pathLower)
         winDirLower + L"system32\\",
         winDirLower + L"syswow64\\",
         winDirLower + L"winsxs\\",
-        winDirLower + L"system32\\drivers\\"
+        winDirLower + L"system32\\drivers\\",
+        winDirLower + L"apppatch\\",
+        winDirLower + L"ime\\",
+        winDirLower + L"microsoft.net\\",
+        winDirLower + L"fonts\\"
     };
 
     for (const auto &dir : systemDirs)
@@ -3350,7 +3354,17 @@ class ModuleIntegritySensor : public ISensor
             // LEARNING MODE: 动态基线建立
             // 安全对齐逻辑：新发现的模块必须通过可信验证（签名 + 路径）才能动态建立基线
             // 防止外挂在运行期间动态加载未签名的代码并被当作“合法现状”记录
-            Utils::ModuleValidationResult validation = Utils::ValidateModule(modulePath, context.GetWindowsVersion());
+            Utils::ModuleValidationResult validation;
+            if (isWhitelisted)
+            {
+                validation.isTrusted = true;
+                validation.reason = "白名单模块（路径或文件名匹配）";
+                validation.signatureStatus = Utils::SignatureStatus::UNKNOWN;  // 假设未检查或不重要
+            }
+            else
+            {
+                validation = Utils::ValidateModule(modulePath, context.GetWindowsVersion());
+            }
 
             if (validation.isTrusted)
             {
