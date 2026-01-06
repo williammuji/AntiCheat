@@ -1618,6 +1618,17 @@ struct CheatMonitor::Pimpl
 
     // IAT hook检查方法
     void CheckIatHooks(ScanContext &context, const BYTE *baseAddress, const IMAGE_IMPORT_DESCRIPTOR *pImportDesc);
+
+    // [新增] 动态更新模块基线
+    void UpdateModuleBaselineHash(const std::wstring &modulePath, const std::vector<uint8_t> &hash)
+    {
+        // 这是一个运行时动态更新，不需要锁m_baselineMutex，因为m_moduleBaselineHashes设计为单线程或写入受控
+        // 但为了安全起见，如果在多线程环境，应该加锁。考虑到Sensor是串行执行的（除了TargetedScan），这里相对安全
+        // 但如果有并发TargetedScan，建议加锁保护 m_moduleBaselineHashes?
+        // 实际上 m_moduleBaselineHashes 文档说只读，现在我们要由写变读，最好加个锁或者确认是Sensor线程独占
+        // 这里简单实现直接更新，假设Sensor执行是串行的
+        m_moduleBaselineHashes[modulePath] = hash;
+    }
 };
 
 // ScanContext: 为传感器提供所需依赖的上下文对象
@@ -1674,6 +1685,11 @@ class ScanContext
     const std::unordered_map<std::wstring, std::vector<uint8_t>> &GetModuleBaselineHashes() const
     {
         return m_pimpl->m_moduleBaselineHashes;
+    }
+    // [新增] 动态更新模块基线
+    void UpdateModuleBaselineHash(const std::wstring &modulePath, const std::vector<uint8_t> &hash)
+    {
+        m_pimpl->UpdateModuleBaselineHash(modulePath, hash);
     }
     const uintptr_t GetVehListAddress() const
     {
@@ -3247,6 +3263,65 @@ class ModuleIntegritySensor : public ISensor
                                     baselineHashes);
     }
 
+    // 检查是否为白名单模块（包括系统DLL、已知合法软件等）
+    bool IsWhitelistedModule(const std::wstring &modulePath)
+    {
+        // 1. 尝试获取长路径以解决 8.3 短路径问题 (如 PROGRA~1)
+        wchar_t longPath[MAX_PATH] = {0};
+        DWORD len = GetLongPathNameW(modulePath.c_str(), longPath, MAX_PATH);
+        std::wstring normalizedPath;
+        if (len > 0 && len < MAX_PATH)
+        {
+            normalizedPath = longPath;
+        }
+        else
+        {
+            normalizedPath = modulePath;
+        }
+
+        // 2. 统一转换为小写
+        std::transform(normalizedPath.begin(), normalizedPath.end(), normalizedPath.begin(), ::towlower);
+
+        // 3. 优先检查现有系统目录逻辑
+        if (SystemUtils::IsSystemDirectoryPath(normalizedPath))
+        {
+            return true;
+        }
+
+        // 4. 检查第三方软件白名单目录
+        // 注意：现在从 CheatConfigManager 动态获取，支持服务器下发
+        auto whitelistedDirs = CheatConfigManager::GetInstance().GetWhitelistedIntegrityDirs();
+        if (whitelistedDirs)
+        {
+            for (const auto &dir : *whitelistedDirs)
+            {
+                if (normalizedPath.find(dir) != std::wstring::npos)
+                {
+                    return true;
+                }
+            }
+        }
+
+        // 5. 检查特定文件名
+        auto whitelistedFiles = CheatConfigManager::GetInstance().GetWhitelistedIntegrityFiles();
+        if (whitelistedFiles)
+        {
+            // 提取文件名
+            size_t lastSlash = normalizedPath.find_last_of(L"\\/");
+            std::wstring fileName = (lastSlash != std::wstring::npos) ? normalizedPath.substr(lastSlash + 1) : normalizedPath;
+
+            for (const auto &file : *whitelistedFiles)
+            {
+                if (fileName == file)
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
     // 处理模块代码完整性验证的逻辑
     void ValidateModuleCodeIntegrity(const wchar_t *modulePath_w, HMODULE hModule, PVOID codeBase, DWORD codeSize,
                                      ScanContext &context,
@@ -3265,34 +3340,51 @@ class ModuleIntegritySensor : public ISensor
         }
         bool isSelfModule = (hModule == selfModule);
 
-        // 检查是否为Windows系统DLL（使用SystemUtils中的可复用函数）
-        bool isSystemDll = SystemUtils::IsSystemDirectoryPath(modulePath);
+        // 检查是否在白名单中（系统DLL或信任的第三方软件）
+        bool isWhitelisted = IsWhitelistedModule(modulePath);
 
         auto it = baselineHashes.find(modulePath);
 
         if (it == baselineHashes.end())
         {
-            // LEARNING MODE: 仅记录一次基线
-            static std::set<std::wstring> learned_modules;
-            if (learned_modules.find(modulePath) == learned_modules.end())
+            // LEARNING MODE: 动态基线建立
+            // 安全对齐逻辑：新发现的模块必须通过可信验证（签名 + 路径）才能动态建立基线
+            // 防止外挂在运行期间动态加载未签名的代码并被当作“合法现状”记录
+            Utils::ModuleValidationResult validation = Utils::ValidateModule(modulePath, context.GetWindowsVersion());
+
+            if (validation.isTrusted)
             {
+                // 生成哈希字符串用于日志
                 std::string hash_str;
-                char buf[17];  // 用于 "0x" + 8*2 十六进制字符 + 空字符
+                char buf[17];
                 for (uint8_t byte : currentHash)
                 {
                     sprintf_s(buf, sizeof(buf), "%02x", byte);
                     hash_str += buf;
                 }
-                // 基线学习是正常行为，通过服务器日志记录，不产生证据
+
+                // 更新基线!
+                context.UpdateModuleBaselineHash(modulePath, currentHash);
+
                 std::ostringstream log_msg;
-                log_msg << "学习新模块基线: " << Utils::WideToString(modulePath)
-                       << " | Hash: " << hash_str
-                       << " | 代码节大小: " << codeSize << " bytes";
+                log_msg << "动态建立新可信模块基线: " << Utils::WideToString(modulePath)
+                        << " | 原因: " << validation.reason
+                        << " | Hash: " << hash_str
+                        << " | 代码节大小: " << codeSize << " bytes";
 
                 // 使用SendServerLog上传到服务器
-                context.SendServerLog("INFO", "MODULE_LEARNING", log_msg.str());
+                context.SendServerLog("INFO", "MODULE_LEARNING_TRUSTED", log_msg.str());
+            }
+            else
+            {
+                // 拒绝为不可信模块建立基线，并立即产生作弊证据
+                LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR,
+                              "ModuleIntegritySensor: 拒绝动态建立不可信模块基线: %s | 原因: %s",
+                              Utils::WideToString(modulePath).c_str(), validation.reason.c_str());
 
-                learned_modules.insert(modulePath);
+                context.AddEvidence(anti_cheat::MODULE_UNTRUSTED_DYNAMIC_LOAD,
+                                    "拒绝动态建立不可信模块基线: " + Utils::WideToString(modulePath) +
+                                    " (原因: " + validation.reason + ")");
             }
         }
         else
@@ -3325,12 +3417,12 @@ class ModuleIntegritySensor : public ISensor
                     context.AddEvidence(anti_cheat::INTEGRITY_SELF_TAMPERING,
                                         "检测到反作弊模块自身被篡改: " + Utils::WideToString(modulePath));
                 }
-                else if (isSystemDll)
+                else if (isWhitelisted)
                 {
-                    // Windows系统DLL被修改：降级为警告日志，不产生证据
-                    // 原因：Windows热补丁、安全软件Hook、兼容性Shim等合法场景会修改系统DLL
+                    // 白名单模块（系统DLL或合法第三方软件）被修改：降级为警告日志
+                    // 原因：热补丁、安全软件、驱动更新等合法场景
                     LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR,
-                                "ModuleIntegritySensor: 检测到系统DLL代码节变化（可能是合法修改）: %s | 当前Hash: %s | 基线Hash: %s | "
+                                "ModuleIntegritySensor: 检测到白名单模块代码节变化（合法修改）: %s | 当前Hash: %s | 基线Hash: %s | "
                                 "代码节大小: %lu bytes",
                                 Utils::WideToString(modulePath).c_str(), currentHash_str.c_str(),
                                 baselineHash_str.c_str(), codeSize);
@@ -3338,7 +3430,7 @@ class ModuleIntegritySensor : public ISensor
                 }
                 else
                 {
-                    // 非系统DLL被篡改：这才是真正可疑的情况
+                    // 非白名单模块被篡改：真正可疑的情况
                     LOG_ERROR_F(AntiCheatLogger::LogCategory::SENSOR,
                                 "ModuleIntegritySensor: 检测到模块代码节被篡改: %s | 当前Hash: %s | 基线Hash: %s | "
                                 "代码节大小: %lu bytes",

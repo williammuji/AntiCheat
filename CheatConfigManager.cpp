@@ -267,6 +267,19 @@ bool CheatConfigManager::IsSnapshotUploadEnabled() const
     return GetCurrentConfig()->config->enable_snapshot_upload();
 }
 
+// --- 模块完整性检测白名单 ---
+std::shared_ptr<const std::vector<std::wstring>> CheatConfigManager::GetWhitelistedIntegrityDirs() const
+{
+    auto config = GetCurrentConfig();
+    return std::shared_ptr<const std::vector<std::wstring>>(config, &config->whitelistedIntegrityDirs_w);
+}
+
+std::shared_ptr<const std::vector<std::wstring>> CheatConfigManager::GetWhitelistedIntegrityFiles() const
+{
+    auto config = GetCurrentConfig();
+    return std::shared_ptr<const std::vector<std::wstring>>(config, &config->whitelistedIntegrityFiles_w);
+}
+
 // --- 私有辅助函数 ---
 
 void CheatConfigManager::SetDefaultValues(ConfigData& configData)
@@ -768,6 +781,31 @@ void CheatConfigManager::SetDefaultValues(ConfigData& configData)
     ak_module->set_description("Audiokinetic Wwise音频引擎");
     ak_module->set_enabled(true);
 
+    // [新增] 模块完整性检测白名单默认值
+    configData.config->clear_whitelisted_integrity_dirs();
+    configData.config->add_whitelisted_integrity_dirs("\\program files\\microsoft office\\");
+    configData.config->add_whitelisted_integrity_dirs("\\program files (x86)\\microsoft office\\");
+    configData.config->add_whitelisted_integrity_dirs("\\program files\\common files\\microsoft shared\\");
+    configData.config->add_whitelisted_integrity_dirs("\\program files (x86)\\common files\\microsoft shared\\");
+    configData.config->add_whitelisted_integrity_dirs("\\program files\\sangfor\\");
+    configData.config->add_whitelisted_integrity_dirs("\\program files (x86)\\sangfor\\");
+    configData.config->add_whitelisted_integrity_dirs("\\windows\\system32\\driverstore\\");
+    configData.config->add_whitelisted_integrity_dirs("\\windows\\system32\\spool\\drivers\\");
+    configData.config->add_whitelisted_integrity_dirs("\\program files\\bonjour\\");
+    configData.config->add_whitelisted_integrity_dirs("\\program files (x86)\\bonjour\\");
+    configData.config->add_whitelisted_integrity_dirs("\\program files\\norton internet security\\");
+    configData.config->add_whitelisted_integrity_dirs("\\program files (x86)\\norton internet security\\");
+    configData.config->add_whitelisted_integrity_dirs("\\windows\\syswow64\\macromed\\flash\\");
+
+    configData.config->clear_whitelisted_integrity_files();
+    configData.config->add_whitelisted_integrity_files("gameoverlayrenderer.dll");
+    configData.config->add_whitelisted_integrity_files("gameoverlayrenderer64.dll");
+    configData.config->add_whitelisted_integrity_files("discord_hook.dll");
+    configData.config->add_whitelisted_integrity_files("discord_hook64.dll");
+    configData.config->add_whitelisted_integrity_files("rtsshooks.dll");
+    configData.config->add_whitelisted_integrity_files("rtsshooks64.dll");
+    configData.config->add_whitelisted_integrity_files("wegame_helper.dll");
+
     // 不再在客户端生成/校验配置签名：配置下发已在传输层加密与鉴权
 
     UpdateWideStringCaches(configData);
@@ -798,6 +836,8 @@ void CheatConfigManager::UpdateWideStringCaches(ConfigData& configData)
     convert_to_set(configData.config->whitelisted_process_paths(), configData.whitelistedProcessPaths_w);
     convert_to_set(configData.config->whitelisted_window_keywords(), configData.whitelistedWindowKeywords_w);
     convert_to_set(configData.config->known_good_processes(), configData.knownGoodProcesses_w);
+    convert_to_vector(configData.config->whitelisted_integrity_dirs(), configData.whitelistedIntegrityDirs_w);
+    convert_to_vector(configData.config->whitelisted_integrity_files(), configData.whitelistedIntegrityFiles_w);
 
     // 更新官方第三方库白名单缓存
     configData.trustedThirdPartyModules.clear();
