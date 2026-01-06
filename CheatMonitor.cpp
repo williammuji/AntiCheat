@@ -1495,7 +1495,7 @@ struct CheatMonitor::Pimpl
     uintptr_t m_vehListAddress = 0;  // 存储VEH链表(LdrpVectorHandlerList)的绝对地址
 
     // === 基线数据 (受m_baselineMutex保护) ===
-    std::mutex m_baselineMutex;
+    mutable std::mutex m_baselineMutex;
     std::set<DWORD> m_knownThreadIds;  // 使用 std::set 以获得更快的查找速度 (O(logN)) 并自动处理重复项
     std::set<HMODULE> m_knownModules;
 
@@ -1771,6 +1771,13 @@ class ScanContext
     {
         std::lock_guard<std::mutex> lock(m_pimpl->m_baselineMutex);
         return m_pimpl->m_knownThreadIds.insert(threadId).second;
+    }
+
+    // 检查模块是否已知
+    bool IsModuleKnown(HMODULE hModule) const
+    {
+        std::lock_guard<std::mutex> lock(m_pimpl->m_baselineMutex);
+        return m_pimpl->m_knownModules.find(hModule) != m_pimpl->m_knownModules.end();
     }
 
     // 线程安全地插入模块句柄
@@ -5203,11 +5210,12 @@ class ThreadAndModuleActivitySensor : public ISensor
             }
             moduleCount++;
 
-            // ===== 修改：每次都检查模块，不只是新模块 =====
-            // 检查是否为新模块（仍然记录状态）
-            bool isNewModule = context.InsertKnownModule(hModule);
+            // 首先检查是否为已知模块
+            if (context.IsModuleKnown(hModule))
+            {
+                return;  // 已经是已知且可信的模块，跳过以提升性能
+            }
 
-            // 每次都验证模块签名（不管是否为新模块）
             // 获取模块路径
             wchar_t modulePath[MAX_PATH] = {0};
             if (GetModuleFileNameW(hModule, modulePath, MAX_PATH) == 0)
@@ -5219,24 +5227,25 @@ class ThreadAndModuleActivitySensor : public ISensor
             SystemUtils::WindowsVersion winVer = SystemUtils::GetWindowsVersion();
             Utils::ModuleValidationResult validation = Utils::ValidateModule(modulePath, winVer);
 
-            // 如果模块不可信，报告证据
-            if (!validation.isTrusted)
+            // 处理逻辑：
+            // 1. 如果模块可信，将其加入 knownModules 以免下次重复检查
+            // 2. 如果模块不可信，记录证据且不加入 knownModules，这样下次扫描会再次检查并报警
+            if (validation.isTrusted)
+            {
+                context.InsertKnownModule(hModule);
+            }
+            else
             {
                 std::ostringstream oss;
                 oss << "检测到不可信模块: " << Utils::WideToString(modulePath);
                 oss << " (原因: " << validation.reason << ")";
-                if (isNewModule)
-                {
-                    oss << " [新模块]";
-                }
 
                 context.AddEvidence(anti_cheat::RUNTIME_MODULE_NEW_UNKNOWN, oss.str());
 
                 LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR,
-                             "ThreadAndModuleActivitySensor: 发现不可信模块 %s (原因: %s)%s",
+                             "ThreadAndModuleActivitySensor: 发现不可信模块 %s (原因: %s)",
                              Utils::WideToString(modulePath).c_str(),
-                             validation.reason.c_str(),
-                             isNewModule ? " [新模块]" : "");
+                             validation.reason.c_str());
             }
         });
 
