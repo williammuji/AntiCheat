@@ -94,6 +94,10 @@ class CheatConfigManager
     std::shared_ptr<const std::vector<TrustedThirdPartyModule>> GetTrustedThirdPartyModules() const;
     bool IsTrustedThirdPartyModule(const std::wstring& module_name, uint64_t module_size, const std::string& code_hash) const;
 
+    // [新增] 模块完整性检测白名单
+    std::shared_ptr<const std::vector<std::wstring>> GetWhitelistedIntegrityDirs() const;
+    std::shared_ptr<const std::vector<std::wstring>> GetWhitelistedIntegrityFiles() const;
+
    private:
     struct ConfigData
     {
@@ -105,6 +109,10 @@ class CheatConfigManager
         std::unordered_set<std::wstring> whitelistedWindowKeywords_w;
         std::unordered_set<std::wstring> knownGoodProcesses_w;
         std::vector<TrustedThirdPartyModule> trustedThirdPartyModules; // 官方第三方库白名单
+
+        std::vector<std::wstring> whitelistedIntegrityDirs_w;
+        std::vector<std::wstring> whitelistedIntegrityFiles_w;
+
         // 简化版：无禁用名单
 
         ConfigData() : config(std::make_unique<anti_cheat::ClientConfig>())

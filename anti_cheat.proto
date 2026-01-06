@@ -21,6 +21,7 @@ enum CheatCategory {
   INTEGRITY_SELF_TAMPERING = 106; // 反作弊模块自身被篡改
   INTEGRITY_SYSTEM_API_HOOKED = 107; // 检测到系统API被Hook
   MODULE_UNTRUSTED_IN_BASELINE = 108; // 基线建立时发现不可信模块（路径+签名验证失败）
+  MODULE_UNTRUSTED_DYNAMIC_LOAD = 109; // 运行时动态加载了不可信模块（路径+签名验证失败）
 
   // --- 外部环境与工具类别 (2xx) ---
   ENVIRONMENT_UNKNOWN = 200;
@@ -436,6 +437,10 @@ message ClientConfig {
 
   // --- 官方第三方库白名单配置 ---
   repeated TrustedThirdPartyModule trusted_third_party_modules = 34;  // 官方认可的第三方库列表
+
+  // [新增] 模块完整性检测白名单
+  repeated string whitelisted_integrity_dirs = 53;   // 目录前缀白名单
+  repeated string whitelisted_integrity_files = 54;  // 文件名白名单
 }
 
 // 官方认可的第三方库配置
