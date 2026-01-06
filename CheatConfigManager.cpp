@@ -805,6 +805,17 @@ void CheatConfigManager::SetDefaultValues(ConfigData& configData)
     configData.config->add_whitelisted_integrity_files("rtsshooks.dll");
     configData.config->add_whitelisted_integrity_files("rtsshooks64.dll");
     configData.config->add_whitelisted_integrity_files("wegame_helper.dll");
+    // 游戏组件
+    configData.config->add_whitelisted_integrity_files("fmodex.dll");
+    configData.config->add_whitelisted_integrity_files("ydyclient.dll");
+    configData.config->add_whitelisted_integrity_files("hploader.dll");
+    // 显卡驱动与系统组件
+    configData.config->add_whitelisted_integrity_files("nvd3d9wrap.dll");
+    configData.config->add_whitelisted_integrity_files("nvscpapi.dll");
+    configData.config->add_whitelisted_integrity_files("detoured.dll");
+    configData.config->add_whitelisted_integrity_files("ieproxy.dll");
+    configData.config->add_whitelisted_integrity_files("tiptsf.dll");
+    configData.config->add_whitelisted_integrity_files("mdnsnsp.dll");
 
     // 不再在客户端生成/校验配置签名：配置下发已在传输层加密与鉴权
 
