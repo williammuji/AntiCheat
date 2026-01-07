@@ -1626,12 +1626,24 @@ struct CheatMonitor::Pimpl
     // [新增] 动态更新模块基线
     void UpdateModuleBaselineHash(const std::wstring &modulePath, const std::vector<uint8_t> &hash)
     {
-        // 这是一个运行时动态更新，不需要锁m_baselineMutex，因为m_moduleBaselineHashes设计为单线程或写入受控
-        // 但为了安全起见，如果在多线程环境，应该加锁。考虑到Sensor是串行执行的（除了TargetedScan），这里相对安全
-        // 但如果有并发TargetedScan，建议加锁保护 m_moduleBaselineHashes?
-        // 实际上 m_moduleBaselineHashes 文档说只读，现在我们要由写变读，最好加个锁或者确认是Sensor线程独占
-        // 这里简单实现直接更新，假设Sensor执行是串行的
-        m_moduleBaselineHashes[modulePath] = hash;
+        // 1. 更新模块基线哈希 (受 m_baselineMutex 保护)
+        {
+            std::lock_guard<std::mutex> lock(m_baselineMutex);
+            m_moduleBaselineHashes[modulePath] = hash;
+        }
+
+        // 2. 同步更新合法模块路径列表 (受 m_modulePathsMutex 保护)
+        // 这一步至关重要：防止线程监控传感器将后来加载的合法 DLL (如 cryptnet.dll) 误报为未知模块。
+        std::wstring lowerPath = modulePath;
+        std::transform(lowerPath.begin(), lowerPath.end(), lowerPath.begin(), ::towlower);
+
+        {
+            std::lock_guard<std::mutex> lock(m_modulePathsMutex);
+            m_legitimateModulePaths.insert(lowerPath);
+        }
+
+        LOG_DEBUG_F(AntiCheatLogger::LogCategory::SYSTEM, "UpdateModuleBaselineHash: 已将新信任模块加入基线和合法列表: %s",
+                    Utils::WideToString(modulePath).c_str());
     }
 };
 
