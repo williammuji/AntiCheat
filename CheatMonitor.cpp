@@ -1323,13 +1323,11 @@ bool IsSystemDirectoryPath(const std::wstring &path)
     struct SysDirs
     {
         std::wstring sys32, syswow64, winsxs, drivers;
-        bool initialized = false;
     };
-    static SysDirs s_sysDirs;
 
-    // 初始化系统目录缓存
-    if (!s_sysDirs.initialized)
-    {
+    // 使用 C++11 Magic Statics 确保线程安全的初始化
+    static const SysDirs s_sysDirs = []() -> SysDirs {
+        SysDirs dirs;
         wchar_t winDirBuf[MAX_PATH] = {0};
         if (GetWindowsDirectoryW(winDirBuf, MAX_PATH) > 0)
         {
@@ -1337,13 +1335,13 @@ bool IsSystemDirectoryPath(const std::wstring &path)
             std::transform(winDir.begin(), winDir.end(), winDir.begin(), ::towlower);
             if (!winDir.empty() && winDir.back() != L'\\')
                 winDir.push_back(L'\\');
-            s_sysDirs.sys32 = winDir + L"system32\\";
-            s_sysDirs.syswow64 = winDir + L"syswow64\\";
-            s_sysDirs.winsxs = winDir + L"winsxs\\";
-            s_sysDirs.drivers = winDir + L"system32\\drivers\\";
+            dirs.sys32 = winDir + L"system32\\";
+            dirs.syswow64 = winDir + L"syswow64\\";
+            dirs.winsxs = winDir + L"winsxs\\";
+            dirs.drivers = winDir + L"system32\\drivers\\";
         }
-        s_sysDirs.initialized = true;
-    }
+        return dirs;
+    }();
 
     // 转换为小写并检查
     std::wstring lower = path;
