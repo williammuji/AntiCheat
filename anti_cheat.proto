@@ -22,6 +22,7 @@ enum CheatCategory {
   INTEGRITY_SYSTEM_API_HOOKED = 107; // 检测到系统API被Hook
   MODULE_UNTRUSTED_IN_BASELINE = 108; // 基线建立时发现不可信模块（路径+签名验证失败）
   MODULE_UNTRUSTED_DYNAMIC_LOAD = 109; // 运行时动态加载了不可信模块（路径+签名验证失败）
+  INTEGRITY_PROCESS_HOLLOWED = 110;    // 检测到进程镂空（Process Hollowing），主模块内存与磁盘文件不一致。
 
   // --- 外部环境与工具类别 (2xx) ---
   ENVIRONMENT_UNKNOWN = 200;
@@ -173,6 +174,7 @@ message HardwareFingerprint {
   string computer_name = 3;       // 计算机名。
   string os_version = 4;          // 操作系统版本。
   string cpu_info = 5;            // CPU信息（如架构、核心数）。
+  string vm_info = 6;             // 虚拟机检测信息（注册表、文件、I/O端口等收集结果）。
 }
 
 // 描述一个被加载到游戏进程中的模块（例如 DLL）的详细信息。

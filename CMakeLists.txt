@@ -22,6 +22,8 @@ add_library(CheatMonitorLib STATIC
     CheatConfigManager.cpp
     HardwareInfoCollector.h
     HardwareInfoCollector.cpp
+    hde/hde32.h
+    hde/hde32.cpp
     ${PROTO_SRCS}
     ${PROTO_HDRS}
 )

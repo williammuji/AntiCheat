@@ -108,6 +108,8 @@ typedef struct _SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX
 #include <unordered_set>
 #include <vector>
 
+#include "hde/hde32.h"
+
 // 全局NT API函数指针声明
 extern "C" {
 typedef NTSTATUS(WINAPI *NtQueryInformationThread_t)(HANDLE, THREADINFOCLASS, PVOID, ULONG, PULONG);
@@ -2413,6 +2415,287 @@ class SystemCodeIntegritySensor : public ISensor
         return SensorExecutionResult::SUCCESS;
     }
 };
+class ProcessHollowingSensor : public ISensor
+{
+   public:
+    const char *GetName() const override
+    {
+        return "ProcessHollowingSensor";
+    }
+    SensorWeight GetWeight() const override
+    {
+        return SensorWeight::HEAVY; // 涉及文件I/O，属于重量级检测
+    }
+    SensorExecutionResult Execute(ScanContext &context) override
+    {
+        m_lastFailureReason = anti_cheat::UNKNOWN_FAILURE;
+
+        // 1. 获取主模块句柄 (Base Address)
+        HMODULE hModule = GetModuleHandleW(NULL);
+        if (!hModule)
+        {
+             RecordFailure(anti_cheat::GET_MODULE_HANDLE_FAILED);
+             return SensorExecutionResult::FAILURE;
+        }
+
+        // 2. 读取内存中的PE头
+        // 注意：这里直接读取本进程内存，无需ReadProcessMemory
+        PIMAGE_DOS_HEADER pDosHeader = (PIMAGE_DOS_HEADER)hModule;
+        if (IsBadReadPtr(pDosHeader, sizeof(IMAGE_DOS_HEADER)))
+        {
+             RecordFailure(anti_cheat::MEMORY_ACCESS_EXCEPTION);
+             return SensorExecutionResult::FAILURE;
+        }
+
+        if (pDosHeader->e_magic != IMAGE_DOS_SIGNATURE)
+        {
+             context.AddEvidence(anti_cheat::INTEGRITY_PROCESS_HOLLOWED, "Memory DOS Header signature invalid (Magic mismatch)");
+             return SensorExecutionResult::SUCCESS;
+        }
+
+        PIMAGE_NT_HEADERS pNtHeaders = (PIMAGE_NT_HEADERS)((BYTE*)hModule + pDosHeader->e_lfanew);
+        if (IsBadReadPtr(pNtHeaders, sizeof(IMAGE_NT_HEADERS)))
+        {
+             RecordFailure(anti_cheat::MEMORY_ACCESS_EXCEPTION);
+             return SensorExecutionResult::FAILURE;
+        }
+
+        if (pNtHeaders->Signature != IMAGE_NT_SIGNATURE)
+        {
+             context.AddEvidence(anti_cheat::INTEGRITY_PROCESS_HOLLOWED, "Memory NT Header signature invalid");
+             return SensorExecutionResult::SUCCESS;
+        }
+
+        // 3. 获取模块路径并读取磁盘文件头
+        wchar_t modulePath[MAX_PATH];
+        if (GetModuleFileNameW(hModule, modulePath, MAX_PATH) == 0)
+        {
+             RecordFailure(anti_cheat::GET_MODULE_PATH_FAILED);
+             return SensorExecutionResult::FAILURE;
+        }
+
+        HANDLE hFile = CreateFileW(modulePath, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+        if (hFile == INVALID_HANDLE_VALUE)
+        {
+             // 文件及其独占由于某些原因无法读取，暂时忽略
+             return SensorExecutionResult::FAILURE;
+        }
+
+        DWORD fileSize = GetFileSize(hFile, NULL);
+        if (fileSize < 4096) // 文件太小，不可能是有效的PE文件
+        {
+             CloseHandle(hFile);
+             return SensorExecutionResult::FAILURE;
+        }
+
+        // 读取文件头 (4KB足够包含DOS+NT+SectionHeaders)
+        std::vector<BYTE> fileHeaderBuffer(4096);
+        DWORD bytesRead = 0;
+        if (!ReadFile(hFile, fileHeaderBuffer.data(), 4096, &bytesRead, NULL))
+        {
+             CloseHandle(hFile);
+             RecordFailure(anti_cheat::SYSTEM_API_CALL_FAILED);
+             return SensorExecutionResult::FAILURE;
+        }
+        CloseHandle(hFile);
+
+        // 4. 解析磁盘PE头
+        PIMAGE_DOS_HEADER pFileDosHeader = (PIMAGE_DOS_HEADER)fileHeaderBuffer.data();
+        if (pFileDosHeader->e_magic != IMAGE_DOS_SIGNATURE)
+        {
+            // 磁盘文件头无效？可能是加壳或加密
+             return SensorExecutionResult::FAILURE;
+        }
+
+        PIMAGE_NT_HEADERS pFileNtHeaders = (PIMAGE_NT_HEADERS)(fileHeaderBuffer.data() + pFileDosHeader->e_lfanew);
+
+        // 确保NT头在读取范围内
+        if ((BYTE*)pFileNtHeaders > fileHeaderBuffer.data() + bytesRead - sizeof(IMAGE_NT_HEADERS))
+        {
+             return SensorExecutionResult::FAILURE;
+        }
+
+        // 5. 关键字段比对：EntryPoint 和 SizeOfImage
+        // Process Hollowing 常见特征是 EntryPoint 被指向恶意代码，或 SizeOfImage 被修改
+        if (pNtHeaders->OptionalHeader.AddressOfEntryPoint != pFileNtHeaders->OptionalHeader.AddressOfEntryPoint)
+        {
+             std::ostringstream oss;
+             oss << "Process Hollowing Detected: EntryPoint Mismatch. Memory: 0x" << std::hex << pNtHeaders->OptionalHeader.AddressOfEntryPoint
+                 << ", Disk: 0x" << pFileNtHeaders->OptionalHeader.AddressOfEntryPoint;
+             context.AddEvidence(anti_cheat::INTEGRITY_PROCESS_HOLLOWED, oss.str());
+        }
+
+        if (pNtHeaders->OptionalHeader.SizeOfImage != pFileNtHeaders->OptionalHeader.SizeOfImage)
+        {
+             std::ostringstream oss;
+             oss << "Process Hollowing Detected: SizeOfImage Mismatch. Memory: 0x" << std::hex << pNtHeaders->OptionalHeader.SizeOfImage
+                 << ", Disk: 0x" << pFileNtHeaders->OptionalHeader.SizeOfImage;
+             context.AddEvidence(anti_cheat::INTEGRITY_PROCESS_HOLLOWED, oss.str());
+        }
+
+        return SensorExecutionResult::SUCCESS;
+    }
+};
+
+class InlineHookSensor : public ISensor
+{
+   public:
+    const char *GetName() const override
+    {
+        return "InlineHookSensor";
+    }
+    SensorWeight GetWeight() const override
+    {
+        return SensorWeight::HEAVY; // 导出表遍历+反汇编，属于重量级
+    }
+    SensorExecutionResult Execute(ScanContext &context) override
+    {
+        m_lastFailureReason = anti_cheat::UNKNOWN_FAILURE;
+
+        // 关键系统模块列表
+        static const wchar_t* kSystemModules[] = {
+            L"ntdll.dll",
+            L"kernel32.dll",
+            L"kernelbase.dll",
+            L"user32.dll",
+            L"gdi32.dll", // 游戏常用渲染API
+            L"ws2_32.dll" // 网络API
+        };
+
+        for (const auto& modName : kSystemModules)
+        {
+            HMODULE hMod = GetModuleHandleW(modName);
+            if (hMod)
+            {
+                CheckModuleExports(hMod, context);
+            }
+        }
+
+        // 也可以检查主模块
+        HMODULE hSelf = GetModuleHandleW(NULL);
+        if (hSelf) CheckModuleExports(hSelf, context);
+
+        return SensorExecutionResult::SUCCESS;
+    }
+
+   private:
+    void CheckModuleExports(HMODULE hMod, ScanContext& context)
+    {
+        PIMAGE_DOS_HEADER pDos = (PIMAGE_DOS_HEADER)hMod;
+        if (IsBadReadPtr(pDos, sizeof(IMAGE_DOS_HEADER)) || pDos->e_magic != IMAGE_DOS_SIGNATURE) return;
+
+        PIMAGE_NT_HEADERS pNt = (PIMAGE_NT_HEADERS)((BYTE*)hMod + pDos->e_lfanew);
+        if (IsBadReadPtr(pNt, sizeof(IMAGE_NT_HEADERS)) || pNt->Signature != IMAGE_NT_SIGNATURE) return;
+
+        DWORD exportDirRVA = pNt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress;
+        if (exportDirRVA == 0) return;
+
+        DWORD exportDirSize = pNt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].Size;
+
+        PIMAGE_EXPORT_DIRECTORY pExport = (PIMAGE_EXPORT_DIRECTORY)((BYTE*)hMod + exportDirRVA);
+        if (IsBadReadPtr(pExport, sizeof(IMAGE_EXPORT_DIRECTORY))) return;
+
+        DWORD* pAddressOfFunctions = (DWORD*)((BYTE*)hMod + pExport->AddressOfFunctions);
+        DWORD* pAddressOfNames = (DWORD*)((BYTE*)hMod + pExport->AddressOfNames);
+        WORD* pAddressOfNameOrdinals = (WORD*)((BYTE*)hMod + pExport->AddressOfNameOrdinals);
+
+        for (DWORD i = 0; i < pExport->NumberOfNames; i++)
+        {
+            if (IsBadReadPtr(&pAddressOfNames[i], sizeof(DWORD)) ||
+                IsBadReadPtr(&pAddressOfNameOrdinals[i], sizeof(WORD))) break;
+
+            const char* funcName = (const char*)((BYTE*)hMod + pAddressOfNames[i]);
+            if (IsBadReadPtr(funcName, 1)) continue;
+
+            WORD ordinal = pAddressOfNameOrdinals[i];
+            if (ordinal >= pExport->NumberOfFunctions) continue;
+
+            if (IsBadReadPtr(&pAddressOfFunctions[ordinal], sizeof(DWORD))) break;
+
+            DWORD funcRVA = pAddressOfFunctions[ordinal];
+
+            // 忽略 Forwarder RVA
+            if (funcRVA >= exportDirRVA && funcRVA < exportDirRVA + exportDirSize)
+            {
+                continue;
+            }
+
+            BYTE* pFunc = (BYTE*)hMod + funcRVA;
+            if (IsBadReadPtr(pFunc, 16)) continue;
+
+            CheckFunction(pFunc, funcName, context);
+        }
+    }
+
+    void CheckFunction(BYTE* pFunc, const char* funcName, ScanContext& context)
+    {
+        hde32s hs;
+        unsigned int len = hde32_disasm(pFunc, &hs);
+
+        if (hs.flags & F_ERROR) return;
+
+        bool isHooked = false;
+        PVOID targetAddr = nullptr;
+
+        // E9: JMP REL32
+        if (hs.opcode == 0xE9)
+        {
+            targetAddr = (PVOID)(pFunc + hs.len + hs.imm.imm32);
+            isHooked = true;
+        }
+        // EB: JMP REL8 (Short jump)
+        else if (hs.opcode == 0xEB)
+        {
+            targetAddr = (PVOID)(pFunc + hs.len + (int8_t)hs.imm.imm8);
+            if ((BYTE*)targetAddr == pFunc - 5)
+            {
+                CheckHotpatchPreamble((BYTE*)targetAddr, funcName, context);
+                return;
+            }
+            else
+            {
+                 isHooked = true;
+            }
+        }
+        // 68 xx xx xx xx C3 (PUSH imm32 + RET)
+        else if (hs.opcode == 0x68 && pFunc[hs.len] == 0xC3)
+        {
+             targetAddr = (PVOID)hs.imm.imm32;
+             isHooked = true;
+        }
+
+        if (isHooked && targetAddr)
+        {
+            std::wstring modulePath;
+            if (context.IsAddressInLegitimateModule(targetAddr, modulePath))
+            {
+                 return;
+            }
+
+            std::ostringstream oss;
+            oss << "Inline Hook Detected: " << funcName << " -> 0x" << std::hex << (uintptr_t)targetAddr;
+            context.AddEvidence(anti_cheat::INTEGRITY_SYSTEM_API_HOOKED, oss.str());
+        }
+    }
+
+    void CheckHotpatchPreamble(BYTE* pPreamble, const char* funcName, ScanContext& context)
+    {
+        if (IsBadReadPtr(pPreamble, 5)) return;
+
+        if (pPreamble[0] == 0xE9)
+        {
+            int32_t rel = *(int32_t*)(pPreamble + 1);
+            PVOID targetAddr = (PVOID)(pPreamble + 5 + rel);
+
+            if (!context.IsAddressInLegitimateModule(targetAddr))
+            {
+                std::ostringstream oss;
+                oss << "Hotpatch Inline Hook Detected: " << funcName << " (Preamble) -> 0x" << std::hex << (uintptr_t)targetAddr;
+                context.AddEvidence(anti_cheat::INTEGRITY_SYSTEM_API_HOOKED, oss.str());
+            }
+        }
+    }
+
 class ProcessAndWindowMonitorSensor : public ISensor
 {
    public:
@@ -4700,6 +4983,36 @@ class ThreadAndModuleActivitySensor : public ISensor
                             threadId);
             }
         }
+
+        // 3. 检查硬件断点 (Dr0-Dr3)
+        // 必须跳过当前线程，否则SuspendThread会导致自身挂起死锁
+        if (threadId != GetCurrentThreadId())
+        {
+            // SuspendThread有风险，但在Heavy Sensor中为了获取上下文是必须的
+            // 务必保持挂起区间极短，且不进行内存分配/锁操作
+            if (SuspendThread(hThread) != (DWORD)-1)
+            {
+                CONTEXT ctx = {};
+                ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+                BOOL getCtxSuccess = GetThreadContext(hThread, &ctx);
+
+                ResumeThread(hThread); // 立即恢复
+
+                if (getCtxSuccess)
+                {
+                    if (ctx.Dr0 != 0 || ctx.Dr1 != 0 || ctx.Dr2 != 0 || ctx.Dr3 != 0)
+                    {
+                        std::ostringstream oss;
+                        oss << "检测到硬件断点 (TID: " << threadId << "): "
+                            << "Dr0=" << (void*)ctx.Dr0 << ", "
+                            << "Dr1=" << (void*)ctx.Dr1 << ", "
+                            << "Dr2=" << (void*)ctx.Dr2 << ", "
+                            << "Dr3=" << (void*)ctx.Dr3;
+                        context.AddEvidence(anti_cheat::ENVIRONMENT_DEBUGGER_DETECTED, oss.str());
+                    }
+                }
+            }
+        }
     }
 
     // 获取线程详细信息的辅助函数
@@ -5518,6 +5831,17 @@ class MemorySecuritySensor : public ISensor
 
                 // 只有RWX内存且通过所有过滤才会到达这里
                 std::ostringstream oss;
+
+                // 进一步检查是否包含PE头，区分Shellcode和手动映射模块
+                auto peCheck = CheckHiddenMemoryRegion(mbi.BaseAddress, mbi.RegionSize);
+                if (peCheck.shouldReport && peCheck.accessible)
+                {
+                    oss << "检测到手动映射的可执行模块 (RWX+PE头). 地址: 0x" << std::hex << base;
+                    // 使用更准确的分类
+                    context.AddEvidence(anti_cheat::MODULE_UNTRUSTED_DYNAMIC_LOAD, oss.str());
+                    return;
+                }
+
                 oss << "检测到RWX私有可执行内存 (极度可疑). 地址: 0x" << std::hex << base << ", 大小: " << std::dec
                     << mbi.RegionSize << " 字节, 权限: ";
 
@@ -5566,34 +5890,44 @@ class MemorySecuritySensor : public ISensor
         // 配置的最小尺寸检查
         if (regionSize < CheatConfigManager::GetInstance().GetMinMemoryRegionSize())
         {
-            return result;  // shouldReport is false
+            return result;
         }
 
-        // 使用 ReadProcessMemory 安全读取内存，避免直接解引用导致访问违规崩溃
-        BYTE mz_header[2] = {0};
+        // 使用 ReadProcessMemory 安全读取内存
+        // 读取至少 1024 字节以包含DOS头和部分NT头
+        std::vector<BYTE> headerBuffer(1024);
         SIZE_T bytesRead = 0;
         HANDLE hProcess = GetCurrentProcess();
 
-        if (ReadProcessMemory(hProcess, baseAddress, mz_header, sizeof(mz_header), &bytesRead) &&
-            bytesRead == sizeof(mz_header))
+        if (ReadProcessMemory(hProcess, baseAddress, headerBuffer.data(), headerBuffer.size(), &bytesRead) &&
+            bytesRead >= sizeof(IMAGE_DOS_HEADER))
         {
-            // 成功读取内存
             result.accessible = true;
-            if (mz_header[0] == 'M' && mz_header[1] == 'Z')
+
+            PIMAGE_DOS_HEADER pDos = (PIMAGE_DOS_HEADER)headerBuffer.data();
+            if (pDos->e_magic == IMAGE_DOS_SIGNATURE)
             {
-                result.shouldReport = true;
+                // 进一步验证 NT 头
+                // e_lfanew 必须在合理范围内
+                if (pDos->e_lfanew > 0 && pDos->e_lfanew < (LONG)bytesRead - (LONG)sizeof(IMAGE_NT_HEADERS))
+                {
+                    PIMAGE_NT_HEADERS pNt = (PIMAGE_NT_HEADERS)(headerBuffer.data() + pDos->e_lfanew);
+                    if (pNt->Signature == IMAGE_NT_SIGNATURE)
+                    {
+                        // 确认检测到隐藏模块
+                        result.shouldReport = true;
+                    }
+                }
             }
         }
         else
         {
-            // 读取内存失败，这本身就是一个可疑信号
+            // 读取内存失败，可能是 PAGE_NOACCESS / PAGE_GUARD
             result.accessible = false;
-            result.shouldReport = true;  // 恶意代码可能通过设置PAGE_NOACCESS来隐藏自身
+            // 读取失败且是可执行区域，非常可疑（恶意隐藏）
+            result.shouldReport = true;
 
-            // 记录具体的失败原因
             RecordFailure(anti_cheat::MEMORY_ACCESS_EXCEPTION);
-            LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR,
-                        "ReadProcessMemory failed for address 0x%p, GetLastError()=%lu", baseAddress, GetLastError());
         }
 
         return result;
@@ -6251,6 +6585,8 @@ void CheatMonitor::Pimpl::InitializeSystem()
     allSensors.emplace_back(std::make_unique<ProcessAndWindowMonitorSensor>());
 
     // HEAVY WEIGHT (中等重要程度)
+    allSensors.emplace_back(std::make_unique<ProcessHollowingSensor>());
+    allSensors.emplace_back(std::make_unique<InlineHookSensor>());
     allSensors.emplace_back(std::make_unique<ModuleIntegritySensor>());
     allSensors.emplace_back(std::make_unique<ProcessHandleSensor>());
     allSensors.emplace_back(std::make_unique<ThreadAndModuleActivitySensor>());
