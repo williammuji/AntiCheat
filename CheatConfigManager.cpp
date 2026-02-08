@@ -816,6 +816,15 @@ void CheatConfigManager::SetDefaultValues(ConfigData& configData)
     configData.config->add_whitelisted_integrity_files("ieproxy.dll");
     configData.config->add_whitelisted_integrity_files("tiptsf.dll");
     configData.config->add_whitelisted_integrity_files("mdnsnsp.dll");
+    // 核心系统库 (防止路径识别失败导致的误报)
+    configData.config->add_whitelisted_integrity_files("ntdll.dll");
+    configData.config->add_whitelisted_integrity_files("kernel32.dll");
+    configData.config->add_whitelisted_integrity_files("kernelbase.dll");
+    configData.config->add_whitelisted_integrity_files("user32.dll");
+    configData.config->add_whitelisted_integrity_files("gdi32.dll");
+    configData.config->add_whitelisted_integrity_files("wow64.dll");
+    configData.config->add_whitelisted_integrity_files("wow64win.dll");
+    configData.config->add_whitelisted_integrity_files("wow64cpu.dll");
 
     // 不再在客户端生成/校验配置签名：配置下发已在传输层加密与鉴权
 
