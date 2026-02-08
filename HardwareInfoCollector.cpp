@@ -7,7 +7,11 @@
 #include <intrin.h>
 
 #include <sstream>
+#include <sstream>
 #include <iomanip>
+#include <algorithm>
+#include <vector>
+#include <cwctype>
 
 #pragma comment(lib, "iphlpapi.lib")
 
@@ -63,6 +67,135 @@ static bool IsVirtualOrInvalidMac(const std::string& mac)
 
     return false;
 }
+
+// === VM信息收集辅助函数 ===
+
+// 检查注册表键值是否存在特定字符串
+static bool CheckRegistryKey(HKEY hKeyRoot, const std::wstring& subKey, const std::wstring& valueName, const std::wstring& targetStr)
+{
+    HKEY hKey;
+    if (RegOpenKeyExW(hKeyRoot, subKey.c_str(), 0, KEY_READ, &hKey) != ERROR_SUCCESS)
+    {
+        return false;
+    }
+
+    WCHAR data[256] = {0};
+    DWORD dataSize = sizeof(data);
+    DWORD type = 0;
+    bool found = false;
+
+    if (RegQueryValueExW(hKey, valueName.c_str(), NULL, &type, (LPBYTE)data, &dataSize) == ERROR_SUCCESS)
+    {
+        if (type == REG_SZ)
+        {
+            std::wstring dataStr = data;
+            std::transform(dataStr.begin(), dataStr.end(), dataStr.begin(), ::towlower);
+            std::wstring target = targetStr;
+            std::transform(target.begin(), target.end(), target.begin(), ::towlower);
+
+            if (dataStr.find(target) != std::wstring::npos)
+            {
+                found = true;
+            }
+        }
+    }
+
+    RegCloseKey(hKey);
+    return found;
+}
+
+// 检查特定文件是否存在
+static bool CheckFileExists(const std::wstring& filePath)
+{
+    DWORD attr = GetFileAttributesW(filePath.c_str());
+    return (attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY));
+}
+
+// 检查VMware I/O端口 (需SEH保护)
+static bool CheckVMwareIOPort()
+{
+    bool rc = true;
+    __try
+    {
+        __asm
+        {
+            push   edx
+            push   ecx
+            push   ebx
+
+            mov    eax, 'VMXh'
+            mov    ebx, 0 // any value but not the MAGIC VALUE
+            mov    ecx, 10 // get VMWare version
+            mov    edx, 'VX' // port number
+
+            in     eax, dx // read port
+                           // on return EAX returns the VERSION
+                           cmp    ebx, 'VMXh' // is it a reply from VMWare?
+                           setz[rc] // set return value
+
+                           pop    ebx
+                           pop    ecx
+                           pop    edx
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        rc = false;
+    }
+    return rc;
+}
+
+// 收集所有VM相关信息
+static std::string CollectVMInfo()
+{
+    std::string result;
+
+    // 1. 注册表检测
+    if (CheckRegistryKey(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Services\\Disk\\Enum", L"0", L"vmware") ||
+        CheckRegistryKey(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Services\\Disk\\Enum", L"0", L"vbox"))
+    {
+        result += "Reg:DiskEnum|";
+    }
+
+    if (CheckRegistryKey(HKEY_LOCAL_MACHINE, L"HARDWARE\\DEVICEMAP\\Scsi\\Scsi Port 0\\Scsi Bus 0\\Target Id 0\\Logical Unit Id 0", L"Identifier", L"vmware") ||
+        CheckRegistryKey(HKEY_LOCAL_MACHINE, L"HARDWARE\\DEVICEMAP\\Scsi\\Scsi Port 0\\Scsi Bus 0\\Target Id 0\\Logical Unit Id 0", L"Identifier", L"vbox"))
+    {
+        result += "Reg:Scsi|";
+    }
+
+    if (CheckRegistryKey(HKEY_LOCAL_MACHINE, L"HARDWARE\\Description\\System", L"SystemBiosVersion", L"vbox"))
+    {
+        result += "Reg:BiosVer|";
+    }
+
+    // 2. 文件检测
+    if (CheckFileExists(L"C:\\windows\\system32\\drivers\\VBoxGuest.sys")) result += "File:VBoxGuest|";
+    if (CheckFileExists(L"C:\\windows\\system32\\drivers\\vmmouse.sys")) result += "File:vmmouse|";
+    if (CheckFileExists(L"C:\\windows\\system32\\drivers\\vm3dgl.dll")) result += "File:vm3dgl|";
+
+    // 3. I/O端口检测 (VMware)
+    if (CheckVMwareIOPort())
+    {
+        result += "IO:VMware|";
+    }
+
+    // 4. CPUID Hypervisor位检查 (HardwareInfoCollector已做, 这里补充更具体的Vendor ID检查)
+    int cpu_info[4] = {0};
+    __cpuid(cpu_info, 0x40000000);
+    char szHyperVendorID[13] = {0};
+    memcpy(szHyperVendorID + 0, &cpu_info[1], sizeof(int)); // ebx
+    memcpy(szHyperVendorID + 4, &cpu_info[2], sizeof(int)); // ecx
+    memcpy(szHyperVendorID + 8, &cpu_info[3], sizeof(int)); // edx
+    szHyperVendorID[12] = '\0';
+
+    if (strlen(szHyperVendorID) > 0)
+    {
+         result += "CPUID:" + std::string(szHyperVendorID) + "|";
+    }
+
+    return result;
+}
+
 }  // namespace
 
 bool HardwareInfoCollector::EnsureCollected()
@@ -243,9 +376,25 @@ bool HardwareInfoCollector::EnsureCollected()
         fingerprint_->set_cpu_info(oss.str());
     }
 
+    // 6. VM/Sandbox Info Collection
+    // 增强检测：收集注册表、文件、I/O端口等维度的环境特征
+    std::string vmInfo = CollectVMInfo();
+    if (!vmInfo.empty())
+    {
+        fingerprint_->set_vm_info(vmInfo);
+
+        // 如果收集到了明确的VM特征，记录一条警告日志
+        if (vmInfo.length() > 5)
+        {
+             LOG_WARNING_F(AntiCheatLogger::LogCategory::SYSTEM,
+                           "HardwareInfoCollector: VM environment artifacts found: %s", vmInfo.c_str());
+        }
+    }
+
     // 检查收集结果：如果所有硬件信息都为空，可能是沙箱环境
     bool hasAnyInfo = !fingerprint_->disk_serial().empty() || !fingerprint_->mac_addresses().empty() ||
-                      !fingerprint_->computer_name().empty() || !fingerprint_->cpu_info().empty();
+                      !fingerprint_->computer_name().empty() || !fingerprint_->cpu_info().empty() ||
+                      !fingerprint_->vm_info().empty();
 
     if (!hasAnyInfo)
     {
