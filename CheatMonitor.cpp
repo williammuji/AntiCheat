@@ -754,6 +754,7 @@ std::string CalculateModuleHashFromDisk(const std::wstring &filePath)
     return "";
 }
 
+
 }  // namespace SystemUtils
 
 struct MemoryReadResult
@@ -1226,6 +1227,7 @@ static ModuleValidationResult ValidateModule(const std::wstring &modulePath, Sys
     return result;
 }
 
+
 }  // namespace Utils
 
 namespace SystemUtils
@@ -1323,13 +1325,11 @@ bool IsSystemDirectoryPath(const std::wstring &path)
     struct SysDirs
     {
         std::wstring sys32, syswow64, winsxs, drivers;
-        bool initialized = false;
     };
-    static SysDirs s_sysDirs;
 
-    // 初始化系统目录缓存
-    if (!s_sysDirs.initialized)
-    {
+    // 使用 C++11 Magic Statics 确保线程安全的初始化
+    static const SysDirs s_sysDirs = []() -> SysDirs {
+        SysDirs dirs;
         wchar_t winDirBuf[MAX_PATH] = {0};
         if (GetWindowsDirectoryW(winDirBuf, MAX_PATH) > 0)
         {
@@ -1337,13 +1337,13 @@ bool IsSystemDirectoryPath(const std::wstring &path)
             std::transform(winDir.begin(), winDir.end(), winDir.begin(), ::towlower);
             if (!winDir.empty() && winDir.back() != L'\\')
                 winDir.push_back(L'\\');
-            s_sysDirs.sys32 = winDir + L"system32\\";
-            s_sysDirs.syswow64 = winDir + L"syswow64\\";
-            s_sysDirs.winsxs = winDir + L"winsxs\\";
-            s_sysDirs.drivers = winDir + L"system32\\drivers\\";
+            dirs.sys32 = winDir + L"system32\\";
+            dirs.syswow64 = winDir + L"syswow64\\";
+            dirs.winsxs = winDir + L"winsxs\\";
+            dirs.drivers = winDir + L"system32\\drivers\\";
         }
-        s_sysDirs.initialized = true;
-    }
+        return dirs;
+    }();
 
     // 转换为小写并检查
     std::wstring lower = path;
@@ -1360,6 +1360,67 @@ bool IsSystemDirectoryPath(const std::wstring &path)
 
     return false;
 }
+
+
+    // 检查是否为白名单模块（包括系统DLL、已知合法软件等）
+    bool IsWhitelistedModule(const std::wstring &modulePath)
+    {
+        // 1. 尝试获取长路径以解决 8.3 短路径问题 (如 PROGRA~1)
+        wchar_t longPath[MAX_PATH] = {0};
+        DWORD len = GetLongPathNameW(modulePath.c_str(), longPath, MAX_PATH);
+        std::wstring normalizedPath;
+        if (len > 0 && len < MAX_PATH)
+        {
+            normalizedPath = longPath;
+        }
+        else
+        {
+            normalizedPath = modulePath;
+        }
+
+        // 2. 统一转换为小写
+        std::transform(normalizedPath.begin(), normalizedPath.end(), normalizedPath.begin(), ::towlower);
+
+        // 3. 优先检查现有系统目录逻辑
+        if (SystemUtils::IsSystemDirectoryPath(normalizedPath))
+        {
+            return true;
+        }
+
+        // 4. 检查第三方软件白名单目录
+        // 注意：现在从 CheatConfigManager 动态获取，支持服务器下发
+        auto whitelistedDirs = CheatConfigManager::GetInstance().GetWhitelistedIntegrityDirs();
+        if (whitelistedDirs)
+        {
+            for (const auto &dir : *whitelistedDirs)
+            {
+                if (normalizedPath.find(dir) != std::wstring::npos)
+                {
+                    return true;
+                }
+            }
+        }
+
+        // 5. 检查特定文件名
+        auto whitelistedFiles = CheatConfigManager::GetInstance().GetWhitelistedIntegrityFiles();
+        if (whitelistedFiles)
+        {
+            // 提取文件名
+            size_t lastSlash = normalizedPath.find_last_of(L"\\/");
+            std::wstring fileName = (lastSlash != std::wstring::npos) ? normalizedPath.substr(lastSlash + 1) : normalizedPath;
+
+            for (const auto &file : *whitelistedFiles)
+            {
+                if (fileName == file)
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
 
 }  // namespace SystemUtils
 
@@ -3569,65 +3630,6 @@ class ModuleIntegritySensor : public ISensor
                                     baselineHashes);
     }
 
-    // 检查是否为白名单模块（包括系统DLL、已知合法软件等）
-    bool IsWhitelistedModule(const std::wstring &modulePath)
-    {
-        // 1. 尝试获取长路径以解决 8.3 短路径问题 (如 PROGRA~1)
-        wchar_t longPath[MAX_PATH] = {0};
-        DWORD len = GetLongPathNameW(modulePath.c_str(), longPath, MAX_PATH);
-        std::wstring normalizedPath;
-        if (len > 0 && len < MAX_PATH)
-        {
-            normalizedPath = longPath;
-        }
-        else
-        {
-            normalizedPath = modulePath;
-        }
-
-        // 2. 统一转换为小写
-        std::transform(normalizedPath.begin(), normalizedPath.end(), normalizedPath.begin(), ::towlower);
-
-        // 3. 优先检查现有系统目录逻辑
-        if (SystemUtils::IsSystemDirectoryPath(normalizedPath))
-        {
-            return true;
-        }
-
-        // 4. 检查第三方软件白名单目录
-        // 注意：现在从 CheatConfigManager 动态获取，支持服务器下发
-        auto whitelistedDirs = CheatConfigManager::GetInstance().GetWhitelistedIntegrityDirs();
-        if (whitelistedDirs)
-        {
-            for (const auto &dir : *whitelistedDirs)
-            {
-                if (normalizedPath.find(dir) != std::wstring::npos)
-                {
-                    return true;
-                }
-            }
-        }
-
-        // 5. 检查特定文件名
-        auto whitelistedFiles = CheatConfigManager::GetInstance().GetWhitelistedIntegrityFiles();
-        if (whitelistedFiles)
-        {
-            // 提取文件名
-            size_t lastSlash = normalizedPath.find_last_of(L"\\/");
-            std::wstring fileName = (lastSlash != std::wstring::npos) ? normalizedPath.substr(lastSlash + 1) : normalizedPath;
-
-            for (const auto &file : *whitelistedFiles)
-            {
-                if (fileName == file)
-                {
-                    return true;
-                }
-            }
-        }
-
-        return false;
-    }
-
     // 处理模块代码完整性验证的逻辑
     void ValidateModuleCodeIntegrity(const wchar_t *modulePath_w, HMODULE hModule, PVOID codeBase, DWORD codeSize,
                                      ScanContext &context,
@@ -3647,7 +3649,7 @@ class ModuleIntegritySensor : public ISensor
         bool isSelfModule = (hModule == selfModule);
 
         // 检查是否在白名单中（系统DLL或信任的第三方软件）
-        bool isWhitelisted = IsWhitelistedModule(modulePath);
+        bool isWhitelisted = SystemUtils::IsWhitelistedModule(modulePath);
 
         auto it = baselineHashes.find(modulePath);
 
@@ -5549,8 +5551,20 @@ class ThreadAndModuleActivitySensor : public ISensor
             }
 
             // 验证模块签名
+            bool isWhitelisted = SystemUtils::IsWhitelistedModule(modulePath);
             SystemUtils::WindowsVersion winVer = SystemUtils::GetWindowsVersion();
-            Utils::ModuleValidationResult validation = Utils::ValidateModule(modulePath, winVer);
+
+            Utils::ModuleValidationResult validation;
+            if (isWhitelisted)
+            {
+                validation.isTrusted = true;
+                validation.reason = "白名单模块（路径或文件名匹配）";
+                validation.signatureStatus = Utils::SignatureStatus::UNKNOWN;
+            }
+            else
+            {
+                validation = Utils::ValidateModule(modulePath, winVer);
+            }
 
             // 处理逻辑：
             // 1. 如果模块可信，将其加入 knownModules 以免下次重复检查
@@ -6765,8 +6779,8 @@ void CheatMonitor::Pimpl::InitializeProcessBaseline()
         std::lock_guard<std::mutex> lock(m_baselineMutex);
         for (const auto &hModule : m_knownModules)
         {
-            if (hModule == m_hSelfModule)
-                continue;
+            // if (hModule == m_hSelfModule)
+            //    continue;
             wchar_t modulePath_w[MAX_PATH];
             if (GetModuleFileNameW(hModule, modulePath_w, MAX_PATH) == 0)
                 continue;
