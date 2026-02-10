@@ -115,6 +115,7 @@ static bool CheckFileExists(const std::wstring& filePath)
 static bool CheckVMwareIOPort()
 {
     bool rc = true;
+#if defined(_M_IX86)
     __try
     {
         __asm
@@ -142,6 +143,12 @@ static bool CheckVMwareIOPort()
     {
         rc = false;
     }
+#else
+    // x64 does not support inline ASM.
+    // Implementing this check for x64 would require external ASM or intrinsics (if possible).
+    // For now, return false to allow compilation.
+    rc = false;
+#endif
     return rc;
 }
 

@@ -2756,6 +2756,7 @@ class InlineHookSensor : public ISensor
             }
         }
     }
+};
 
 class ProcessAndWindowMonitorSensor : public ISensor
 {
