@@ -70,7 +70,7 @@ if ($Arch -eq "x86") {
 
 if ($UseVcpkg) {
   Write-Host "=== Setting up vcpkg ===" -ForegroundColor Cyan
-  
+
   if (!(Test-Path $VcpkgRoot)) {
     Write-Host "Cloning vcpkg from GitHub..." -ForegroundColor Yellow
     git clone https://github.com/microsoft/vcpkg $VcpkgRoot
@@ -78,21 +78,27 @@ if ($UseVcpkg) {
   else {
     Write-Host "vcpkg directory already exists: $VcpkgRoot" -ForegroundColor Green
   }
-  
+
   Push-Location $VcpkgRoot
   try {
     if (!(Test-Path "$VcpkgRoot/vcpkg.exe")) {
       Write-Host "Bootstrapping vcpkg..." -ForegroundColor Yellow
       .\bootstrap-vcpkg.bat
     }
-    
-    Write-Host "Installing protobuf for $Arch-windows..." -ForegroundColor Yellow
-    .\vcpkg.exe install protobuf:$Arch-windows
+
+    if (Test-Path (Join-Path $RepoRoot "vcpkg.json")) {
+      Write-Host "Found vcpkg.json manifest, skipping manual package installation." -ForegroundColor Cyan
+      Write-Host "CMake will automatically handle dependencies." -ForegroundColor Cyan
+    }
+    else {
+      Write-Host "Installing protobuf for $Arch-windows..." -ForegroundColor Yellow
+      .\vcpkg.exe install protobuf:$Arch-windows
+    }
   }
   finally {
     Pop-Location
   }
-  
+
   $toolchain = Join-Path $VcpkgRoot "scripts/buildsystems/vcpkg.cmake"
   $cmakeArgs += @("-DCMAKE_TOOLCHAIN_FILE=$toolchain")
   Write-Host "vcpkg toolchain: $toolchain" -ForegroundColor Green
@@ -100,7 +106,7 @@ if ($UseVcpkg) {
 else {
   Write-Host "=== Manual build mode ===" -ForegroundColor Yellow
   Write-Host "Note: Make sure protobuf is installed and accessible" -ForegroundColor Yellow
-  
+
   # 如果指定了Protobuf路径，则使用它
   if ($ProtobufRoot) {
     if (Test-Path $ProtobufRoot) {
