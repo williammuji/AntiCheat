@@ -1,8 +1,12 @@
+#include <windows.h>
 #include "DriverIntegritySensor.h"
-#include "ScanContext.h"
-#include "utils/SystemUtils.h"
-#include "Logger.h"
-#include "utils/Utils.h"
+#include "../include/ScanContext.h"
+#include "../utils/SystemUtils.h"
+#include "../Logger.h"
+#include "../utils/Utils.h"
+#include <string>
+#include <vector>
+#include <algorithm>
 #include <psapi.h>
 #include <wintrust.h>
 #include <softpub.h>
@@ -19,6 +23,12 @@ SensorExecutionResult DriverIntegritySensor::Execute(ScanContext &context)
     if (EnumDeviceDrivers(drivers, sizeof(drivers), &cbNeeded))
     {
         int cDrivers = cbNeeded / sizeof(drivers[0]);
+        if (cDrivers == 0)
+        {
+             LOG_WARNING(AntiCheatLogger::LogCategory::SENSOR, "DriverIntegritySensor: No drivers found (Insufficient privileges?)");
+             RecordFailure(anti_cheat::SYSTEM_API_CALL_FAILED);
+             return SensorExecutionResult::FAILURE;
+        }
         for (int i = 0; i < cDrivers; i++)
         {
              // Throttling check? Original code didn't have it in the snippet 2737-2829.

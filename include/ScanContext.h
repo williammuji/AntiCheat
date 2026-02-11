@@ -43,6 +43,8 @@ class ScanContext
     std::shared_ptr<const std::unordered_set<std::wstring>> GetWhitelistedProcessPaths() const;
     std::shared_ptr<const std::unordered_set<std::wstring>> GetWhitelistedWindowKeywords() const;
     std::shared_ptr<const std::unordered_set<std::wstring>> GetWhitelistedVEHModules() const;
+    std::shared_ptr<const std::unordered_set<std::wstring>> GetWhitelistedSystemModules() const;
+    std::shared_ptr<const std::unordered_set<std::wstring>> GetWhitelistedIntegrityIgnoreList() const;
 
     // Baseline Access
     const std::unordered_map<std::string, std::vector<uint8_t>> &GetIatBaselineHashes() const;

@@ -308,26 +308,22 @@ void VehHookSensor::AnalyzeHandlerSecurity(ScanContext &context, PVOID handlerAd
             }
             else
             {
-                // 检查是否为系统保护模块，系统保护模块的GetModuleCodeSectionInfo失败是正常的
-                std::wstring moduleName = modulePath;
-                std::transform(moduleName.begin(), moduleName.end(), moduleName.begin(), ::towlower);
+                // 从配置中获取系统核心 DLL 列表进行检查
+                auto whitelistedSystemModules = context.GetWhitelistedSystemModules();
+                bool isSystemProtectedModule = false;
+                if (whitelistedSystemModules)
+                {
+                     // 提取文件名进行比对
+                     std::wstring fileName = modulePath;
+                     size_t lastSlash = fileName.find_last_of(L"\\/");
+                     if (lastSlash != std::wstring::npos) fileName = fileName.substr(lastSlash + 1);
+                     std::transform(fileName.begin(), fileName.end(), fileName.begin(), ::towlower);
 
-                bool isSystemProtectedModule = (moduleName.find(L"sfc.dll") != std::wstring::npos) ||
-                                                (moduleName.find(L"sfc_os.dll") != std::wstring::npos) ||
-                                                (moduleName.find(L"wfp.dll") != std::wstring::npos) ||
-                                                (moduleName.find(L"wfpdiag.dll") != std::wstring::npos) ||
-                                                (moduleName.find(L"ntdll.dll") != std::wstring::npos) ||
-                                                (moduleName.find(L"kernel32.dll") != std::wstring::npos) ||
-                                                (moduleName.find(L"kernelbase.dll") != std::wstring::npos) ||
-                                                (moduleName.find(L"user32.dll") != std::wstring::npos) ||
-                                                (moduleName.find(L"gdi32.dll") != std::wstring::npos) ||
-                                                (moduleName.find(L"advapi32.dll") != std::wstring::npos) ||
-                                                (moduleName.find(L"ole32.dll") != std::wstring::npos) ||
-                                                (moduleName.find(L"oleaut32.dll") != std::wstring::npos) ||
-                                                (moduleName.find(L"shell32.dll") != std::wstring::npos) ||
-                                                (moduleName.find(L"comctl32.dll") != std::wstring::npos) ||
-                                                (moduleName.find(L"msvcrt.dll") != std::wstring::npos) ||
-                                                (moduleName.find(L"ucrtbase.dll") != std::wstring::npos);
+                     if (whitelistedSystemModules->count(fileName) > 0)
+                     {
+                         isSystemProtectedModule = true;
+                     }
+                }
 
                 if (isSystemProtectedModule)
                 {

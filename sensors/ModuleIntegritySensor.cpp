@@ -84,30 +84,14 @@ SensorExecutionResult ModuleIntegritySensor::Execute(ScanContext &context)
             {
                 std::wstring lowerName = curNameW;
                 std::transform(lowerName.begin(), lowerName.end(), lowerName.begin(), ::towlower);
-                static const std::unordered_set<std::wstring> specialModuleKeywords = {
-                        // 第三方覆盖层/注入库 (通常会有保护或特殊加载方式)
-                        L"gameoverlayrenderer.dll", L"gameoverlayrenderer64.dll",
-                        L"discord_hook.dll", L"discord_hook64.dll",
-                        L"rtsshooks.dll", L"rtsshooks64.dll",
-                        L"wegame_helper.dll",
-                        // 音频中间件 (FMOD/Wwise等有时会加壳或加密节)
-                        L"fmodex.dll", L"fmodex64.dll", L"fmod_event.dll", L"fmod_event64.dll",
-                        L"aksoundengine.dll",
-                        // Windows 系统受保护模块 (Protected Processes / PPL)
-                        // 这些模块的CodeSection通常无法被UserMode进程读取
-                        L"sfc.dll", L"sfc_os.dll", L"wfp.dll", L"wfpdiag.dll",
-                        L"sppc.dll", L"slc.dll", // Software Licensing
-                        L"bcrypt.dll", L"crypt32.dll", L"cryptbase.dll",
-                        L"ntdll.dll", L"kernel32.dll", L"kernelbase.dll", // 核心库有时会被系统锁定
-                        L"ci.dll", // Code Integrity
-                        // 显卡驱动组件 (通常有自保护)
-                        L"nvwgf2umx.dll", L"nvwgf2um.dll",
-                        L"atcuf64.dll", L"atcuf32.dll"};
-
+                auto integrityIgnoreList = context.GetWhitelistedIntegrityIgnoreList();
                 bool isSpecial = false;
-                for (const auto &kw : specialModuleKeywords)
+                if (integrityIgnoreList)
                 {
-                    if (lowerName.find(kw) != std::wstring::npos) { isSpecial = true; break; }
+                    for (const auto &kw : *integrityIgnoreList)
+                    {
+                        if (lowerName.find(kw) != std::wstring::npos) { isSpecial = true; break; }
+                    }
                 }
                 modInfo.isSpecial = isSpecial;
             }
