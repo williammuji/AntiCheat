@@ -3,14 +3,13 @@
 #include <string>
 #include "anti_cheat.pb.h"
 
-// Forward declaration
-class ScanContext;
+#include "ScanContext.h"
 
 // 传感器权重分级枚举
 enum class SensorWeight
 {
     LIGHT,    // 0-10ms: AdvancedAntiDebug, SystemCodeIntegrity, IatHook, VehHook
-    HEAVY,    // 100-1000ms: ThreadAndModuleActivity, MemorySecurity
+    HEAVY,    // 100-1000ms: ThreadActivitySensor, ModuleActivitySensor, MemorySecuritySensor
     CRITICAL  // 1000-10000ms: ProcessHandle, ProcessAndWindowMonitor, ModuleIntegrity (分段扫描)
 };
 
@@ -48,7 +47,9 @@ class ISensor
     // 统一的失败原因成员变量 - 所有传感器共享
     anti_cheat::SensorFailureReason m_lastFailureReason = anti_cheat::UNKNOWN_FAILURE;
 
-    // 统一的OS版本检查接口 - 声明
-    // Implementation in ISensor.cpp to avoid circular dependency
-    bool IsOsSupported(ScanContext &context) const;
+    // 统一的OS版本检查接口 - 内联实现
+    bool IsOsSupported(ScanContext &context) const
+    {
+        return context.IsCurrentOsSupported();
+    }
 };

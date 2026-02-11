@@ -1,5 +1,5 @@
-#include "CheatMonitor.h"
-#include "include/CheatMonitorImpl.h"
+﻿#include "CheatMonitor.h"
+#include "CheatMonitorImpl.h"
 #include "ISensor.h"
 #include "IatHookSensor.h"
 #include "VehHookSensor.h"
@@ -14,6 +14,7 @@
 #include "SystemCodeIntegritySensor.h"
 #include "ModuleIntegritySensor.h"
 #include "ProcessHandleSensor.h"
+#include "VTableHookSensor.h"
 #include "utils/SystemUtils.h"
 #include "utils/Utils.h"
 #include "utils/Scanners.h"
@@ -161,6 +162,7 @@ void CheatMonitorImpl::InitializeSystem()
         m_lightweightSensors.push_back(std::make_unique<SystemCodeIntegritySensor>());
         m_lightweightSensors.push_back(std::make_unique<IatHookSensor>());
         m_lightweightSensors.push_back(std::make_unique<VehHookSensor>());
+        m_lightweightSensors.push_back(std::make_unique<VTableHookSensor>());
 
         // Heavy Sensors (10-100ms)
         m_heavyweightSensors.push_back(std::make_unique<ThreadActivitySensor>());

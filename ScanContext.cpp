@@ -90,6 +90,16 @@ std::shared_ptr<const std::unordered_set<std::wstring>> ScanContext::GetWhitelis
     return CheatConfigManager::GetInstance().GetWhitelistedVEHModules();
 }
 
+std::shared_ptr<const std::unordered_set<std::wstring>> ScanContext::GetWhitelistedSystemModules() const
+{
+    return CheatConfigManager::GetInstance().GetWhitelistedSystemModules();
+}
+
+std::shared_ptr<const std::unordered_set<std::wstring>> ScanContext::GetWhitelistedIntegrityIgnoreList() const
+{
+    return CheatConfigManager::GetInstance().GetWhitelistedIntegrityIgnoreList();
+}
+
 const std::unordered_map<std::string, std::vector<uint8_t>> &ScanContext::GetIatBaselineHashes() const
 {
     return m_pimpl->m_iatBaselineHashes;

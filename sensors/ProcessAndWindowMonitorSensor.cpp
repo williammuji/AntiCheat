@@ -10,22 +10,7 @@ SensorExecutionResult ProcessAndWindowMonitorSensor::Execute(ScanContext &contex
 {
     m_lastFailureReason = anti_cheat::UNKNOWN_FAILURE;
 
-    // 1. 鏋氫妇绐楀彛
-    EnumWindows([](HWND hwnd, LPARAM lParam) -> BOOL {
-        auto *pSensor = (ProcessAndWindowMonitorSensor *)lParam;
-        // ScanContext is not passed directly to callback, we need to pass it via lParam struct or use member if possible.
-        // Wait, I cannot pass member to static callback nicely without struct.
-        // Let's assume I cast lParam to a struct containing pSensor and context.
-        // Or cleaner: pass struct { ProcessAndWindowMonitorSensor* sensor; ScanContext* context; };
-        return TRUE;
-    }, (LPARAM)this);
-
-    // Correcting implementations:
-    // The original code likely used a lambda with context capture if it was inside a method,
-    // OR it passed a struct to EnumWindows.
-    // BUT EnumWindows C-API doesn't allow capturing lambdas unless they are convertible to function pointer (no captures).
-    // So distinct struct is needed.
-
+    // 1. 枚举窗口
     struct EnumContext {
         ProcessAndWindowMonitorSensor* sensor;
         ScanContext* context;
@@ -38,7 +23,7 @@ SensorExecutionResult ProcessAndWindowMonitorSensor::Execute(ScanContext &contex
         return TRUE;
     }, (LPARAM)&enumCtx);
 
-    // 2. 鏋氫妇杩涚▼ (浣跨敤ToolHelp32锛屽洜鍏舵瘮PSAPI鏇磋交閲忎笖淇℃伅鍏?
+    // 2. 枚举进程 (使用ToolHelp32，因其比PSAPI更轻量且信息全)
     HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
     if (hSnapshot != INVALID_HANDLE_VALUE)
     {

@@ -29,6 +29,7 @@ class CheatConfigManager
     std::shared_ptr<const std::unordered_set<std::wstring>> GetWhitelistedProcessPaths() const;
     std::shared_ptr<const std::unordered_set<std::wstring>> GetWhitelistedWindowKeywords() const;
     std::shared_ptr<const std::unordered_set<std::wstring>> GetKnownGoodProcesses() const;
+    std::shared_ptr<const std::unordered_set<std::wstring>> GetWhitelistedSystemModules() const;
 
     // --- 行为控制参数 ---
     int32_t GetReportCooldownMinutes() const;
@@ -97,6 +98,7 @@ class CheatConfigManager
     // [新增] 模块完整性检测白名单
     std::shared_ptr<const std::vector<std::wstring>> GetWhitelistedIntegrityDirs() const;
     std::shared_ptr<const std::vector<std::wstring>> GetWhitelistedIntegrityFiles() const;
+    std::shared_ptr<const std::unordered_set<std::wstring>> GetWhitelistedIntegrityIgnoreList() const;
 
    private:
     struct ConfigData
@@ -112,6 +114,8 @@ class CheatConfigManager
 
         std::vector<std::wstring> whitelistedIntegrityDirs_w;
         std::vector<std::wstring> whitelistedIntegrityFiles_w;
+        std::unordered_set<std::wstring> whitelistedSystemModules_w;
+        std::unordered_set<std::wstring> whitelistedIntegrityIgnoreList_w;
 
         // 简化版：无禁用名单
 

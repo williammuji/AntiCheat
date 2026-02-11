@@ -10,6 +10,7 @@
 #include "Logger.h"
 #include "anti_cheat.pb.h"
 
+#include <windows.h>
 #include <atomic>
 #include <thread>
 #include <condition_variable>

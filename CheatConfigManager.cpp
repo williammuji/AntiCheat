@@ -112,6 +112,12 @@ std::shared_ptr<const std::unordered_set<std::wstring>> CheatConfigManager::GetK
     return std::shared_ptr<const std::unordered_set<std::wstring>>(config, &config->knownGoodProcesses_w);
 }
 
+std::shared_ptr<const std::unordered_set<std::wstring>> CheatConfigManager::GetWhitelistedSystemModules() const
+{
+    auto config = GetCurrentConfig();
+    return std::shared_ptr<const std::unordered_set<std::wstring>>(config, &config->whitelistedSystemModules_w);
+}
+
 // --- 行为控制参数 ---
 int32_t CheatConfigManager::GetReportCooldownMinutes() const
 {
@@ -278,6 +284,12 @@ std::shared_ptr<const std::vector<std::wstring>> CheatConfigManager::GetWhitelis
 {
     auto config = GetCurrentConfig();
     return std::shared_ptr<const std::vector<std::wstring>>(config, &config->whitelistedIntegrityFiles_w);
+}
+
+std::shared_ptr<const std::unordered_set<std::wstring>> CheatConfigManager::GetWhitelistedIntegrityIgnoreList() const
+{
+    auto config = GetCurrentConfig();
+    return std::shared_ptr<const std::unordered_set<std::wstring>>(config, &config->whitelistedIntegrityIgnoreList_w);
 }
 
 // --- 私有辅助函数 ---
@@ -826,6 +838,28 @@ void CheatConfigManager::SetDefaultValues(ConfigData& configData)
     configData.config->add_whitelisted_integrity_files("wow64win.dll");
     configData.config->add_whitelisted_integrity_files("wow64cpu.dll");
 
+    // 6. 传感器特有白名单 (系统级)
+    configData.config->clear_whitelisted_system_modules();
+    configData.config->add_whitelisted_system_modules("ntdll.dll");
+    configData.config->add_whitelisted_system_modules("kernel32.dll");
+    configData.config->add_whitelisted_system_modules("kernelbase.dll");
+    configData.config->add_whitelisted_system_modules("user32.dll");
+    configData.config->add_whitelisted_system_modules("gdi32.dll");
+    configData.config->add_whitelisted_system_modules("advapi32.dll");
+    configData.config->add_whitelisted_system_modules("ws2_32.dll");
+    configData.config->add_whitelisted_system_modules("shell32.dll");
+    configData.config->add_whitelisted_system_modules("ole32.dll");
+    configData.config->add_whitelisted_system_modules("oleaut32.dll");
+    configData.config->add_whitelisted_system_modules("comctl32.dll");
+
+    configData.config->clear_whitelisted_integrity_ignore_list();
+    configData.config->add_whitelisted_integrity_ignore_list("fmodex.dll");
+    configData.config->add_whitelisted_integrity_ignore_list("fmodex64.dll");
+    configData.config->add_whitelisted_integrity_ignore_list("discord_hook.dll");
+    configData.config->add_whitelisted_integrity_ignore_list("discord_hook64.dll");
+    configData.config->add_whitelisted_integrity_ignore_list("gameoverlayrenderer.dll");
+    configData.config->add_whitelisted_integrity_ignore_list("gameoverlayrenderer64.dll");
+
     // 不再在客户端生成/校验配置签名：配置下发已在传输层加密与鉴权
 
     UpdateWideStringCaches(configData);
@@ -858,6 +892,8 @@ void CheatConfigManager::UpdateWideStringCaches(ConfigData& configData)
     convert_to_set(configData.config->known_good_processes(), configData.knownGoodProcesses_w);
     convert_to_vector(configData.config->whitelisted_integrity_dirs(), configData.whitelistedIntegrityDirs_w);
     convert_to_vector(configData.config->whitelisted_integrity_files(), configData.whitelistedIntegrityFiles_w);
+    convert_to_set(configData.config->whitelisted_system_modules(), configData.whitelistedSystemModules_w);
+    convert_to_set(configData.config->whitelisted_integrity_ignore_list(), configData.whitelistedIntegrityIgnoreList_w);
 
     // 更新官方第三方库白名单缓存
     configData.trustedThirdPartyModules.clear();
