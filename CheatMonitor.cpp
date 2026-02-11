@@ -1,24 +1,28 @@
 #include "CheatMonitor.h"
 #include "include/CheatMonitorImpl.h"
-#include "sensors/ISensor.h"
-#include "sensors/IatHookSensor.h"
-#include "sensors/VehHookSensor.h"
-#include "sensors/InlineHookSensor.h"
-#include "sensors/ProcessHollowingSensor.h"
-#include "sensors/ProcessAndWindowMonitorSensor.h"
-#include "sensors/DriverIntegritySensor.h"
-#include "sensors/ThreadActivitySensor.h"
-#include "sensors/ModuleActivitySensor.h"
-#include "sensors/MemorySecuritySensor.h"
-#include "sensors/AdvancedAntiDebugSensor.h"
-#include "sensors/SystemCodeIntegritySensor.h"
-#include "sensors/ModuleIntegritySensor.h"
-#include "sensors/ProcessHandleSensor.h"
+#include "ISensor.h"
+#include "IatHookSensor.h"
+#include "VehHookSensor.h"
+#include "InlineHookSensor.h"
+#include "ProcessHollowingSensor.h"
+#include "ProcessAndWindowMonitorSensor.h"
+#include "DriverIntegritySensor.h"
+#include "ThreadActivitySensor.h"
+#include "ModuleActivitySensor.h"
+#include "MemorySecuritySensor.h"
+#include "AdvancedAntiDebugSensor.h"
+#include "SystemCodeIntegritySensor.h"
+#include "ModuleIntegritySensor.h"
+#include "ProcessHandleSensor.h"
 #include "utils/SystemUtils.h"
 #include "utils/Utils.h"
 #include "utils/Scanners.h"
 #include "Logger.h"
 #include "CheatConfigManager.h"
+#include <wincrypt.h>
+#include <wintrust.h>
+#include <winternl.h>
+#include <iphlpapi.h>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -26,11 +30,181 @@
 #include <vector>
 #include <chrono>
 
+typedef NTSTATUS (NTAPI *P_LdrRegisterDllNotification)(
+    ULONG Flags,
+    PLDR_DLL_NOTIFICATION_FUNCTION NotificationFunction,
+    PVOID Context,
+    PVOID *Cookie
+);
+
+typedef NTSTATUS (NTAPI *P_LdrUnregisterDllNotification)(
+    PVOID Cookie
+);
+
 struct CheatMonitor::Pimpl : public CheatMonitorImpl
 {
     // Implementation is in CheatMonitorImpl
 };
-            //    continue;
+CheatMonitor &CheatMonitor::GetInstance()
+{
+    static CheatMonitor instance;
+    return instance;
+}
+
+CheatMonitor::CheatMonitor() : m_pimpl(nullptr) {}
+CheatMonitor::~CheatMonitor() { Shutdown(); }
+
+bool CheatMonitor::Initialize()
+{
+    if (!m_pimpl)
+    {
+        m_pimpl = std::make_unique<Pimpl>();
+        m_pimpl->m_isSystemActive = true;
+        m_pimpl->m_monitorThread = std::thread(&CheatMonitorImpl::MonitorLoop, m_pimpl.get());
+    }
+    return true;
+}
+
+void CheatMonitor::OnPlayerLogin(uint32_t user_id, const std::string &user_name)
+{
+    if (m_pimpl)
+    {
+        std::lock_guard<std::mutex> lock(m_pimpl->m_sessionMutex);
+        m_pimpl->m_currentUserId = user_id;
+        m_pimpl->m_currentUserName = user_name;
+        m_pimpl->m_isSessionActive = true;
+        m_pimpl->m_hasServerConfig = true;
+        m_pimpl->WakeMonitor();
+    }
+}
+
+void CheatMonitor::OnPlayerLogout()
+{
+    if (m_pimpl)
+    {
+        m_pimpl->m_isSessionActive = false;
+        m_pimpl->ResetSessionState();
+    }
+}
+
+void CheatMonitor::Shutdown()
+{
+    if (m_pimpl && m_pimpl->m_isSystemActive.load())
+    {
+        m_pimpl->m_isSystemActive = false;
+        m_pimpl->WakeMonitor();
+        if (m_pimpl->m_monitorThread.joinable())
+        {
+            m_pimpl->m_monitorThread.join();
+        }
+    }
+}
+
+void CheatMonitor::OnServerConfigUpdated()
+{
+    if (m_pimpl)
+    {
+        m_pimpl->OnConfigUpdated();
+        m_pimpl->m_hasServerConfig = true;
+        m_pimpl->WakeMonitor();
+    }
+}
+
+void CheatMonitor::SetGameWindow(void *hwnd)
+{
+    if (m_pimpl) m_pimpl->m_hGameWindow = (HWND)hwnd;
+}
+
+void CheatMonitor::SubmitTargetedSensorRequest(const std::string &request_id, const std::string &sensor_name)
+{
+    if (m_pimpl) m_pimpl->SubmitTargetedScanRequest(request_id, sensor_name);
+}
+
+void CheatMonitor::SubmitTargetedSensorRequest(const anti_cheat::TargetedSensorCommand &command)
+{
+    if (m_pimpl) m_pimpl->SubmitTargetedScanRequest(command.request_id(), command.sensor_name());
+}
+
+void CheatMonitor::UploadSnapshot()
+{
+    if (m_pimpl) m_pimpl->UploadSnapshotReport();
+}
+
+bool CheatMonitor::IsCallerLegitimate()
+{
+    if (!m_pimpl) return true;
+    return m_pimpl->IsAddressInLegitimateModule(_ReturnAddress());
+}
+
+CheatMonitorImpl::CheatMonitorImpl()
+{
+    m_windowsVersion = SystemUtils::GetWindowsVersion();
+}
+
+CheatMonitorImpl::~CheatMonitorImpl()
+{
+    UnregisterDllNotification();
+}
+
+void CheatMonitorImpl::WakeMonitor()
+{
+    m_cv.notify_one();
+}
+
+void CheatMonitorImpl::InitializeSystem()
+{
+    // Initialize Sensors
+    if (m_lightweightSensors.empty())
+    {
+        // Light Sensors (0-10ms)
+        m_lightweightSensors.push_back(std::make_unique<AdvancedAntiDebugSensor>());
+        m_lightweightSensors.push_back(std::make_unique<SystemCodeIntegritySensor>());
+        m_lightweightSensors.push_back(std::make_unique<IatHookSensor>());
+        m_lightweightSensors.push_back(std::make_unique<VehHookSensor>());
+
+        // Heavy Sensors (10-100ms)
+        m_heavyweightSensors.push_back(std::make_unique<ThreadActivitySensor>());
+        m_heavyweightSensors.push_back(std::make_unique<ModuleActivitySensor>());
+        m_heavyweightSensors.push_back(std::make_unique<MemorySecuritySensor>());
+        m_heavyweightSensors.push_back(std::make_unique<DriverIntegritySensor>());
+        m_heavyweightSensors.push_back(std::make_unique<InlineHookSensor>());
+        m_heavyweightSensors.push_back(std::make_unique<ProcessHollowingSensor>());
+
+        // Critical Sensors (~1000ms+) - Treated as Heavy for scheduling
+        m_heavyweightSensors.push_back(std::make_unique<ProcessHandleSensor>());
+        m_heavyweightSensors.push_back(std::make_unique<ModuleIntegritySensor>());
+        m_heavyweightSensors.push_back(std::make_unique<ProcessAndWindowMonitorSensor>());
+
+        // Register for targeted scans
+        for (const auto &sensor : m_lightweightSensors)
+        {
+            m_sensorRegistry[sensor->GetName()] = sensor.get();
+        }
+        for (const auto &sensor : m_heavyweightSensors)
+        {
+            m_sensorRegistry[sensor->GetName()] = sensor.get();
+        }
+    }
+
+    RegisterDllNotification();
+    HardenProcessAndThreads();
+    CheckParentProcessAtStartup();
+    DetectVirtualMachine();
+    InitializeProcessBaseline();
+    InitializeSelfIntegrityBaseline();
+}
+
+void CheatMonitorImpl::InitializeProcessBaseline()
+{
+    // 1. 获取基础模块信息
+    std::vector<HMODULE> hMods(1024);
+    DWORD cbNeeded = 0;
+    if (EnumProcessModules(GetCurrentProcess(), hMods.data(), hMods.size() * sizeof(HMODULE), &cbNeeded))
+    {
+        size_t count = cbNeeded / sizeof(HMODULE);
+        for (size_t i = 0; i < count; i++)
+        {
+            HMODULE hModule = hMods[i];
             wchar_t modulePath_w[MAX_PATH];
             if (GetModuleFileNameW(hModule, modulePath_w, MAX_PATH) == 0)
                 continue;
@@ -377,6 +551,31 @@ void CheatMonitorImpl::UploadHardwareReport()
     }
 
     sendWithFingerprint(std::move(fp));
+}
+
+void CheatMonitorImpl::UploadTargetedSensorReport(const std::string &requestId, const std::string &sensorName,
+                                                 SensorExecutionResult result,
+                                                 anti_cheat::SensorFailureReason failureReason, int duration_ms,
+                                                 const std::string &notes,
+                                                 const std::vector<anti_cheat::Evidence> &evidences)
+{
+    anti_cheat::Report report;
+    report.set_type(anti_cheat::REPORT_TARGETED_SENSOR);
+
+    auto targeted = report.mutable_targeted_sensor();
+    targeted->set_request_id(requestId);
+    targeted->set_sensor_name(sensorName);
+    targeted->set_success(result == SensorExecutionResult::SUCCESS);
+    targeted->set_failure_reason(failureReason);
+    targeted->set_duration_ms(duration_ms >= 0 ? static_cast<uint64_t>(duration_ms) : 0);
+    targeted->set_notes(notes);
+
+    for (const auto &evidence : evidences)
+    {
+        *targeted->add_evidences() = evidence;
+    }
+
+    SendReport(report);
 }
 
 void CheatMonitorImpl::UploadEvidenceReport()
@@ -1056,7 +1255,7 @@ bool CheatMonitorImpl::IsAddressInLegitimateModule(PVOID address, std::wstring &
             // 如果不在已知合法列表，尝试使用通用白名单逻辑检查
             if (!isLegitimate)
             {
-                isLegitimate = SystemUtils::IsWhitelistedModule(originalPath);
+                isLegitimate = Utils::IsWhitelistedModule(originalPath);
             }
 
             // 添加调试日志：记录模块检查结果
@@ -1301,6 +1500,7 @@ VOID CALLBACK CheatMonitorImpl::DllLoadCallback(ULONG NotificationReason, const 
     }
 }
 
+
 void CheatMonitorImpl::RegisterDllNotification()
 {
     HMODULE hNtdll = GetModuleHandleW(L"ntdll.dll");
@@ -1340,7 +1540,7 @@ void CheatMonitorImpl::OnDllLoaded(const LDR_DLL_LOAD_NOTIFICATION_DATA &data)
     std::wstring modulePath(data.FullDllName->Buffer, data.FullDllName->Length / sizeof(WCHAR));
 
     // Check whitelist using the unified logic
-    if (SystemUtils::IsWhitelistedModule(modulePath))
+    if (Utils::IsWhitelistedModule(modulePath))
     {
         return;
     }
@@ -1376,37 +1576,6 @@ void CheatMonitorImpl::OnProcessCreated(DWORD pid, const std::wstring &name)
     }
 }
 
-void CheatMonitorImpl::CheckIatHooks(ScanContext &context, const BYTE *baseAddress,
-                                        const IMAGE_IMPORT_DESCRIPTOR *pImportDesc)
-{
-    const auto &baselineHashes = context.GetIatBaselineHashes();
-    while (pImportDesc->Name)
-    {
-        const char *dllName = (const char *)(baseAddress + pImportDesc->Name);
-        auto it = baselineHashes.find(dllName);
-        if (it != baselineHashes.end())
-        {
-            // Calculate current hash
-            std::vector<uint8_t> current_iat_hashes;
-            auto *pThunk = reinterpret_cast<IMAGE_THUNK_DATA *>((BYTE *)baseAddress + pImportDesc->FirstThunk);
-            while (pThunk->u1.AddressOfData)
-            {
-                uintptr_t func_ptr = pThunk->u1.Function;
-                current_iat_hashes.insert(current_iat_hashes.end(), (uint8_t *)&func_ptr,
-                                          (uint8_t *)&func_ptr + sizeof(func_ptr));
-                pThunk++;
-            }
-            std::vector<uint8_t> currentHash =
-                    SystemUtils::CalculateFnv1aHash(current_iat_hashes.data(), current_iat_hashes.size());
-
-            if (currentHash != it->second)
-            {
-                context.AddEvidence(anti_cheat::INTEGRITY_API_HOOK, "检测到IAT Hook: " + std::string(dllName));
-            }
-        }
-        pImportDesc++;
-    }
-}
 
 const std::chrono::milliseconds CheatMonitorImpl::GetLightScanInterval() const
 {
@@ -1609,17 +1778,24 @@ void CheatMonitorImpl::RunTargetedSensorScan(const TargetedScanRequest &request)
     else
     {
         bool isHeavy = targetSensor->GetWeight() != SensorWeight::LIGHT;
-        // 创建上下文并刷新缓存 (一次刷新供所有传感器使用)
         ScanContext context(this, true /*isTargetedScan*/);
-    targeted->set_sensor_name(sensorName);
-    targeted->set_success(result == SensorExecutionResult::SUCCESS);
-    targeted->set_failure_reason(failureReason);
-    targeted->set_duration_ms(duration_ms >= 0 ? static_cast<uint64_t>(duration_ms) : 0);
-    targeted->set_notes(notes);
-    for (const auto &e : evidences) {
-        *targeted->add_evidences() = e;
+        context.RefreshModuleCache();
+        if (isHeavy) context.RefreshMemoryCache();
+
+        result = ExecuteAndMonitorSensor(targetSensor, targetSensor->GetName(), isHeavy, context, &failureReason, &durationMs);
+
+        // Collect evidences added during this targeted scan
+        std::vector<anti_cheat::Evidence> evidences;
+        {
+            std::lock_guard<std::mutex> lock(m_sessionMutex);
+            for (size_t i = evidence_begin; i < m_evidences.size(); ++i)
+            {
+                evidences.push_back(m_evidences[i]);
+            }
+        }
+
+        UploadTargetedSensorReport(request.requestId, request.sensorName, result, failureReason, durationMs, notes, evidences);
     }
-    SendReport(report);
 }
 
 // ========== 快照数据采集实现 ==========

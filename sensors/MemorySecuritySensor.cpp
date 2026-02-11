@@ -1,8 +1,8 @@
 #include "MemorySecuritySensor.h"
-#include "../include/ScanContext.h"
-#include "../utils/SystemUtils.h"
-#include "../Logger.h"
-#include "../CheatConfigManager.h"
+#include "ScanContext.h"
+#include "utils/SystemUtils.h"
+#include "Logger.h"
+#include "CheatConfigManager.h"
 #include <vector>
 #include <sstream>
 
@@ -339,7 +339,7 @@ MemorySecuritySensor::HiddenMemoryCheckResult MemorySecuritySensor::CheckHiddenM
         // 读取失败且是可执行区域，非常可疑（恶意隐藏）
         result.shouldReport = true;
 
-        RecordFailure(anti_cheat::MEMORY_ACCESS_EXCEPTION);
+        this->RecordFailure(anti_cheat::MEMORY_ACCESS_EXCEPTION);
     }
 
     return result;

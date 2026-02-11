@@ -1,5 +1,5 @@
-#include "include/ScanContext.h"
-#include "include/CheatMonitorImpl.h"
+#include "ScanContext.h"
+#include "CheatMonitorImpl.h"
 #include "CheatConfigManager.h"
 #include "utils/Utils.h"
 #include "utils/SystemUtils.h"
@@ -120,10 +120,6 @@ bool ScanContext::IsCurrentOsSupported() const
     return m_pimpl->IsCurrentOsSupported();
 }
 
-void ScanContext::CheckIatHooks(const BYTE *baseAddress, const IMAGE_IMPORT_DESCRIPTOR *pImportDesc)
-{
-    m_pimpl->CheckIatHooks(*this, baseAddress, pImportDesc);
-}
 
 bool ScanContext::IsAddressInLegitimateModule(PVOID address, std::wstring &outModulePath)
 {

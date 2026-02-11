@@ -1,9 +1,9 @@
 #include "ProcessHandleSensor.h"
-#include "../include/ScanContext.h"
-#include "../utils/SystemUtils.h"
-#include "../Logger.h"
-#include "../utils/Utils.h"
-#include "../CheatConfigManager.h"
+#include "ScanContext.h"
+#include "utils/SystemUtils.h"
+#include "Logger.h"
+#include "utils/Utils.h"
+#include "CheatConfigManager.h"
 #include <algorithm>
 #include <memory>
 
@@ -80,85 +80,6 @@ uint32_t ProcessHandleSensor::GetProcessCreationTime(DWORD pid)
     return creationTime;
 }
 
-bool ProcessHandleSensor::IsHandlePointingToUs_Safe(const void *pHandleEntry, DWORD ownPid)
-{
-    // 安全检查句柄是否指向我们需要保护的进程
-    // 注意：这个过程必须非常小心，因为句柄可能在我们检查时失效
-
-    // 从不透明指针恢复结构信息
-    // 注意：这里假设调用者知道 pHandleEntry 指向的是 EX 还是 LEGACY 结构
-    // 我们的逻辑是统一转换为共同的访问模式或者分别处理
-    // 但这个辅助函数目前被设计为通用逻辑，它需要知道具体的结构
-
-    // 这里我们假设由调用者保证 pHandleEntry 是有效的 SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX
-    // 如果是 Legacy 模式，调用者应该转换或适配
-    // 但根据 Execute 中的逻辑，pHandleEntry 是 void*
-
-    // 重新审视原代码逻辑:
-    // 在 ProcessHandleSensor 中，IsHandlePointingToUs_Safe 被调用时确实不知道是 Legacy 还是 Ex?
-    // 查看 Execute 循环：
-    // if (!useLegacy) ... const SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX &handle ... IsHandlePointingToUs_Safe((const void *)&handle, ownPid);
-    // else ... SYSTEM_HANDLE_TABLE_ENTRY_INFO &handle ... IsHandlePointingToUs_Safe((const void *)&handle, ownPid);
-
-    // 所以我们需要在函数内部根据上下文判断？不，这个函数接受 void*，原代码一定有判断逻辑。
-    // 让我们看原代码 5139 行
-
-    // 原代码逻辑似乎依赖传入的内容，但函数签名只有 pHandleEntry 和 ownPid。
-    // 这意味着原函数可能包含对自己是 Ex 还是 Legacy 的判断？不，那不可能。
-    // 或者原函数是模板？不，签名是 void*。
-    // 或者是重载？
-    // 或者是只处理一种情况？
-
-    // 查看原实现：
-    // 它通过尝试 DuplicateHandle 来验证。DuplicateHandle 需要源句柄值。
-    // 句柄值在 Ex 和 Legacy 结构中的偏移量不同！
-    // 除非... 原代码有某种黑魔法，或者我漏看了什么。
-    // 等等，原代码 Execute 中调用时，如果是 useLegacy，传的是 handle 的地址。如果是 !useLegacy，也是传 handle 地址。
-    // 这说明 IsHandlePointingToUs_Safe 必须知道结构类型，或者它有两个版本。
-    // 或者是：它根本不读取结构体内容？
-    // 不，它必须读取 HandleValue 和 UniqueProcessId 来进行 DuplicateHandle。
-
-    // 让我们看原代码的实现细节 (从 5138 行开始)
-    // 遗憾的是我之前的 view_file 可能没有覆盖到 IsHandlePointingToUs_Safe 的开头细节，
-    // 但我看到它被调用。
-    // 让我们假设我们需要让它支持两种结构。
-
-    // 但是，Execute 中调用它时并没有传 useLegacy 参数。
-    // 难道 IsHandlePointingToUs_Safe 是 HandleBufferManager 的成员？不是。
-    // 难道是 ModuleIntegritySensor 的成员？是的。
-
-    // 让我们再仔细看 Execute 中的调用：
-    // if (!useLegacy) ... IsHandlePointingToUs_Safe((const void *)&handle, ownPid)
-    // else ... IsHandlePointingToUs_Safe((const void *)&handle, ownPid)
-
-    // 这非常奇怪。除非 Handle 结构被强转了。
-    // 或者 IsHandlePointingToUs_Safe 是个模板函数？
-    // 或者是通过 ScanContext 传递了状态？
-
-    // 为了安全起见，我会把它改为接受必要参数：HandleValue, ProcessId, GrantedAccess
-    // 这样就不用关心结构体布局了。
-    // 这需要修改 Execute 中的调用。
-
-    // 修改策略：
-    // 定义 bool check(HANDLE remoteHandleValue, DWORD remotePid, DWORD access);
-    // 然后在 Execute 中直接调用 check(handle.HandleValue, handle.UniqueProcessId, handle.GrantedAccess);
-
-    // 原实现可能类似于：
-    // bool IsHandlePointingToUs_Safe(HANDLE h, DWORD pid) { ... }
-
-    // 但原 Execute 传的是 void*。
-
-    // 我们来看原实现到底是什么。我需要再看一眼 IsHandlePointingToUs_Safe 的实现。
-    // 之前 Step 345 (4700-5500) 并没有完全展示 IsHandlePointingToUs_Safe 的头部。
-    // 让我快速 check 一下，或者我直接用更稳健的重构方式：传递参数。
-
-    // 我决定修改 Execute 逻辑，传递明确参数。这更安全，也更清晰。
-
-    // 伪代码:
-    // bool CheckHandle(HANDLE hRemote, DWORD remotePid);
-
-    return false; // 占位，将被下面的实现覆盖
-}
 
 // 实际的 Helper 函数，接受明确参数
 static bool IsHandlePointingToUs_Safe_Impl(HANDLE remoteHandleValue, DWORD remotePid, DWORD ownPid)

@@ -1,7 +1,7 @@
 #include "ProcessHollowingSensor.h"
-#include "../include/ScanContext.h"
-#include "../utils/SystemUtils.h"
-#include "../Logger.h"
+#include "ScanContext.h"
+#include "utils/SystemUtils.h"
+#include "Logger.h"
 #include <vector>
 #include <sstream>
 
