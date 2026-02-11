@@ -2,8 +2,8 @@
 cmake_minimum_required(VERSION 3.15)
 project(CheatMonitor LANGUAGES CXX)
 
-# 设置项目使用的C++标准为C++17
-set(CMAKE_CXX_STANDARD 17)
+# 设置项目使用的C++标准为C++14
+set(CMAKE_CXX_STANDARD 14)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # 查找本项目必需的Protobuf包。
@@ -29,10 +29,10 @@ add_library(CheatMonitorLib STATIC
     hde/hde32.cpp
     utils/SystemUtils.cpp
     utils/Utils.cpp
-    sensors/ISensor.cpp
     sensors/IatHookSensor.cpp
     sensors/VehHookSensor.cpp
     sensors/InlineHookSensor.cpp
+    sensors/VTableHookSensor.cpp
     sensors/ProcessHollowingSensor.cpp
     sensors/ProcessAndWindowMonitorSensor.cpp
     sensors/DriverIntegritySensor.cpp

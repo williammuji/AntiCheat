@@ -23,6 +23,8 @@
 #include <wincrypt.h>
 #include <wintrust.h>
 #include <winternl.h>
+#include <iomanip>
+#include <sstream>
 #include <iphlpapi.h>
 #include <memory>
 #include <mutex>
@@ -1121,9 +1123,9 @@ void CheatMonitorImpl::DetectVmByMacAddress()
         while (pAdapterInfo)
         {
             char macStr[18];
-            sprintf_s(macStr, sizeof(macStr), "%02X:%02X:%02X:%02X:%02X:%02X", pAdapterInfo->Address[0],
-                      pAdapterInfo->Address[1], pAdapterInfo->Address[2], pAdapterInfo->Address[3],
-                      pAdapterInfo->Address[4], pAdapterInfo->Address[5]);
+            sprintf_s(macStr, sizeof(macStr), "%02X:%02X:%02X:%02X:%02X:%02X",
+                      pAdapterInfo->Address[0], pAdapterInfo->Address[1], pAdapterInfo->Address[2],
+                      pAdapterInfo->Address[3], pAdapterInfo->Address[4], pAdapterInfo->Address[5]);
 
             for (const auto &prefix : vmMacPrefixes)
             {
