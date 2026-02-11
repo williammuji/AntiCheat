@@ -1,8 +1,9 @@
 #include "ModuleActivitySensor.h"
-#include "../include/ScanContext.h"
-#include "../utils/SystemUtils.h"
-#include "../Logger.h"
-#include "../utils/Utils.h"
+#include "ScanContext.h"
+#include "CheatConfigManager.h"
+#include "utils/SystemUtils.h"
+#include "Logger.h"
+#include "utils/Utils.h"
 #include <vector>
 #include <algorithm>
 #include <sstream>
@@ -90,7 +91,7 @@ bool ModuleActivitySensor::ScanModulesWithTimeout(ScanContext &context, int budg
         }
 
         // 使用统一白名单检查
-        bool isWhitelisted = SystemUtils::IsWhitelistedModule(modulePath);
+        bool isWhitelisted = Utils::IsWhitelistedModule(modulePath);
         SystemUtils::WindowsVersion winVer = SystemUtils::GetWindowsVersion();
 
         Utils::ModuleValidationResult validation;

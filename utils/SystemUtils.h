@@ -31,9 +31,6 @@ namespace AntiCheatLogger {
 #define CERT_SHA256_HASH_PROP_ID 107
 #endif
 
-#ifndef PROV_RSA_AES
-#define PROV_RSA_AES PROV_RSA_FULL
-#endif
 
 // System Information Structures
 typedef struct _SYSTEM_KERNEL_DEBUGGER_INFORMATION
@@ -162,6 +159,7 @@ extern "C" {
         InternalProcessDebugObjectHandle = 30
     } PROCESS_INFO_CLASS_INTERNAL;
     typedef NTSTATUS(WINAPI *NtQueryInformationProcess_t)(HANDLE, PROCESS_INFO_CLASS_INTERNAL, PVOID, ULONG, PULONG);
+    typedef NTSTATUS(WINAPI *NtQuerySystemInformation_t)(SYSTEM_INFORMATION_CLASS, PVOID, ULONG, PULONG);
 }
 
 // LDR_DLL_NOTIFICATION Definitions

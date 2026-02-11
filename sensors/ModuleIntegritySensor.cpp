@@ -1,10 +1,10 @@
 #include "ModuleIntegritySensor.h"
-#include "../include/ScanContext.h"
-#include "../utils/SystemUtils.h"
-#include "../Logger.h"
-#include "../utils/Utils.h"
-#include "../utils/Scanners.h"
-#include "../CheatConfigManager.h"
+#include "ScanContext.h"
+#include "utils/SystemUtils.h"
+#include "Logger.h"
+#include "utils/Utils.h"
+#include "utils/Scanners.h"
+#include "CheatConfigManager.h"
 #include <algorithm>
 #include <sstream>
 
@@ -256,13 +256,13 @@ void ModuleIntegritySensor::ValidateModuleCodeIntegrity(const wchar_t *modulePat
     if (!selfModule)
     {
         LOG_WARNING(AntiCheatLogger::LogCategory::SENSOR, "ModuleIntegritySensor: 无法获取自身模块句柄");
-        RecordFailure(anti_cheat::MODULE_INTEGRITY_GET_SELF_MODULE_FAILED);
+        this->RecordFailure(anti_cheat::MODULE_INTEGRITY_GET_SELF_MODULE_FAILED);
         return;
     }
     bool isSelfModule = (hModule == selfModule);
 
     // 检查是否在白名单中（系统DLL或信任的第三方软件）
-    bool isWhitelisted = SystemUtils::IsWhitelistedModule(modulePath);
+    bool isWhitelisted = Utils::IsWhitelistedModule(modulePath);
 
     auto it = baselineHashes.find(modulePath);
 

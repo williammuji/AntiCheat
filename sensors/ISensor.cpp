@@ -1,5 +1,5 @@
-#include "../include/ISensor.h"
-#include "../include/ScanContext.h"
+#include "ISensor.h"
+#include "ScanContext.h"
 
 bool ISensor::IsOsSupported(ScanContext &context) const
 {

@@ -1,13 +1,13 @@
 #include "InlineHookSensor.h"
-#include "../include/ScanContext.h"
-#include "../utils/SystemUtils.h"
-#include "../Logger.h"
-#include "../utils/Utils.h"
+#include "ScanContext.h"
+#include "utils/SystemUtils.h"
+#include "Logger.h"
+#include "utils/Utils.h"
 #include <vector>
 #include <sstream>
 
 extern "C" {
-#include "../hde/hde32.h"
+#include "hde/hde32.h"
 }
 
 SensorExecutionResult InlineHookSensor::Execute(ScanContext &context)

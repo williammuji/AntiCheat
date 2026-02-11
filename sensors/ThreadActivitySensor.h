@@ -1,6 +1,7 @@
 #pragma once
 
-#include "../include/ISensor.h"
+#include <windows.h>
+#include "ISensor.h"
 #include <chrono>
 
 class ThreadActivitySensor : public ISensor

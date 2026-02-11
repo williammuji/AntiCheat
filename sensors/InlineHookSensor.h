@@ -1,6 +1,7 @@
 #pragma once
 
-#include "../include/ISensor.h"
+#include <windows.h>
+#include "ISensor.h"
 
 class InlineHookSensor : public ISensor
 {
