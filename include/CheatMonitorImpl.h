@@ -2,13 +2,13 @@
 
 #include "ISensor.h"
 #include "ScanContext.h"
-#include "../CheatConfigManager.h"
-#include "../HardwareInfoCollector.h"
-#include "../WMIProcessMonitor.h"
-#include "../utils/SystemUtils.h"
-#include "../utils/Utils.h"
-#include "../Logger.h"
-#include "../anti_cheat.pb.h"
+#include "CheatConfigManager.h"
+#include "HardwareInfoCollector.h"
+#include "WMIProcessMonitor.h"
+#include "utils/SystemUtils.h"
+#include "utils/Utils.h"
+#include "Logger.h"
+#include "anti_cheat.pb.h"
 
 #include <atomic>
 #include <thread>

@@ -7,7 +7,7 @@ Anti-cheat system for MMORPG games with multi-layered detection and sensor-based
 | Weight | Execution Time | Sensors | Purpose |
 |--------|----------------|---------|---------|
 | **LIGHT** | 0-10ms | AdvancedAntiDebugSensor, SystemCodeIntegritySensor, IatHookSensor, VehHookSensor | Quick system integrity checks and API hook detection |
-| **HEAVY** | 100-1000ms | ThreadAndModuleActivitySensor, MemorySecuritySensor | Deep system analysis with time-budgeted scanning |
+| **HEAVY** | 100-1000ms | ThreadActivitySensor, ModuleActivitySensor, MemorySecuritySensor, DriverIntegritySensor, InlineHookSensor, ProcessHollowingSensor | Deep system analysis with time-budgeted scanning |
 | **CRITICAL** | 1000-10000ms | ProcessHandleSensor, ModuleIntegritySensor, ProcessAndWindowMonitorSensor | Intensive segmented scanning with cursor-based approach |
 
 
@@ -29,15 +29,41 @@ Anti-cheat system for MMORPG games with multi-layered detection and sensor-based
 - **API Hooking**: Detects function interception techniques
 - **Module Tampering**: Verifies legitimate module loading
 
-### ProcessAndWindowMonitorSensor
-- **Process Enumeration**: Monitors running processes for suspicious activity
-- **Window Title Analysis**: Scans for cheat-related window titles
-- **Process Tree Analysis**: Tracks parent-child process relationships
-- **Suspicious Launch Detection**: Identifies cheat tool startup patterns
+### VehHookSensor
+- **Vector Exception Handling**: Monitors exception handling mechanisms
+- **Exception Filtering**: Detects exception-based hooking techniques
+- **Debug Exception Handling**: Monitors debug-related exceptions
+- **Advanced Hooking**: Identifies sophisticated hooking methods
 
-### ModuleIntegritySensor
-- **Code-Section Baseline**: Computes and compares baseline hash of executable code sections to detect tampering
-- **Self/Third-Party Tampering**: Reports integrity violations for both anti-cheat and other loaded modules
+### ThreadActivitySensor
+- **Thread Start Address Validation**: Reports threads whose start address resides outside legitimate modules
+- **Hidden Thread Detection**: Identifies threads hidden from standard enumeration
+- **Thread Injection**: Detects threads created by remote processes
+
+### ModuleActivitySensor
+- **New Module Verification**: Verifies signatures of newly observed modules and records results
+- **Module Hiding Detection**: Detects modules unlinked from PEB
+- **Manual Mapping**: Identifies manually mapped modules
+
+### MemorySecuritySensor
+- **Private Exec (Non-Module)**: Flags non-module exec regions with configurable size bounds
+- **Hidden Exec Heuristic**: Lightweight MZ/access probe for PE-like regions
+- **Page Permission Analysis**: Monitors suspicious memory protection changes
+
+### DriverIntegritySensor
+- **Driver Enumeration**: Lists loaded kernel drivers
+- **Signature Verification**: Verifies digital signatures of drivers
+- **Hidden Driver Detection**: Identifies drivers hidden from system lists
+
+### InlineHookSensor
+- **Function Prologue Analysis**: Checks for JMP/CALL instructions at function starts
+- **Code Patching Detection**: Identifies modifications to executable code
+- **Hotpatch Detection**: Detects hotpatching techniques
+
+### ProcessHollowingSensor
+- **PE Header comparison**: Compares memory PE header with disk file
+- **Entry Point Hijacking**: Detects modified entry points
+- **Image Base Mismatch**: Identifies relocated executable images
 
 ### ProcessHandleSensor
 - **Handle Enumeration**: Scans process handles for suspicious access
@@ -45,20 +71,15 @@ Anti-cheat system for MMORPG games with multi-layered detection and sensor-based
 - **Cross-Process Access**: Monitors inter-process communication
 - **Privilege Escalation**: Identifies privilege escalation attempts
 
-### ThreadAndModuleActivitySensor
-- **Thread Start Address Validation**: Reports threads whose start address resides outside legitimate modules
-- **New Module Verification**: Verifies signatures of newly observed modules and records results
-- **Time-Budgeted Scanning**: Enumerates threads/modules with rotating cursors and budget checks
+### ModuleIntegritySensor
+- **Code-Section Baseline**: Computes and compares baseline hash of executable code sections to detect tampering
+- **Self/Third-Party Tampering**: Reports integrity violations for both anti-cheat and other loaded modules
 
-### MemorySecuritySensor
-- **Private Exec (Non-Module)**: Flags non-module exec regions with configurable size bounds
-- **Hidden Exec Heuristic**: Lightweight MZ/access probe for PE-like regions
-
-### VehHookSensor
-- **Vector Exception Handling**: Monitors exception handling mechanisms
-- **Exception Filtering**: Detects exception-based hooking techniques
-- **Debug Exception Handling**: Monitors debug-related exceptions
-- **Advanced Hooking**: Identifies sophisticated hooking methods
+### ProcessAndWindowMonitorSensor
+- **Process Enumeration**: Monitors running processes for suspicious activity
+- **Window Title Analysis**: Scans for cheat-related window titles
+- **Process Tree Analysis**: Tracks parent-child process relationships
+- **Suspicious Launch Detection**: Identifies cheat tool startup patterns
 
 ## Build
 

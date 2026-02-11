@@ -1,8 +1,8 @@
 #include "VehHookSensor.h"
-#include "../include/ScanContext.h"
-#include "../utils/SystemUtils.h"
-#include "../Logger.h"
-#include "../CheatConfigManager.h"
+#include "ScanContext.h"
+#include "utils/SystemUtils.h"
+#include "Logger.h"
+#include "CheatConfigManager.h"
 #include <algorithm>
 #include <sstream>
 
@@ -275,7 +275,7 @@ void VehHookSensor::AnalyzeHandlerSecurity(ScanContext &context, PVOID handlerAd
         MEMORY_BASIC_INFORMATION mbi = {};
         if (VirtualQuery(handlerAddress, &mbi, sizeof(mbi)) == 0)
         {
-            m_lastFailureReason = anti_cheat::VEH_VIRTUAL_QUERY_FAILED;  // 统计VirtualQuery失败
+            this->RecordFailure(anti_cheat::VEH_VIRTUAL_QUERY_FAILED);  // 统计VirtualQuery失败
             return;                                                      // 无法查询，保守退出
         }
         const DWORD prot = mbi.Protect & 0xFF;

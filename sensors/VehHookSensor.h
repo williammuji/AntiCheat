@@ -1,6 +1,8 @@
 #pragma once
 
-#include "../include/ISensor.h"
+#include <windows.h>
+#include "ISensor.h"
+#include "utils/SystemUtils.h"
 
 class VehHookSensor : public ISensor
 {

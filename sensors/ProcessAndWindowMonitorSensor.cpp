@@ -1,8 +1,8 @@
-#include "ProcessAndWindowMonitorSensor.h"
-#include "../include/ScanContext.h"
-#include "../utils/SystemUtils.h"
-#include "../Logger.h"
-#include "../utils/Utils.h"
+﻿#include "ProcessAndWindowMonitorSensor.h"
+#include "ScanContext.h"
+#include "utils/SystemUtils.h"
+#include "Logger.h"
+#include "utils/Utils.h"
 #include <psapi.h>
 #include <tlhelp32.h>
 
@@ -10,7 +10,7 @@ SensorExecutionResult ProcessAndWindowMonitorSensor::Execute(ScanContext &contex
 {
     m_lastFailureReason = anti_cheat::UNKNOWN_FAILURE;
 
-    // 1. 枚举窗口
+    // 1. 鏋氫妇绐楀彛
     EnumWindows([](HWND hwnd, LPARAM lParam) -> BOOL {
         auto *pSensor = (ProcessAndWindowMonitorSensor *)lParam;
         // ScanContext is not passed directly to callback, we need to pass it via lParam struct or use member if possible.
@@ -38,7 +38,7 @@ SensorExecutionResult ProcessAndWindowMonitorSensor::Execute(ScanContext &contex
         return TRUE;
     }, (LPARAM)&enumCtx);
 
-    // 2. 枚举进程 (使用ToolHelp32，因其比PSAPI更轻量且信息全)
+    // 2. 鏋氫妇杩涚▼ (浣跨敤ToolHelp32锛屽洜鍏舵瘮PSAPI鏇磋交閲忎笖淇℃伅鍏?
     HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
     if (hSnapshot != INVALID_HANDLE_VALUE)
     {
@@ -55,7 +55,7 @@ SensorExecutionResult ProcessAndWindowMonitorSensor::Execute(ScanContext &contex
     }
     else
     {
-         RecordFailure(anti_cheat::CREATE_TOOLHELP32_SNAPSHOT_FAILED);
+         this->RecordFailure(anti_cheat::PROCESS_ENUM_FAILED);
          return SensorExecutionResult::FAILURE;
     }
 
@@ -97,7 +97,7 @@ void ProcessAndWindowMonitorSensor::CheckWindow(HWND hwnd, ScanContext &context)
 
                    if (!isWhitelisted)
                    {
-                        context.AddEvidence(anti_cheat::CHEAT_WINDOW_DETECTED, "Detected window: " + Utils::WideToString(title));
+                        context.AddEvidence(anti_cheat::ENVIRONMENT_HARMFUL_PROCESS, "Detected window: " + Utils::WideToString(title));
                    }
               }
          }
@@ -120,7 +120,7 @@ void ProcessAndWindowMonitorSensor::CheckProcess(DWORD pid, const std::wstring& 
               {
                    // Double check context for whitelisted process paths if needed,
                    // but usually name match is enough for blacklisting known cheats.
-                   context.AddEvidence(anti_cheat::CHEAT_PROCESS_DETECTED, "Detected process: " + Utils::WideToString(nameLower));
+                   context.AddEvidence(anti_cheat::ENVIRONMENT_HARMFUL_PROCESS, "Detected process: " + Utils::WideToString(nameLower));
               }
          }
     }

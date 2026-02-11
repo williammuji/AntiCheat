@@ -1,7 +1,7 @@
 #pragma once
 
 #include <string>
-#include "../anti_cheat.pb.h"
+#include "anti_cheat.pb.h"
 
 // Forward declaration
 class ScanContext;

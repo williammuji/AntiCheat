@@ -1,7 +1,7 @@
 #include "AdvancedAntiDebugSensor.h"
-#include "../include/ScanContext.h"
-#include "../utils/SystemUtils.h"
-#include "../Logger.h"
+#include "ScanContext.h"
+#include "utils/SystemUtils.h"
+#include "Logger.h"
 #include <array>
 #include <functional>
 
@@ -141,7 +141,7 @@ AdvancedAntiDebugSensor::DebugDetectionResult AdvancedAntiDebugSensor::CheckKern
     {
         SYSTEM_KERNEL_DEBUGGER_INFORMATION info;
         if (SystemUtils::g_pNtQuerySystemInformation &&
-            NT_SUCCESS(SystemUtils::g_pNtQuerySystemInformation(SystemKernelDebuggerInformation, &info,
+            NT_SUCCESS(SystemUtils::g_pNtQuerySystemInformation(static_cast<SYSTEM_INFORMATION_CLASS>(35), &info,
                                                                 sizeof(info), NULL)))
         {
             if (info.KernelDebuggerEnabled && !info.KernelDebuggerNotPresent)

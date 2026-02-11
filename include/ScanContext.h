@@ -7,8 +7,9 @@
 #include <unordered_map>
 #include <set>
 #include <windows.h>
-#include "../anti_cheat.pb.h"
-#include "../utils/SystemUtils.h"
+#include "anti_cheat.pb.h"
+#include "utils/SystemUtils.h"
+#include "utils/Utils.h"
 
 // Forward declarations
 struct CheatMonitorImpl;
@@ -54,7 +55,6 @@ class ScanContext
     bool IsCurrentOsSupported() const;
 
     // Pimpl Access Helper Wrappers
-    void CheckIatHooks(const BYTE *baseAddress, const IMAGE_IMPORT_DESCRIPTOR *pImportDesc);
     bool IsAddressInLegitimateModule(PVOID address, std::wstring &outModulePath);
     bool IsAddressInLegitimateModule(PVOID address);
 
