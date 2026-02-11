@@ -166,7 +166,7 @@ void CheatMonitorImpl::InitializeSystem()
         m_lightweightSensors.push_back(std::make_unique<VehHookSensor>());
         m_lightweightSensors.push_back(std::make_unique<VTableHookSensor>());
 
-        // Heavy Sensors (10-100ms)
+        // Heavy Sensors (SensorWeight::HEAVY) (10-100ms)
         m_heavyweightSensors.push_back(std::make_unique<ThreadActivitySensor>());
         m_heavyweightSensors.push_back(std::make_unique<ModuleActivitySensor>());
         m_heavyweightSensors.push_back(std::make_unique<MemorySecuritySensor>());
@@ -174,7 +174,7 @@ void CheatMonitorImpl::InitializeSystem()
         m_heavyweightSensors.push_back(std::make_unique<InlineHookSensor>());
         m_heavyweightSensors.push_back(std::make_unique<ProcessHollowingSensor>());
 
-        // Critical Sensors (~1000ms+) - Treated as Heavy for scheduling
+        // Critical Sensors (SensorWeight::CRITICAL) (~1000ms+) - Treated as Heavy for scheduling
         m_heavyweightSensors.push_back(std::make_unique<ProcessHandleSensor>());
         m_heavyweightSensors.push_back(std::make_unique<ModuleIntegritySensor>());
         m_heavyweightSensors.push_back(std::make_unique<ProcessAndWindowMonitorSensor>());
@@ -1625,8 +1625,20 @@ void CheatMonitorImpl::ExecuteHeavyweightSensors()
     context.RefreshMemoryCache();
 
     // 重量级传感器：执行所有传感器
+    long budget_ms = CheatConfigManager::GetInstance().GetHeavyScanBudgetMs();
+    auto total_start = std::chrono::steady_clock::now();
+
     for (const auto &sensor : m_heavyweightSensors)
     {
+        auto now = std::chrono::steady_clock::now();
+        auto elapsed_total = std::chrono::duration_cast<std::chrono::milliseconds>(now - total_start).count();
+        if (budget_ms > 0 && elapsed_total >= budget_ms)
+        {
+            LOG_WARNING_F(AntiCheatLogger::LogCategory::PERFORMANCE,
+                          "Heavy scan budget exceeded (%ld ms > %ld ms). Skipping remaining sensors.",
+                          elapsed_total, budget_ms);
+            break;
+        }
         ExecuteAndMonitorSensor(sensor.get(), sensor->GetName(), true /*isHeavyweight*/, context);
     }
 // 移除Round Robin索引更新

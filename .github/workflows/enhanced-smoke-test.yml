@@ -222,7 +222,9 @@ jobs:
           "IatHookSensor",
           "ModuleIntegritySensor",
           "ProcessHandleSensor",
-          "ThreadAndModuleActivitySensor",
+          "ProcessHandleSensor",
+          "ThreadActivitySensor",
+          "ModuleActivitySensor",
           "MemorySecuritySensor",
           "VehHookSensor"
         )
