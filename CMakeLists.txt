@@ -22,6 +22,8 @@ add_library(CheatMonitorLib STATIC
     CheatConfigManager.cpp
     HardwareInfoCollector.h
     HardwareInfoCollector.cpp
+    WMIProcessMonitor.h
+    WMIProcessMonitor.cpp
     hde/hde32.h
     hde/hde32.cpp
     ${PROTO_SRCS}
@@ -54,6 +56,6 @@ target_link_libraries(CheatMonitorLib PUBLIC ${Protobuf_LIBRARIES})
 # 使得构建脚本更加清晰和可移植。
 if(WIN32)
     # crypt32.lib 用于 CryptProtectData, advapi32.lib 包含旧版 CryptoAPI (用于哈希)
-    target_link_libraries(CheatMonitorLib PUBLIC ole32 psapi user32 advapi32 iphlpapi wintrust crypt32)
+    target_link_libraries(CheatMonitorLib PUBLIC ole32 psapi user32 advapi32 iphlpapi wintrust crypt32 wbemuuid)
 endif()
 
