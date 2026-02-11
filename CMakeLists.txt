@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.15)
 project(CheatMonitor LANGUAGES CXX)
 
 # 设置项目使用的C++标准为C++17
-set(CMAKE_CXX_STANDARD 14)
+set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # 查找本项目必需的Protobuf包。
@@ -51,10 +51,18 @@ add_library(CheatMonitorLib STATIC
 # CMAKE_CURRENT_BINARY_DIR 指向的是存放了生成的protobuf头文件的目录。
 target_include_directories(CheatMonitorLib PUBLIC
     ${CMAKE_CURRENT_BINARY_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/utils
+    ${CMAKE_CURRENT_SOURCE_DIR}/sensors
     ${Protobuf_INCLUDE_DIRS}
 )
 
 # 统一编译宏与最低操作系统目标：仅支持 Windows 7 SP1 及以上
+if (MSVC)
+    target_compile_options(CheatMonitorLib PRIVATE /utf-8)
+endif()
+
 if (WIN32)
     target_compile_definitions(CheatMonitorLib PUBLIC
         WINVER=0x0601

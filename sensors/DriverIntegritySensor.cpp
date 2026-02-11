@@ -1,8 +1,8 @@
 #include "DriverIntegritySensor.h"
-#include "../include/ScanContext.h"
-#include "../utils/SystemUtils.h"
-#include "../Logger.h"
-#include "../utils/Utils.h"
+#include "ScanContext.h"
+#include "utils/SystemUtils.h"
+#include "Logger.h"
+#include "utils/Utils.h"
 #include <psapi.h>
 #include <wintrust.h>
 #include <softpub.h>

@@ -1,9 +1,10 @@
 #include "ThreadActivitySensor.h"
-#include "../include/ScanContext.h"
-#include "../utils/SystemUtils.h"
-#include "../Logger.h"
-#include "../utils/Utils.h"
-#include "../utils/Scanners.h"
+#include "ScanContext.h"
+#include "CheatConfigManager.h"
+#include "utils/SystemUtils.h"
+#include "Logger.h"
+#include "utils/Utils.h"
+#include "utils/Scanners.h"
 #include <sstream>
 #include <iomanip>
 #include <vector>
@@ -237,7 +238,7 @@ void ThreadActivitySensor::AnalyzeThreadIntegrity(ScanContext &context, DWORD th
 
 DWORD ThreadActivitySensor::GetProcessIdOfThread(HANDLE hThread)
 {
-    return GetProcessIdOfThread(hThread);
+    return ::GetProcessIdOfThread(hThread);
 }
 
 std::string ThreadActivitySensor::GetThreadDetailedInfo(DWORD threadId, PVOID startAddress)

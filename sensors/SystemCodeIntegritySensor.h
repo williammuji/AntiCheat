@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../include/ISensor.h"
+#include "ISensor.h"
 
 class SystemCodeIntegritySensor : public ISensor
 {
