@@ -61,3 +61,6 @@ smoke-test-report.md
 *.backup
 
 .cursor/
+
+tools/
+scripts/
