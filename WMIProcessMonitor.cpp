@@ -110,7 +110,13 @@ bool WMIProcessMonitor::Initialize()
     hres = CoCreateInstance(CLSID_UnsecuredApartment, NULL, CLSCTX_LOCAL_SERVER, IID_IUnsecuredApartment, (void**)&m_pUnsecApp);
     if (SUCCEEDED(hres))
     {
-         m_pUnsecApp->CreateObjectStub(this, &m_pStubSink);
+         IUnknown* pStubUnk = nullptr;
+         hres = m_pUnsecApp->CreateObjectStub(this, &pStubUnk);
+         if (SUCCEEDED(hres))
+         {
+             hres = pStubUnk->QueryInterface(IID_IWbemObjectSink, (void**)&m_pStubSink);
+             pStubUnk->Release();
+         }
     }
 
     // Use stub sink if available, else use this

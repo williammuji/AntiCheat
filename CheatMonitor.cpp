@@ -164,20 +164,23 @@ typedef NTSTATUS (NTAPI *P_LdrUnregisterDllNotification)(
 
 #include "hde/hde32.h"
 
+// Forward declarations
+std::wstring SystemNormalizePathLowercase(const std::wstring &input);
+
 // 全局NT API函数指针声明
 extern "C" {
 typedef NTSTATUS(WINAPI *NtQueryInformationThread_t)(HANDLE, THREADINFOCLASS, PVOID, ULONG, PULONG);
 typedef NTSTATUS(WINAPI *NtQuerySystemInformation_t)(SYSTEM_INFORMATION_CLASS, PVOID, ULONG, PULONG);
 typedef NTSTATUS(WINAPI *PNtSetInformationThread)(HANDLE ThreadHandle, THREADINFOCLASS ThreadInformationClass,
                                                   PVOID ThreadInformation, ULONG ThreadInformationLength);
-typedef enum _PROCESSINFOCLASS
+typedef enum _PROCESS_INFO_CLASS_INTERNAL
 {
-    ProcessBasicInformation = 0,
-    ProcessDebugPort = 7,
-    ProcessDebugFlags = 31,
-    ProcessDebugObjectHandle = 30
-} PROCESSINFOCLASS;
-typedef NTSTATUS(WINAPI *NtQueryInformationProcess_t)(HANDLE, PROCESSINFOCLASS, PVOID, ULONG, PULONG);
+    InternalProcessBasicInformation = 0,
+    InternalProcessDebugPort = 7,
+    InternalProcessDebugFlags = 31,
+    InternalProcessDebugObjectHandle = 30
+} PROCESS_INFO_CLASS_INTERNAL;
+typedef NTSTATUS(WINAPI *NtQueryInformationProcess_t)(HANDLE, PROCESS_INFO_CLASS_INTERNAL, PVOID, ULONG, PULONG);
 }
 
 // NT API函数指针将在SystemUtils命名空间中定义
@@ -406,7 +409,7 @@ static CallerValidationResult CheckCallerAddressSafe(PVOID caller_address)
 }
 
 // 路径规范化工具：转为规范绝对路径并统一为小写
-static std::wstring NormalizePathLowercase(const std::wstring &input)
+std::wstring SystemNormalizePathLowercase(const std::wstring &input)
 {
     try
     {
@@ -1211,8 +1214,11 @@ static ModuleValidationResult ValidateModule(const std::wstring &modulePath, Sys
     ModuleValidationResult result;
 
     // 1. 路径规范化（防止路径伪装）
-    // 1. 路径规范化（防止路径伪装）
-    std::wstring normalizedPath = NormalizePathLowercase(modulePath);
+    std::wstring normalizedPath;
+    try
+    {
+        normalizedPath = SystemNormalizePathLowercase(modulePath);
+    }
     catch (...)
     {
         normalizedPath = modulePath;
@@ -2478,7 +2484,7 @@ class AdvancedAntiDebugSensor : public ISensor
             {
                 DWORD_PTR debugPort = 0;
                 if (NT_SUCCESS(SystemUtils::g_pNtQueryInformationProcess(
-                        GetCurrentProcess(), (PROCESSINFOCLASS)7 /*ProcessDebugPort*/, &debugPort, sizeof(debugPort), NULL)))
+                        GetCurrentProcess(), InternalProcessDebugPort, &debugPort, sizeof(debugPort), NULL)))
                 {
                     if (debugPort != 0)
                     {
@@ -2504,7 +2510,7 @@ class AdvancedAntiDebugSensor : public ISensor
             {
                 DWORD debugFlags = 0;
                 if (NT_SUCCESS(SystemUtils::g_pNtQueryInformationProcess(
-                        GetCurrentProcess(), (PROCESSINFOCLASS)31 /*ProcessDebugFlags*/, &debugFlags, sizeof(debugFlags), NULL)))
+                        GetCurrentProcess(), InternalProcessDebugFlags, &debugFlags, sizeof(debugFlags), NULL)))
                 {
                     if (debugFlags == 0)
                     {
@@ -2754,7 +2760,7 @@ class DriverIntegritySensor : public ISensor
                 if (GetDeviceDriverFileNameW(drivers[i], szDriver, MAX_PATH))
                 {
                     std::wstring driverPath = szDriver;
-                    // Normalize path if it starts with \SystemRoot or ??\
+                    // Normalize path if it starts with \SystemRoot or ?? (backslashed path)
                     if (driverPath.find(L"\\SystemRoot\\") == 0)
                     {
                          WCHAR winDir[MAX_PATH];
@@ -3066,7 +3072,7 @@ class InlineHookSensor : public ISensor
         // 68 xx xx xx xx C3 (PUSH imm32 + RET)
         else if (hs.opcode == 0x68 && pFunc[hs.len] == 0xC3)
         {
-             targetAddr = (PVOID)hs.imm.imm32;
+             targetAddr = (PVOID)(uintptr_t)hs.imm.imm32;
              isHooked = true;
         }
 
@@ -5870,7 +5876,6 @@ class ThreadActivitySensor : public ISensor
 
         return oss.str();
     }
-    };
 };
 
 class ModuleActivitySensor : public ISensor
@@ -6010,6 +6015,7 @@ class ModuleActivitySensor : public ISensor
 
         return true;
     }
+};
 
 
 class MemorySecuritySensor : public ISensor
@@ -6318,8 +6324,6 @@ class MemorySecuritySensor : public ISensor
         if (ReadProcessMemory(hProcess, baseAddress, headerBuffer.data(), headerBuffer.size(), &bytesRead) &&
             bytesRead >= sizeof(IMAGE_DOS_HEADER))
         {
-            result.accessible = true;
-
             result.accessible = true;
 
             PIMAGE_DOS_HEADER pDos = (PIMAGE_DOS_HEADER)headerBuffer.data();
