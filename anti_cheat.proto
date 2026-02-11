@@ -444,6 +444,8 @@ message ClientConfig {
   // [新增] 传感器特定强制白名单 (内嵌在代码里的现在移出来)
   repeated string whitelisted_system_modules = 35;   // 核心系统模块 (ntdll.dll, kernel32.dll等)
   repeated string whitelisted_integrity_ignore_list = 36; // 完整性扫描忽略列表 (fmodex.dll等)
+  repeated string whitelisted_integrity_dirs = 37;
+  repeated string whitelisted_integrity_files = 38;
 }
 
 // 官方认可的第三方库配置
