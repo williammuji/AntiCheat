@@ -3,8 +3,11 @@
 #include "utils/SystemUtils.h"
 #include "Logger.h"
 #include "utils/Utils.h"
+#include "CheatConfigManager.h"
 #include <vector>
 #include <sstream>
+#include <set>
+#include <algorithm>
 
 extern "C" {
 #include "hde/hde32.h"
@@ -14,8 +17,8 @@ SensorExecutionResult InlineHookSensor::Execute(ScanContext &context)
 {
     m_lastFailureReason = anti_cheat::UNKNOWN_FAILURE;
 
-    // 关键系统模块列表
-    static const wchar_t* kSystemModules[] = {
+    // 基础系统模块列表 + 配置中的系统模块白名单
+    static const wchar_t* kDefaultSystemModules[] = {
         L"ntdll.dll",
         L"kernel32.dll",
         L"kernelbase.dll",
@@ -24,9 +27,20 @@ SensorExecutionResult InlineHookSensor::Execute(ScanContext &context)
         L"ws2_32.dll" // 网络API
     };
 
-    for (const auto& modName : kSystemModules)
+    std::set<std::wstring> moduleNames;
+    for (const auto &modName : kDefaultSystemModules)
     {
-        HMODULE hMod = GetModuleHandleW(modName);
+        moduleNames.insert(modName);
+    }
+    auto configuredSystemModules = context.GetWhitelistedSystemModules();
+    if (configuredSystemModules)
+    {
+        moduleNames.insert(configuredSystemModules->begin(), configuredSystemModules->end());
+    }
+
+    for (const auto& modName : moduleNames)
+    {
+        HMODULE hMod = GetModuleHandleW(modName.c_str());
         if (hMod)
         {
             CheckModuleExports(hMod, context);
@@ -40,13 +54,53 @@ SensorExecutionResult InlineHookSensor::Execute(ScanContext &context)
     return SensorExecutionResult::SUCCESS;
 }
 
+bool InlineHookSensor::IsModuleInUnifiedWhitelist(const std::wstring &modulePath, ScanContext &context) const
+{
+    std::wstring lowered = modulePath;
+    std::transform(lowered.begin(), lowered.end(), lowered.begin(), ::towlower);
+    if (Utils::IsWhitelistedModule(lowered))
+    {
+        return true;
+    }
+
+    auto ignoreList = context.GetWhitelistedIntegrityIgnoreList();
+    if (ignoreList)
+    {
+        const std::wstring name = Utils::GetFileName(lowered);
+        if (ignoreList->count(name) > 0)
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool InlineHookSensor::IsAddressWhitelisted(PVOID address, ScanContext &context) const
+{
+    HMODULE hModule = nullptr;
+    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            reinterpret_cast<LPCWSTR>(address), &hModule) ||
+        !hModule)
+    {
+        return false;
+    }
+
+    wchar_t modulePath[MAX_PATH] = {0};
+    if (GetModuleFileNameW(hModule, modulePath, MAX_PATH) == 0)
+    {
+        return false;
+    }
+    return IsModuleInUnifiedWhitelist(modulePath, context);
+}
+
 void InlineHookSensor::CheckModuleExports(HMODULE hMod, ScanContext& context)
 {
     PIMAGE_DOS_HEADER pDos = (PIMAGE_DOS_HEADER)hMod;
-    if (IsBadReadPtr(pDos, sizeof(IMAGE_DOS_HEADER)) || pDos->e_magic != IMAGE_DOS_SIGNATURE) return;
+    if (!SystemUtils::IsReadableMemory(pDos, sizeof(IMAGE_DOS_HEADER)) || pDos->e_magic != IMAGE_DOS_SIGNATURE) return;
 
     PIMAGE_NT_HEADERS pNt = (PIMAGE_NT_HEADERS)((BYTE*)hMod + pDos->e_lfanew);
-    if (IsBadReadPtr(pNt, sizeof(IMAGE_NT_HEADERS)) || pNt->Signature != IMAGE_NT_SIGNATURE) return;
+    if (!SystemUtils::IsReadableMemory(pNt, sizeof(IMAGE_NT_HEADERS)) || pNt->Signature != IMAGE_NT_SIGNATURE) return;
 
     DWORD exportDirRVA = pNt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress;
     if (exportDirRVA == 0) return;
@@ -54,7 +108,7 @@ void InlineHookSensor::CheckModuleExports(HMODULE hMod, ScanContext& context)
     DWORD exportDirSize = pNt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].Size;
 
     PIMAGE_EXPORT_DIRECTORY pExport = (PIMAGE_EXPORT_DIRECTORY)((BYTE*)hMod + exportDirRVA);
-    if (IsBadReadPtr(pExport, sizeof(IMAGE_EXPORT_DIRECTORY))) return;
+    if (!SystemUtils::IsReadableMemory(pExport, sizeof(IMAGE_EXPORT_DIRECTORY))) return;
 
     DWORD* pAddressOfFunctions = (DWORD*)((BYTE*)hMod + pExport->AddressOfFunctions);
     DWORD* pAddressOfNames = (DWORD*)((BYTE*)hMod + pExport->AddressOfNames);
@@ -62,16 +116,16 @@ void InlineHookSensor::CheckModuleExports(HMODULE hMod, ScanContext& context)
 
     for (DWORD i = 0; i < pExport->NumberOfNames; i++)
     {
-        if (IsBadReadPtr(&pAddressOfNames[i], sizeof(DWORD)) ||
-            IsBadReadPtr(&pAddressOfNameOrdinals[i], sizeof(WORD))) break;
+        if (!SystemUtils::IsReadableMemory(&pAddressOfNames[i], sizeof(DWORD)) ||
+            !SystemUtils::IsReadableMemory(&pAddressOfNameOrdinals[i], sizeof(WORD))) break;
 
         const char* funcName = (const char*)((BYTE*)hMod + pAddressOfNames[i]);
-        if (IsBadReadPtr(funcName, 1)) continue;
+        if (!SystemUtils::IsReadableMemory(funcName, 1)) continue;
 
         WORD ordinal = pAddressOfNameOrdinals[i];
         if (ordinal >= pExport->NumberOfFunctions) continue;
 
-        if (IsBadReadPtr(&pAddressOfFunctions[ordinal], sizeof(DWORD))) break;
+        if (!SystemUtils::IsReadableMemory(&pAddressOfFunctions[ordinal], sizeof(DWORD))) break;
 
         DWORD funcRVA = pAddressOfFunctions[ordinal];
 
@@ -82,7 +136,7 @@ void InlineHookSensor::CheckModuleExports(HMODULE hMod, ScanContext& context)
         }
 
         BYTE* pFunc = (BYTE*)hMod + funcRVA;
-        if (IsBadReadPtr(pFunc, 16)) continue;
+        if (!SystemUtils::IsReadableMemory(pFunc, 16)) continue;
 
         CheckFunction(pFunc, funcName, context);
     }
@@ -132,6 +186,10 @@ void InlineHookSensor::CheckFunction(BYTE* pFunc, const char* funcName, ScanCont
         {
              return;
         }
+        if (IsAddressWhitelisted(targetAddr, context))
+        {
+            return;
+        }
 
         std::ostringstream oss;
         oss << "Inline Hook Detected: " << funcName << " -> 0x" << std::hex << (uintptr_t)targetAddr;
@@ -141,7 +199,7 @@ void InlineHookSensor::CheckFunction(BYTE* pFunc, const char* funcName, ScanCont
 
 void InlineHookSensor::CheckHotpatchPreamble(BYTE* pPreamble, const char* funcName, ScanContext& context)
 {
-    if (IsBadReadPtr(pPreamble, 5)) return;
+    if (!SystemUtils::IsReadableMemory(pPreamble, 5)) return;
 
     // Hotpatch preamble is usually 5 NOPs or mov edi, edi...
     // But here we are checking for hook.
@@ -155,6 +213,10 @@ void InlineHookSensor::CheckHotpatchPreamble(BYTE* pPreamble, const char* funcNa
         if (context.IsAddressInLegitimateModule(targetAddr, modulePath))
         {
              return;
+        }
+        if (IsAddressWhitelisted(targetAddr, context))
+        {
+            return;
         }
 
         std::ostringstream oss;

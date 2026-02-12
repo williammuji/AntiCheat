@@ -4,6 +4,7 @@
 #include "../utils/SystemUtils.h"
 #include "../Logger.h"
 #include "../utils/Utils.h"
+#include "../CheatConfigManager.h"
 #include <string>
 #include <vector>
 #include <algorithm>
@@ -37,20 +38,31 @@ SensorExecutionResult DriverIntegritySensor::Execute(ScanContext &context)
             WCHAR szDriver[MAX_PATH];
             if (GetDeviceDriverFileNameW(drivers[i], szDriver, MAX_PATH))
             {
-                std::wstring driverPath = szDriver;
-                // Normalize path if it starts with \SystemRoot or ?? (backslashed path)
-                if (driverPath.find(L"\\SystemRoot\\") == 0)
-                {
-                     WCHAR winDir[MAX_PATH];
-                     GetWindowsDirectoryW(winDir, MAX_PATH);
-                     driverPath.replace(0, 12, std::wstring(winDir) + L"\\");
-                }
-                else if (driverPath.find(L"\\??\\") == 0)
-                {
-                     driverPath.replace(0, 4, L"");
-                }
+                std::wstring driverPath = SystemUtils::NormalizeKernelPathToWinPath(szDriver);
 
                 // Simple logic: verify signature
+                std::wstring normalizedPath = driverPath;
+                std::transform(normalizedPath.begin(), normalizedPath.end(), normalizedPath.begin(), ::towlower);
+                const std::wstring driverName = Utils::GetFileName(normalizedPath);
+
+                // Coarse-grained unified whitelist:
+                // 1) Global module whitelist policy (dirs/files/system)
+                // 2) Existing "system modules" name whitelist
+                bool isWhitelisted = Utils::IsWhitelistedModule(normalizedPath);
+                if (!isWhitelisted)
+                {
+                    auto systemModules = CheatConfigManager::GetInstance().GetWhitelistedSystemModules();
+                    if (systemModules && systemModules->count(driverName) > 0)
+                    {
+                        isWhitelisted = true;
+                    }
+                }
+
+                if (isWhitelisted)
+                {
+                    continue;
+                }
+
                 if (!VerifyDriverSignature(driverPath))
                 {
                     std::string u8Path = Utils::WideToString(driverPath);

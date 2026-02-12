@@ -56,7 +56,7 @@ void ProcessHandleSensor::HandleBufferManager::Reset()
 uint32_t ProcessHandleSensor::GetProcessCreationTime(DWORD pid)
 {
     // 使用更轻量的方式：检查进程是否仍然存在
-    HANDLE hProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    HANDLE hProcess = OpenProcess(SystemUtils::GetProcessQueryAccessMask(), FALSE, pid);
     if (!hProcess)
         return 0;  // 进程不存在
 
@@ -95,8 +95,9 @@ static bool IsHandlePointingToUs_Safe_Impl(HANDLE remoteHandleValue, DWORD remot
     bool isPointingToUs = false;
 
     // 复制句柄到本进程
+    const DWORD queryAccess = SystemUtils::GetProcessQueryAccessMask();
     if (DuplicateHandle(hSourceProc, remoteHandleValue, GetCurrentProcess(), &hDup,
-                        PROCESS_QUERY_LIMITED_INFORMATION, FALSE, 0))
+                        queryAccess, FALSE, 0))
     {
         // 检查句柄指向的目标 PID
         if (hDup)
@@ -346,7 +347,7 @@ SensorExecutionResult ProcessHandleSensor::Execute(ScanContext &context)
         Utils::SignatureStatus signatureStatus = Utils::SignatureStatus::UNKNOWN;
 
         using UniqueHandle = std::unique_ptr<void, decltype(&::CloseHandle)>;
-        UniqueHandle hOwnerProcess(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, ownerPid),
+        UniqueHandle hOwnerProcess(OpenProcess(SystemUtils::GetProcessQueryAccessMask(), FALSE, ownerPid),
                                    &::CloseHandle);
 
         if (!hOwnerProcess.get())
@@ -440,8 +441,9 @@ SensorExecutionResult ProcessHandleSensor::Execute(ScanContext &context)
                            ::towlower);
 
             // 白名单或系统目录
-            const auto &knownGoodProcesses = CheatConfigManager::GetInstance().GetKnownGoodProcesses();
-            if (knownGoodProcesses->count(lowerProcessName) > 0 || SystemUtils::IsSystemDirectoryPath(ownerProcessPath))
+            auto knownGoodProcesses = CheatConfigManager::GetInstance().GetKnownGoodProcesses();
+            if ((knownGoodProcesses && knownGoodProcesses->count(lowerProcessName) > 0) ||
+                SystemUtils::IsSystemDirectoryPath(ownerProcessPath))
             {
                 signatureStatus = Utils::SignatureStatus::TRUSTED;
             }

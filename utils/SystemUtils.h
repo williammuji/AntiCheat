@@ -200,6 +200,14 @@ typedef VOID (CALLBACK *PLDR_DLL_NOTIFICATION_FUNCTION)(
 
 namespace SystemUtils
 {
+    enum class ApiCapability : uint64_t
+    {
+        ProcessQueryLimitedInformation = 1ull << 0,  // Vista+
+        LdrDllNotification = 1ull << 1,              // Win8+
+        ProcessMitigationPolicy = 1ull << 2,         // Win8+
+        WmiAsyncProcessMonitor = 1ull << 3,          // Prefer Vista+; XP falls back
+    };
+
     // Global API Pointers
     extern NtQueryInformationThread_t g_pNtQueryInformationThread;
     extern NtQuerySystemInformation_t g_pNtQuerySystemInformation;
@@ -219,6 +227,9 @@ namespace SystemUtils
     };
 
     WindowsVersion GetWindowsVersion();
+    uint64_t GetApiCapabilityMask();
+    bool HasApiCapability(ApiCapability capability);
+    DWORD GetProcessQueryAccessMask();
 
     bool GetModuleCodeSectionInfo(HMODULE hModule, PVOID &outBase, DWORD &outSize);
     PBYTE FindPattern(PBYTE base, SIZE_T size, const BYTE *pattern, SIZE_T patternSize, BYTE wildcard = 0x00);
@@ -234,8 +245,10 @@ namespace SystemUtils
 
     CallerValidationResult CheckCallerAddressSafe(PVOID caller_address);
     std::wstring SystemNormalizePathLowercase(const std::wstring &input);
+    std::wstring NormalizeKernelPathToWinPath(const std::wstring &input);
     int IsVbsEnabled();
     bool IsValidPointer(const void *ptr, size_t size);
+    bool IsReadableMemory(const void *ptr, size_t size);
 
     // Decoy Handler for VEH detection
     LONG WINAPI DecoyVehHandler(PEXCEPTION_POINTERS ExceptionInfo);

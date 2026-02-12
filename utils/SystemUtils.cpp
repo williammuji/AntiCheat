@@ -94,6 +94,51 @@ namespace SystemUtils
         return WindowsVersion::Win_Unknown;
     }
 
+    static uint64_t BuildCapabilityMask(WindowsVersion version)
+    {
+        uint64_t mask = 0;
+        switch (version)
+        {
+            case WindowsVersion::Win_XP:
+                // XP: keep conservative capability set and rely on fallbacks.
+                break;
+            case WindowsVersion::Win_Vista_Win7:
+                mask |= static_cast<uint64_t>(ApiCapability::ProcessQueryLimitedInformation);
+                mask |= static_cast<uint64_t>(ApiCapability::WmiAsyncProcessMonitor);
+                break;
+            case WindowsVersion::Win_8_Win81:
+            case WindowsVersion::Win_10:
+            case WindowsVersion::Win_11:
+                mask |= static_cast<uint64_t>(ApiCapability::ProcessQueryLimitedInformation);
+                mask |= static_cast<uint64_t>(ApiCapability::LdrDllNotification);
+                mask |= static_cast<uint64_t>(ApiCapability::ProcessMitigationPolicy);
+                mask |= static_cast<uint64_t>(ApiCapability::WmiAsyncProcessMonitor);
+                break;
+            case WindowsVersion::Win_Unknown:
+            default:
+                // Unknown OS: use safer fallbacks by default.
+                break;
+        }
+        return mask;
+    }
+
+    uint64_t GetApiCapabilityMask()
+    {
+        static const uint64_t kCapabilities = BuildCapabilityMask(GetWindowsVersion());
+        return kCapabilities;
+    }
+
+    bool HasApiCapability(ApiCapability capability)
+    {
+        return (GetApiCapabilityMask() & static_cast<uint64_t>(capability)) != 0;
+    }
+
+    DWORD GetProcessQueryAccessMask()
+    {
+        return HasApiCapability(ApiCapability::ProcessQueryLimitedInformation) ? PROCESS_QUERY_LIMITED_INFORMATION
+                                                                               : PROCESS_QUERY_INFORMATION;
+    }
+
     PBYTE FindPattern(PBYTE base, SIZE_T size, const BYTE *pattern, SIZE_T patternSize, BYTE wildcard)
     {
         for (SIZE_T i = 0; i < size - patternSize; ++i)
@@ -268,6 +313,24 @@ namespace SystemUtils
         return s;
     }
 
+    std::wstring NormalizeKernelPathToWinPath(const std::wstring &input)
+    {
+        std::wstring out = input;
+        if (out.find(L"\\SystemRoot\\") == 0)
+        {
+            wchar_t winDir[MAX_PATH] = {0};
+            if (GetWindowsDirectoryW(winDir, MAX_PATH) > 0)
+            {
+                out.replace(0, 12, std::wstring(winDir) + L"\\");
+            }
+        }
+        else if (out.find(L"\\??\\") == 0)
+        {
+            out.replace(0, 4, L"");
+        }
+        return SystemNormalizePathLowercase(out);
+    }
+
     int IsVbsEnabled()
     {
         HKEY hKey;
@@ -286,19 +349,55 @@ namespace SystemUtils
         return (enabled != 0) ? 1 : 0;
     }
 
-    bool IsValidPointer(const void *ptr, size_t size)
+    bool IsReadableMemory(const void *ptr, size_t size)
     {
         if (!ptr || size == 0) return false;
-        uintptr_t start_addr = reinterpret_cast<uintptr_t>(ptr);
-        if (size > 0 && start_addr > (UINTPTR_MAX - size)) return false;
+        const uintptr_t startAddr = reinterpret_cast<uintptr_t>(ptr);
+        if (startAddr > (UINTPTR_MAX - size)) return false;
+        const uintptr_t endAddrExclusive = startAddr + size;
 
-        MEMORY_BASIC_INFORMATION mbi;
-        if (VirtualQuery(ptr, &mbi, sizeof(mbi)) == 0) return false;
+        uintptr_t cursor = startAddr;
+        while (cursor < endAddrExclusive)
+        {
+            MEMORY_BASIC_INFORMATION mbi = {};
+            if (VirtualQuery(reinterpret_cast<LPCVOID>(cursor), &mbi, sizeof(mbi)) == 0)
+            {
+                return false;
+            }
 
-        if (mbi.State != MEM_COMMIT || (mbi.Protect & PAGE_NOACCESS) || (mbi.Protect & PAGE_GUARD))
+            if (mbi.State != MEM_COMMIT || (mbi.Protect & PAGE_NOACCESS) || (mbi.Protect & PAGE_GUARD))
+            {
+                return false;
+            }
+
+            const uintptr_t regionStart = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
+            const uintptr_t regionEnd = regionStart + mbi.RegionSize;
+            if (regionEnd <= cursor)
+            {
+                return false;
+            }
+            cursor = regionEnd;
+        }
+
+        // SEH probe to prevent stale VirtualQuery metadata from causing AV later.
+        __try
+        {
+            volatile const BYTE first = *reinterpret_cast<const BYTE *>(startAddr);
+            (void)first;
+            volatile const BYTE last = *reinterpret_cast<const BYTE *>(endAddrExclusive - 1);
+            (void)last;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
             return false;
+        }
 
-        return (start_addr + size) <= (reinterpret_cast<uintptr_t>(mbi.BaseAddress) + mbi.RegionSize);
+        return true;
+    }
+
+    bool IsValidPointer(const void *ptr, size_t size)
+    {
+        return IsReadableMemory(ptr, size);
     }
 
     LONG WINAPI DecoyVehHandler(PEXCEPTION_POINTERS ExceptionInfo)

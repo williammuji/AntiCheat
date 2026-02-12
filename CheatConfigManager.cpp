@@ -1,4 +1,4 @@
-﻿#include "CheatConfigManager.h"
+#include "CheatConfigManager.h"
 #include "CheatMonitor.h"  // 为了访问 Utils::StringToWide 和通知 CheatMonitor
 #include <stdexcept>
 #include <algorithm>  // for std::replace
@@ -297,10 +297,10 @@ std::shared_ptr<const std::unordered_set<std::wstring>> CheatConfigManager::GetW
 void CheatConfigManager::SetDefaultValues(ConfigData& configData)
 {
     // 生产环境优化：调整扫描和上报间隔，平衡性能与安全
-    configData.config->set_base_scan_interval_seconds(15);            // 轻量级扫描间隔15秒 (高频监测)
-    configData.config->set_heavy_scan_interval_minutes(2);            // 重量级扫描间隔2分钟 (CPU低负载)
-    configData.config->set_report_upload_interval_minutes(10);        // 证据上报间隔10分钟 (快速响应)
-    configData.config->set_sensor_stats_upload_interval_minutes(60);  // 传感器统计上报间隔60分钟
+    configData.config->set_base_scan_interval_seconds(30);            // 轻量级扫描间隔30秒 (高频监测)
+    configData.config->set_heavy_scan_interval_minutes(10);           // 重量级扫描间隔10分钟 (CPU低负载)
+    configData.config->set_report_upload_interval_minutes(15);        // 证据上报间隔15分钟 (快速响应)
+    configData.config->set_sensor_stats_upload_interval_minutes(30);  // 传感器统计上报间隔30分钟
 
     // 1. 有害进程名 (Harmful Process Names)
     configData.config->clear_harmful_process_names();
@@ -723,7 +723,7 @@ void CheatConfigManager::SetDefaultValues(ConfigData& configData)
     }
 
     // --- 行为控制参数 ---
-    configData.config->set_report_cooldown_minutes(10);  // 从60min减少到10min，允许更快上报不同作弊行为
+    configData.config->set_report_cooldown_minutes(30);  // 从60min减少到30min，允许更快上报不同作弊行为
     configData.config->set_jitter_milliseconds(2000);    // 从3000ms减少到2000ms，检测周期更紧凑
 
     // --- 容量与预算控制 ---
@@ -742,8 +742,7 @@ void CheatConfigManager::SetDefaultValues(ConfigData& configData)
 
     // --- 通用配置参数（所有Sensor共用） ---
     configData.config->set_max_code_section_size(100 * 1024 * 1024);  // 最大代码节大小(100MB) - 覆盖大部分游戏模块
-    configData.config->set_heavy_scan_budget_ms(
-            2500);  // HEAVY级传感器预算(2500ms) - 为了允许扫描所有模块，增加预算
+    configData.config->set_heavy_scan_budget_ms(2500);  // HEAVY级传感器预算(2500ms) - 为了允许扫描所有模块，增加预算
 
     // 注意：CRITICAL级传感器使用相同的heavy_scan_budget_ms，但通过分段扫描机制确保单次不超时
     // CRITICAL级传感器：ProcessHandle, ModuleIntegrity, ProcessAndWindowMonitor
@@ -757,29 +756,29 @@ void CheatConfigManager::SetDefaultValues(ConfigData& configData)
     configData.config->set_max_window_count(300);        // 最大窗口数量限制(300个) - 适应多窗口环境
 
     // [新增] ProcessHandleSensor配置参数 (CRITICAL级 - 分段扫描)
-    configData.config->set_max_handle_scan_count(
-            800000);                                   // 最大句柄扫描数量(800K) - 基于A/B测试，成功耗时仅116ms
-    configData.config->set_initial_buffer_size_mb(16); // 初始缓冲区大小(16MB) - 增加以覆盖90k+句柄场景, 减少扩容
-    configData.config->set_max_buffer_size_mb(64);     // 最大缓冲区大小(64MB) - 处理大量句柄场景
-    configData.config->set_max_pid_attempts_per_scan(2000);  // 单次扫描最多尝试的新PID数量(2000个) - 性能富余，大幅增加覆盖率
-    configData.config->set_max_modules_per_scan(512); // ModuleIntegritySensor单次扫描模块数(512个) - 尝试扫描所有模块
-    configData.config->set_pid_throttle_minutes(30);  // PID节流时长(30分钟) - 避免重复扫描同一PID
+    configData.config->set_max_handle_scan_count(800000);  // 最大句柄扫描数量(800K) - 基于A/B测试，成功耗时仅116ms
+    configData.config->set_initial_buffer_size_mb(16);     // 初始缓冲区大小(16MB) - 增加以覆盖90k+句柄场景, 减少扩容
+    configData.config->set_max_buffer_size_mb(64);         // 最大缓冲区大小(64MB) - 处理大量句柄场景
+    configData.config->set_max_pid_attempts_per_scan(
+            2000);                                     // 单次扫描最多尝试的新PID数量(2000个) - 性能富余，大幅增加覆盖率
+    configData.config->set_max_modules_per_scan(512);  // ModuleIntegritySensor单次扫描模块数(512个) - 尝试扫描所有模块
+    configData.config->set_pid_throttle_minutes(30);   // PID节流时长(30分钟) - 避免重复扫描同一PID
 
     // 新增：最低OS版本要求
-    configData.config->set_min_os_version(anti_cheat::OS_WIN10);  // 默认要求Windows 10+
+    configData.config->set_min_os_version(anti_cheat::OS_WIN7_SP1);  // 默认要求Windows 7 SP1+
 
     // 新增：快照上报配置
     configData.config->set_snapshot_upload_interval_minutes(30);  // 默认30分钟上报一次
     configData.config->set_enable_snapshot_upload(true);          // 默认启用快照上报
 
-    // 新增：官方第三方库白名单配置
+    // 新增：官方第三方库白名单配置（示范数据；线上以服务端下发覆盖）
     configData.config->clear_trusted_third_party_modules();
 
     // 添加 fmodex.dll 配置
     auto* fmod_module = configData.config->add_trusted_third_party_modules();
     fmod_module->set_module_name("fmodex.dll");
-    fmod_module->set_module_size(0);  // 0表示不检查大小
-    fmod_module->add_code_hashes("sha256:placeholder_fmodex_hash");  // 实际部署时需要替换为真实哈希
+    fmod_module->set_module_size(0);                                    // 0表示不检查大小
+    fmod_module->add_code_hashes("sha256:placeholder_fmodex_hash");     // 实际部署时需要替换为真实哈希
     fmod_module->add_code_hashes("sha1:placeholder_fmodex_hash_sha1");  // Windows XP兼容
     fmod_module->set_description("FMOD音频引擎");
     fmod_module->set_enabled(true);
@@ -787,13 +786,13 @@ void CheatConfigManager::SetDefaultValues(ConfigData& configData)
     // 添加 aksoundenginedll_d.dll 配置
     auto* ak_module = configData.config->add_trusted_third_party_modules();
     ak_module->set_module_name("aksoundenginedll_d.dll");
-    ak_module->set_module_size(0);  // 0表示不检查大小
-    ak_module->add_code_hashes("sha256:placeholder_ak_hash");  // 实际部署时需要替换为真实哈希
+    ak_module->set_module_size(0);                                // 0表示不检查大小
+    ak_module->add_code_hashes("sha256:placeholder_ak_hash");     // 实际部署时需要替换为真实哈希
     ak_module->add_code_hashes("sha1:placeholder_ak_hash_sha1");  // Windows XP兼容
     ak_module->set_description("Audiokinetic Wwise音频引擎");
     ak_module->set_enabled(true);
 
-    // [新增] 模块完整性检测白名单默认值
+    // [新增] 模块完整性检测白名单默认值（示范数据；线上以服务端下发覆盖）
     configData.config->clear_whitelisted_integrity_dirs();
     configData.config->add_whitelisted_integrity_dirs("\\program files\\microsoft office\\");
     configData.config->add_whitelisted_integrity_dirs("\\program files (x86)\\microsoft office\\");
@@ -838,7 +837,7 @@ void CheatConfigManager::SetDefaultValues(ConfigData& configData)
     configData.config->add_whitelisted_integrity_files("wow64win.dll");
     configData.config->add_whitelisted_integrity_files("wow64cpu.dll");
 
-    // 6. 传感器特有白名单 (系统级)
+    // 6. 传感器特有白名单 (系统级，示范数据；线上以服务端下发覆盖)
     configData.config->clear_whitelisted_system_modules();
     configData.config->add_whitelisted_system_modules("ntdll.dll");
     configData.config->add_whitelisted_system_modules("kernel32.dll");
@@ -923,13 +922,15 @@ void CheatConfigManager::UpdateWideStringCaches(ConfigData& configData)
 
 // --- 官方第三方库白名单相关方法 ---
 
-std::shared_ptr<const std::vector<CheatConfigManager::TrustedThirdPartyModule>> CheatConfigManager::GetTrustedThirdPartyModules() const
+std::shared_ptr<const std::vector<CheatConfigManager::TrustedThirdPartyModule>>
+CheatConfigManager::GetTrustedThirdPartyModules() const
 {
     auto config = GetCurrentConfig();
     return std::shared_ptr<const std::vector<TrustedThirdPartyModule>>(config, &config->trustedThirdPartyModules);
 }
 
-bool CheatConfigManager::IsTrustedThirdPartyModule(const std::wstring& module_name, uint64_t module_size, const std::string& code_hash) const
+bool CheatConfigManager::IsTrustedThirdPartyModule(const std::wstring& module_name, uint64_t module_size,
+                                                   const std::string& code_hash) const
 {
     auto trusted_modules = GetTrustedThirdPartyModules();
 
