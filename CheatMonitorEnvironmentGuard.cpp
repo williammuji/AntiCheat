@@ -342,8 +342,8 @@ VOID CALLBACK CheatMonitorImpl::DllLoadCallback(ULONG NotificationReason, const 
 {
     if (NotificationReason == LDR_DLL_NOTIFICATION_REASON_LOADED)
     {
-        auto *pimpl = static_cast<CheatMonitor::Pimpl *>(Context);
-        if (pimpl) pimpl->OnDllLoaded(NotificationData->Loaded);
+        auto *impl = static_cast<CheatMonitorImpl *>(Context);
+        if (impl) impl->OnDllLoaded(NotificationData->Loaded);
     }
 }
 
