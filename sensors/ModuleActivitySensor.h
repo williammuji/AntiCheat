@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../ISensor.h"
+#include "../utils/Utils.h"
 
 #include <chrono>
 
@@ -12,5 +13,9 @@ public:
     SensorExecutionResult Execute(SensorRuntimeContext &context) override;
 
 private:
+   friend class ModuleActivitySensorTestAccess;
+
+   static bool ShouldReportUnknownModule(bool isWhitelisted, const Utils::ModuleValidationResult &validation);
+
    bool ScanModulesWithTimeout(SensorRuntimeContext &context, int budget_ms, const std::chrono::steady_clock::time_point &startTime);
 };

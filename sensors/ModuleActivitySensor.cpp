@@ -8,6 +8,15 @@
 #include <algorithm>
 #include <sstream>
 
+bool ModuleActivitySensor::ShouldReportUnknownModule(bool isWhitelisted, const Utils::ModuleValidationResult &validation)
+{
+    if (isWhitelisted)
+    {
+        return false;
+    }
+    return !validation.isTrusted;
+}
+
 SensorExecutionResult ModuleActivitySensor::Execute(SensorRuntimeContext &context)
 {
     // 重置失败原因
@@ -106,7 +115,7 @@ bool ModuleActivitySensor::ScanModulesWithTimeout(SensorRuntimeContext &context,
             validation = Utils::ValidateModule(modulePath, winVer);
         }
 
-        if (validation.isTrusted)
+        if (!ShouldReportUnknownModule(isWhitelisted, validation))
         {
             context.InsertKnownModule(hModule);
         }

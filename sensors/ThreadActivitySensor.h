@@ -13,6 +13,11 @@ public:
     SensorExecutionResult Execute(SensorRuntimeContext &context) override;
 
 private:
+   friend class ThreadActivitySensorTestAccess;
+
+   static bool IsIgnorableNtStatus(NTSTATUS status);
+   static bool HasHardwareBreakpoints(const CONTEXT &ctx);
+
    bool ScanThreadsWithTimeout(SensorRuntimeContext &context, int budget_ms, const std::chrono::steady_clock::time_point &startTime);
    void AnalyzeNewThread(SensorRuntimeContext &context, DWORD threadId);
    void AnalyzeThreadIntegrity(SensorRuntimeContext &context, DWORD threadId);

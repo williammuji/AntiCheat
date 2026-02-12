@@ -14,6 +14,11 @@ public:
     SensorExecutionResult Execute(SensorRuntimeContext &context) override;
 
 private:
+    friend class MemorySecuritySensorTestAccess;
+    static bool IsRwXProtection(DWORD protect);
+    static bool IsRxOnlyProtection(DWORD protect);
+    static bool ShouldSkipLowAddressSmallRwx(uintptr_t baseAddr, SIZE_T regionSize);
+
     struct HiddenMemoryCheckResult
     {
         bool shouldReport = false;

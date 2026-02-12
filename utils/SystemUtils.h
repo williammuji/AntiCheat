@@ -216,6 +216,14 @@ namespace SystemUtils
 
     void EnsureNtApisLoaded();
 
+    struct NtApiBindings
+    {
+        NtQueryInformationThread_t queryInformationThread = nullptr;
+        NtQuerySystemInformation_t querySystemInformation = nullptr;
+        PNtSetInformationThread setInformationThread = nullptr;
+        NtQueryInformationProcess_t queryInformationProcess = nullptr;
+    };
+
     enum WindowsVersion
     {
         Win_XP,
@@ -227,9 +235,14 @@ namespace SystemUtils
     };
 
     WindowsVersion GetWindowsVersion();
+    void SetWindowsVersionOverrideForTesting(WindowsVersion version);
+    void ClearWindowsVersionOverrideForTesting();
+    bool HasWindowsVersionOverrideForTesting();
     uint64_t GetApiCapabilityMask();
     bool HasApiCapability(ApiCapability capability);
     DWORD GetProcessQueryAccessMask();
+    void SetNtApiBindingsForTesting(const NtApiBindings &bindings);
+    void ResetNtApiBindingsForTesting();
 
     bool GetModuleCodeSectionInfo(HMODULE hModule, PVOID &outBase, DWORD &outSize);
     PBYTE FindPattern(PBYTE base, SIZE_T size, const BYTE *pattern, SIZE_T patternSize, BYTE wildcard = 0x00);

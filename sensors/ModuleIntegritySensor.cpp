@@ -8,6 +8,25 @@
 #include <algorithm>
 #include <sstream>
 
+bool ModuleIntegritySensor::IsWritableCodeProtection(DWORD protect)
+{
+    return (protect & (PAGE_EXECUTE_READWRITE | PAGE_READWRITE | PAGE_EXECUTE_WRITECOPY | PAGE_WRITECOPY)) != 0;
+}
+
+bool ModuleIntegritySensor::ShouldLearnTrustedBaseline(bool validationTrusted)
+{
+    return validationTrusted;
+}
+
+bool ModuleIntegritySensor::ShouldEmitTamperEvidence(bool isSelfModule, bool isWhitelisted)
+{
+    if (isSelfModule)
+    {
+        return true;
+    }
+    return !isWhitelisted;
+}
+
 SensorExecutionResult ModuleIntegritySensor::Execute(SensorRuntimeContext &context)
 {
     // 重置失败原因
@@ -221,7 +240,7 @@ void ModuleIntegritySensor::ValidateModuleCodeIntegrity(const wchar_t *modulePat
     MEMORY_BASIC_INFORMATION mbi = {};
     if (VirtualQuery(codeBase, &mbi, sizeof(mbi)))
     {
-         if (mbi.Protect & (PAGE_EXECUTE_READWRITE | PAGE_READWRITE | PAGE_EXECUTE_WRITECOPY | PAGE_WRITECOPY))
+         if (IsWritableCodeProtection(mbi.Protect))
          {
              std::string u8Path = Utils::WideToString(modulePath_w);
              // 忽略自身模块（某些加壳或混淆可能导致自身代码段可写）
@@ -267,7 +286,7 @@ void ModuleIntegritySensor::ValidateModuleCodeIntegrity(const wchar_t *modulePat
             validation = Utils::ValidateModule(modulePath, context.GetWindowsVersion());
         }
 
-        if (validation.isTrusted)
+        if (ShouldLearnTrustedBaseline(validation.isTrusted))
         {
             // 生成哈希字符串用于日志
             std::string hash_str;
@@ -343,7 +362,7 @@ void ModuleIntegritySensor::ValidateModuleCodeIntegrity(const wchar_t *modulePat
                             baselineHash_str.c_str(), codeSize);
                 // 不调用 AddEvidence，避免误报
             }
-            else
+            else if (ShouldEmitTamperEvidence(isSelfModule, isWhitelisted))
             {
                 // 非白名单模块被篡改：真正可疑的情况
                 LOG_ERROR_F(AntiCheatLogger::LogCategory::SENSOR,

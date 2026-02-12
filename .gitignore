@@ -39,6 +39,8 @@ vcpkg/
 *.txt
 *.md
 !README.md
+!docs/
+!docs/*.md
 
 
 # Temporary files

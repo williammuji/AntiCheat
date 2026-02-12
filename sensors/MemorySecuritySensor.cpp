@@ -9,6 +9,23 @@
 #include <algorithm>
 #include <tlhelp32.h>
 
+bool MemorySecuritySensor::IsRwXProtection(DWORD protect)
+{
+    return (protect & PAGE_EXECUTE_READWRITE) || (protect & PAGE_EXECUTE_WRITECOPY);
+}
+
+bool MemorySecuritySensor::IsRxOnlyProtection(DWORD protect)
+{
+    return (protect & PAGE_EXECUTE_READ) && !IsRwXProtection(protect);
+}
+
+bool MemorySecuritySensor::ShouldSkipLowAddressSmallRwx(uintptr_t baseAddr, SIZE_T regionSize)
+{
+    const SIZE_T lowAddressThreshold = 0x200000;
+    const SIZE_T smallRwxThreshold = 64 * 1024;
+    return baseAddr < lowAddressThreshold && regionSize < smallRwxThreshold;
+}
+
 SensorExecutionResult MemorySecuritySensor::Execute(SensorRuntimeContext &context)
 {
     // 重置失败原因
@@ -183,8 +200,8 @@ void MemorySecuritySensor::DetectPrivateExecutableMemory(SensorRuntimeContext &c
     // - 覆盖层软件 (Steam, Discord, 录屏软件)
     // - 显卡驱动的shader编译器
     // 真正的外挂通常需要RWX权限（可写可执行）来动态修改代码
-    const bool isRWX = (mbi.Protect & PAGE_EXECUTE_READWRITE) || (mbi.Protect & PAGE_EXECUTE_WRITECOPY);
-    const bool isRXOnly = (mbi.Protect & PAGE_EXECUTE_READ) && !isRWX;
+    const bool isRWX = IsRwXProtection(mbi.Protect);
+    const bool isRXOnly = IsRxOnlyProtection(mbi.Protect);
 
     // 【核心策略】：完全忽略RX-only内存，只检测RWX内存
     // RWX是真正危险的权限组合，合法软件极少使用
@@ -207,10 +224,7 @@ void MemorySecuritySensor::DetectPrivateExecutableMemory(SensorRuntimeContext &c
             // 【高级降噪】：过滤低地址小块 RWX 内存（系统 trampolines/DEP）
             // Windows DEP 机制和系统 thunks 常在低地址（< 2MB）分配单页或多页的 RWX
             // 真正的外挂通常在高地址分配较大区域
-            const SIZE_T lowAddressThreshold = 0x200000;  // 2MB
-            const SIZE_T smallRwxThreshold = 64 * 1024;   // 64KB
-
-            if (base < lowAddressThreshold && mbi.RegionSize < smallRwxThreshold)
+            if (ShouldSkipLowAddressSmallRwx(base, mbi.RegionSize))
             {
                 // 低地址小块 RWX，很可能是系统合法分配，跳过
                 LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR,
