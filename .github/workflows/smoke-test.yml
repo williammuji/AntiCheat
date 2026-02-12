@@ -208,7 +208,9 @@ jobs:
 
         # Test 4: Check sensor weight implementation
         Write-Host "`nTest 4: Check sensor weight classification..."
-        $monitorContent = Get-Content "CheatMonitor.cpp" -Raw
+        $monitorContent = Get-Content "CheatMonitorScheduler.cpp" -Raw
+        $sensorHeaders = Get-ChildItem "sensors/*.h" | Get-Content -Raw
+        $weightSearchContent = $monitorContent + ($sensorHeaders -join "`n")
 
         $sensorChecks = @(
           "SensorWeight::LIGHT",
@@ -217,7 +219,7 @@ jobs:
         )
 
         foreach ($weight in $sensorChecks) {
-          $matches = ([regex]::Matches($monitorContent, [regex]::Escape($weight))).Count
+          $matches = ([regex]::Matches($weightSearchContent, [regex]::Escape($weight))).Count
           if ($matches -gt 0) {
             Write-Host "✅ $weight - $matches sensors"
             $testResults += "PASS: $weight ($matches sensors)"
