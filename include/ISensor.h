@@ -3,7 +3,7 @@
 #include <string>
 #include "anti_cheat.pb.h"
 
-#include "ScanContext.h"
+#include "SensorRuntimeContext.h"
 
 // 传感器权重分级枚举
 enum class SensorWeight
@@ -28,7 +28,7 @@ class ISensor
     virtual ~ISensor() = default;
     virtual const char *GetName() const = 0;     // 用于日志和调试
     virtual SensorWeight GetWeight() const = 0;  // 获取传感器权重分级
-    virtual SensorExecutionResult Execute(ScanContext &context) = 0;
+    virtual SensorExecutionResult Execute(SensorRuntimeContext &context) = 0;
 
    public:
     // 获取最后一次失败原因 - 基类实现
@@ -48,7 +48,7 @@ class ISensor
     anti_cheat::SensorFailureReason m_lastFailureReason = anti_cheat::UNKNOWN_FAILURE;
 
     // 统一的OS版本检查接口 - 内联实现
-    bool IsOsSupported(ScanContext &context) const
+    bool IsOsSupported(SensorRuntimeContext &context) const
     {
         return context.IsCurrentOsSupported();
     }
