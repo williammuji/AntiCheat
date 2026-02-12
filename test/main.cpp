@@ -3,19 +3,30 @@
 #include <chrono>
 #include <iostream>
 #include <thread>
-#include <cstdlib>
+#include <string>
 
 
-// 一个简单的函数，在新线程中运行，以测试新线程检测功能
-void TestThreadFunction()
+int main(int argc, char **argv)
 {
-  std::cout << "[Test Thread] >>>> Hello from the new thread! Sleeping for 5 seconds. <<<<" << std::endl;
-  std::this_thread::sleep_for(std::chrono::seconds(5));
-  std::cout << "[Test Thread] >>>> Exiting. <<<<" << std::endl;
-}
+  bool quickMode = false;
+  bool interactive = false;
+  for (int i = 1; i < argc; ++i)
+  {
+    const std::string arg(argv[i]);
+    if (arg == "--quick")
+    {
+      quickMode = true;
+    }
+    else if (arg == "--interactive")
+    {
+      interactive = true;
+    }
+  }
 
-int main()
-{
+  const auto baselineWait = quickMode ? std::chrono::seconds(2) : std::chrono::seconds(10);
+  const auto detectionWait = quickMode ? std::chrono::seconds(3) : std::chrono::seconds(20);
+  const auto testThreadWait = quickMode ? std::chrono::seconds(1) : std::chrono::seconds(5);
+
   std::cout << "--- Anti-Cheat Test Harness ---" << std::endl;
   std::cout << "This program will test the core functionalities of the CheatMonitor library." << std::endl;
 
@@ -35,8 +46,8 @@ int main()
   std::cout << "     Note: Snapshot upload should be triggered automatically on login." << std::endl;
 
   // 3. 等待一段时间，让监控系统建立基线
-  std::cout << "\n[Step 3] Waiting for 10 seconds for baseline establishment..." << std::endl;
-  std::this_thread::sleep_for(std::chrono::seconds(10));
+  std::cout << "\n[Step 3] Waiting for baseline establishment..." << std::endl;
+  std::this_thread::sleep_for(baselineWait);
 
   // 4. 执行一系列应该被检测到的测试行为
   std::cout << "\n[Step 4] Performing test actions to be detected..." << std::endl;
@@ -55,12 +66,16 @@ int main()
 
   // 测试 B: 创建一个新线程
   std::cout << "  -> Test B: Creating a new thread..." << std::endl;
-  std::thread testThread(TestThreadFunction);
+  std::thread testThread([&testThreadWait]() {
+    std::cout << "[Test Thread] >>>> Hello from the new thread! <<<<" << std::endl;
+    std::this_thread::sleep_for(testThreadWait);
+    std::cout << "[Test Thread] >>>> Exiting. <<<<" << std::endl;
+  });
   std::cout << "     New thread created. This should be detected by the new activity scanner." << std::endl;
 
   // 5. 等待足够长的时间，让后台扫描线程有机会运行并检测到这些行为
-  std::cout << "\n[Step 5] Waiting for 20 seconds for scans to detect activities..." << std::endl;
-  std::this_thread::sleep_for(std::chrono::seconds(20));
+  std::cout << "\n[Step 5] Waiting for scans to detect activities..." << std::endl;
+  std::this_thread::sleep_for(detectionWait);
 
   // 5.5 手动触发快照上报（测试功能）
   std::cout << "\n[Step 5.5] Manually triggering snapshot upload for testing..." << std::endl;
@@ -92,6 +107,10 @@ int main()
 
   std::cout << "\n--- Test Harness Finished ---" << std::endl;
   std::cout << "Please review the console output for detection logs and error messages." << std::endl;
-  system("pause"); // 暂停，方便在控制台查看输出
+  if (interactive)
+  {
+    std::cout << "Press Enter to exit..." << std::endl;
+    std::cin.get();
+  }
   return 0;
 }

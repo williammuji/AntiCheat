@@ -6,6 +6,20 @@
 #include <algorithm>
 #include <sstream>
 
+bool VehHookSensor::IsExecutableProtection(DWORD prot)
+{
+    return (prot == PAGE_EXECUTE) || (prot == PAGE_EXECUTE_READ) || (prot == PAGE_EXECUTE_READWRITE) ||
+           (prot == PAGE_EXECUTE_WRITECOPY);
+}
+
+std::wstring VehHookSensor::ExtractLowerModuleFileName(const std::wstring &modulePath)
+{
+    std::wstring lower = modulePath;
+    std::transform(lower.begin(), lower.end(), lower.begin(), ::towlower);
+    const size_t lastSlash = lower.find_last_of(L"\\/");
+    return (lastSlash != std::wstring::npos) ? lower.substr(lastSlash + 1) : lower;
+}
+
 SensorExecutionResult VehHookSensor::Execute(SensorRuntimeContext &context)
 {
     // 重置失败原因
@@ -279,8 +293,7 @@ void VehHookSensor::AnalyzeHandlerSecurity(SensorRuntimeContext &context, PVOID 
             return;                                                      // 无法查询，保守退出
         }
         const DWORD prot = mbi.Protect & 0xFF;
-        const bool isExec = (prot == PAGE_EXECUTE) || (prot == PAGE_EXECUTE_READ) ||
-                            (prot == PAGE_EXECUTE_READWRITE) || (prot == PAGE_EXECUTE_WRITECOPY);
+        const bool isExec = IsExecutableProtection(prot);
         if (!isExec)
         {
             // 非可执行页面中的处理函数极不正常，作为可疑迹象上报
@@ -314,10 +327,7 @@ void VehHookSensor::AnalyzeHandlerSecurity(SensorRuntimeContext &context, PVOID 
                 if (whitelistedSystemModules)
                 {
                      // 提取文件名进行比对
-                     std::wstring fileName = modulePath;
-                     size_t lastSlash = fileName.find_last_of(L"\\/");
-                     if (lastSlash != std::wstring::npos) fileName = fileName.substr(lastSlash + 1);
-                     std::transform(fileName.begin(), fileName.end(), fileName.begin(), ::towlower);
+                     std::wstring fileName = ExtractLowerModuleFileName(modulePath);
 
                      if (whitelistedSystemModules->count(fileName) > 0)
                      {
@@ -370,13 +380,7 @@ void VehHookSensor::AnalyzeHandlerSecurity(SensorRuntimeContext &context, PVOID 
         if (!modulePath.empty() && whitelistedVEHModules)
         {
             // 修复：提取文件名进行比对，而不是完整路径
-            std::wstring modulePathLower = modulePath;
-            std::transform(modulePathLower.begin(), modulePathLower.end(), modulePathLower.begin(), ::towlower);
-
-            // 提取文件名（去除路径）
-            size_t lastSlash = modulePathLower.find_last_of(L"\\/");
-            std::wstring fileName =
-                    (lastSlash != std::wstring::npos) ? modulePathLower.substr(lastSlash + 1) : modulePathLower;
+            std::wstring fileName = ExtractLowerModuleFileName(modulePath);
 
             if (whitelistedVEHModules->count(fileName) > 0)
             {

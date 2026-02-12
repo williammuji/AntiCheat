@@ -15,6 +15,8 @@ public:
     SensorExecutionResult Execute(SensorRuntimeContext &context) override;
 
 private:
+   friend class ModuleIntegritySensorTestAccess;
+
    struct CachedModuleInfo
    {
        std::wstring modulePath;
@@ -31,4 +33,7 @@ private:
    void ValidateModuleCodeIntegrity(const wchar_t *modulePath_w, HMODULE hModule, PVOID codeBase, DWORD codeSize,
                                     SensorRuntimeContext &context,
                                     const std::unordered_map<std::wstring, std::vector<uint8_t>> &baselineHashes);
+   static bool IsWritableCodeProtection(DWORD protect);
+   static bool ShouldLearnTrustedBaseline(bool validationTrusted);
+   static bool ShouldEmitTamperEvidence(bool isSelfModule, bool isWhitelisted);
 };

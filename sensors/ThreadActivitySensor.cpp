@@ -10,6 +10,17 @@
 #include <vector>
 #include <memory>
 
+bool ThreadActivitySensor::IsIgnorableNtStatus(NTSTATUS status)
+{
+    return status == 0xC000000D || status == 0xC0000022 || status == 0xC0000003 || status == 0xC0000002 ||
+           status == 0xC0000004;
+}
+
+bool ThreadActivitySensor::HasHardwareBreakpoints(const CONTEXT &ctx)
+{
+    return ctx.Dr0 != 0 || ctx.Dr1 != 0 || ctx.Dr2 != 0 || ctx.Dr3 != 0;
+}
+
 SensorExecutionResult ThreadActivitySensor::Execute(SensorRuntimeContext &context)
 {
     m_lastFailureReason = anti_cheat::UNKNOWN_FAILURE;
@@ -151,7 +162,7 @@ void ThreadActivitySensor::AnalyzeNewThread(SensorRuntimeContext &context, DWORD
         }
         else
         {
-             if (status != 0xC000000D && status != 0xC0000022 && status != 0xC0000003 && status != 0xC0000002 && status != 0xC0000004)
+             if (!IsIgnorableNtStatus(status))
              {
                  LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR, "NtQueryInformationThread失败: NTSTATUS=0x%08X, TID=%lu", status, threadId);
                  RecordFailure(anti_cheat::THREAD_MODULE_QUERY_THREAD_FAILED);
@@ -192,7 +203,7 @@ void ThreadActivitySensor::AnalyzeThreadIntegrity(SensorRuntimeContext &context,
     }
     else
     {
-        if (qsaStatus != 0xC000000D && qsaStatus != 0xC0000022 && qsaStatus != 0xC0000003 && qsaStatus != 0xC0000002 && qsaStatus != 0xC0000004)
+        if (!IsIgnorableNtStatus(qsaStatus))
         {
              RecordFailure(anti_cheat::THREAD_MODULE_QUERY_THREAD_FAILED);
         }
@@ -208,7 +219,7 @@ void ThreadActivitySensor::AnalyzeThreadIntegrity(SensorRuntimeContext &context,
     }
     else if (!NT_SUCCESS(hideStatus))
     {
-         if (hideStatus != 0xC000000D && hideStatus != 0xC0000022 && hideStatus != 0xC0000003 && hideStatus != 0xC0000002 && hideStatus != 0xC0000004)
+         if (!IsIgnorableNtStatus(hideStatus))
          {
              RecordFailure(anti_cheat::THREAD_MODULE_QUERY_THREAD_FAILED);
          }
@@ -225,7 +236,7 @@ void ThreadActivitySensor::AnalyzeThreadIntegrity(SensorRuntimeContext &context,
 
             if (getCtxSuccess)
             {
-                if (ctx.Dr0 != 0 || ctx.Dr1 != 0 || ctx.Dr2 != 0 || ctx.Dr3 != 0)
+                if (HasHardwareBreakpoints(ctx))
                 {
                     std::ostringstream oss;
                     oss << "检测到硬件断点 (TID: " << threadId << "): Dr0=" << (void*)ctx.Dr0 << " ...";

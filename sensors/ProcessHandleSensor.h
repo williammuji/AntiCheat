@@ -17,6 +17,11 @@ public:
     SensorExecutionResult Execute(SensorRuntimeContext &context) override;
 
 private:
+   friend class ProcessHandleSensorTestAccess;
+   static bool HasSuspiciousProcessAccessMask(ULONG grantedAccess);
+   static bool IsSevereHandleOverflow(ULONG_PTR totalHandles, ULONG maxHandlesToScan);
+   static bool ShouldAbortDueToRetryCount(int retries);
+
    // 预分配缓冲区管理（C风格，兼容SEH）
    struct HandleBufferManager
    {

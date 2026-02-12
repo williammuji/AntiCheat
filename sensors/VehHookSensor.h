@@ -13,6 +13,10 @@ public:
     SensorExecutionResult Execute(SensorRuntimeContext &context) override;
 
 private:
+    friend class VehHookSensorTestAccess;
+    static bool IsExecutableProtection(DWORD prot);
+    static std::wstring ExtractLowerModuleFileName(const std::wstring &modulePath);
+
     struct VehTraverseResult
     {
         bool success;

@@ -24,6 +24,8 @@ namespace SystemUtils
     NtQuerySystemInformation_t g_pNtQuerySystemInformation = nullptr;
     PNtSetInformationThread g_pNtSetInformationThread = nullptr;
     NtQueryInformationProcess_t g_pNtQueryInformationProcess = nullptr;
+    static bool g_hasWindowsVersionOverrideForTesting = false;
+    static WindowsVersion g_windowsVersionOverrideForTesting = WindowsVersion::Win_Unknown;
 
     void EnsureNtApisLoaded()
     {
@@ -54,6 +56,11 @@ namespace SystemUtils
 
     WindowsVersion GetWindowsVersion()
     {
+        if (g_hasWindowsVersionOverrideForTesting)
+        {
+            return g_windowsVersionOverrideForTesting;
+        }
+
         typedef NTSTATUS(WINAPI * RtlGetVersion_t)(LPOSVERSIONINFOEXW lpVersionInformation);
         static RtlGetVersion_t pRtlGetVersion =
             (RtlGetVersion_t)GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "RtlGetVersion");
@@ -92,6 +99,23 @@ namespace SystemUtils
             return WindowsVersion::Win_11;
 
         return WindowsVersion::Win_Unknown;
+    }
+
+    void SetWindowsVersionOverrideForTesting(WindowsVersion version)
+    {
+        g_windowsVersionOverrideForTesting = version;
+        g_hasWindowsVersionOverrideForTesting = true;
+    }
+
+    void ClearWindowsVersionOverrideForTesting()
+    {
+        g_hasWindowsVersionOverrideForTesting = false;
+        g_windowsVersionOverrideForTesting = WindowsVersion::Win_Unknown;
+    }
+
+    bool HasWindowsVersionOverrideForTesting()
+    {
+        return g_hasWindowsVersionOverrideForTesting;
     }
 
     static uint64_t BuildCapabilityMask(WindowsVersion version)
@@ -137,6 +161,22 @@ namespace SystemUtils
     {
         return HasApiCapability(ApiCapability::ProcessQueryLimitedInformation) ? PROCESS_QUERY_LIMITED_INFORMATION
                                                                                : PROCESS_QUERY_INFORMATION;
+    }
+
+    void SetNtApiBindingsForTesting(const NtApiBindings &bindings)
+    {
+        g_pNtQueryInformationThread = bindings.queryInformationThread;
+        g_pNtQuerySystemInformation = bindings.querySystemInformation;
+        g_pNtSetInformationThread = bindings.setInformationThread;
+        g_pNtQueryInformationProcess = bindings.queryInformationProcess;
+    }
+
+    void ResetNtApiBindingsForTesting()
+    {
+        g_pNtQueryInformationThread = nullptr;
+        g_pNtQuerySystemInformation = nullptr;
+        g_pNtSetInformationThread = nullptr;
+        g_pNtQueryInformationProcess = nullptr;
     }
 
     PBYTE FindPattern(PBYTE base, SIZE_T size, const BYTE *pattern, SIZE_T patternSize, BYTE wildcard)

@@ -56,6 +56,7 @@ jobs:
           -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake" `
           -DVCPKG_TARGET_TRIPLET="${{ matrix.platform }}-windows" `
           -DVCPKG_HOST_TRIPLET="${{ matrix.platform }}-windows" `
+          -DVCPKG_MANIFEST_FEATURES=tests `
           -A $arch `
           -DCMAKE_VERBOSE_MAKEFILE=ON
 
@@ -94,6 +95,16 @@ jobs:
           exit 1
         } else {
           Write-Host "✅ Build verification passed - found $($buildArtifacts.Count) artifacts"
+        }
+
+    - name: Run ctest suite
+      shell: powershell
+      run: |
+        Write-Host "=== Running ctest suite ==="
+        ctest --test-dir build -C ${{ matrix.config }} --output-on-failure
+        if ($LASTEXITCODE -ne 0) {
+          Write-Error "ctest failed"
+          exit 1
         }
 
     - name: Generate test data

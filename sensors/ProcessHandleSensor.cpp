@@ -7,6 +7,26 @@
 #include <algorithm>
 #include <memory>
 
+bool ProcessHandleSensor::HasSuspiciousProcessAccessMask(ULONG grantedAccess)
+{
+    return (grantedAccess & (PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_VM_OPERATION | PROCESS_ALL_ACCESS)) != 0;
+}
+
+bool ProcessHandleSensor::IsSevereHandleOverflow(ULONG_PTR totalHandles, ULONG maxHandlesToScan)
+{
+    if (maxHandlesToScan == 0)
+    {
+        return true;
+    }
+    const double handleRatio = static_cast<double>(totalHandles) / maxHandlesToScan;
+    return handleRatio >= 1.5;
+}
+
+bool ProcessHandleSensor::ShouldAbortDueToRetryCount(int retries)
+{
+    return retries > 3;
+}
+
 ProcessHandleSensor::HandleBufferManager::HandleBufferManager() : buffer(nullptr), size(0)
 {
     const size_t initialSize = CheatConfigManager::GetInstance().GetInitialBufferSizeMb() * 1024 * 1024;
@@ -200,7 +220,7 @@ SensorExecutionResult ProcessHandleSensor::Execute(SensorRuntimeContext &context
                 return SensorExecutionResult::FAILURE;
             }
             retries++;
-            if (retries > 3)
+            if (ShouldAbortDueToRetryCount(retries))
             {
                 LOG_ERROR_F(AntiCheatLogger::LogCategory::SENSOR,
                             "ProcessHandleSensor: 获取句柄信息重试过多 (%d次)，跳过扫描", retries);
@@ -239,7 +259,7 @@ SensorExecutionResult ProcessHandleSensor::Execute(SensorRuntimeContext &context
     {
         // 优化：自适应策略 - 如果句柄数超限但不是太离谱（<150%），仍然尝试扫描但减少处理量
         double handleRatio = static_cast<double>(totalHandles) / kMaxHandlesToScan;
-        if (handleRatio < 1.5)  // 超出不到50%，可以尝试降级扫描
+        if (!IsSevereHandleOverflow(totalHandles, kMaxHandlesToScan))
         {
             LOG_INFO_F(AntiCheatLogger::LogCategory::SENSOR,
                        "ProcessHandleSensor: 系统句柄数量略超上限 (%lu > %lu, 超出%.1f%%)，启用降级扫描模式",
@@ -309,8 +329,7 @@ SensorExecutionResult ProcessHandleSensor::Execute(SensorRuntimeContext &context
     auto ProcessEntry = [&](DWORD ownerPid, HANDLE handleValue, ULONG grantedAccess) -> bool {
          // 快速过滤
         if (ownerPid == ownPid || processedPidsThisScan.count(ownerPid) > 0 ||
-            !(grantedAccess &
-              (PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_VM_OPERATION | PROCESS_ALL_ACCESS)))
+            !HasSuspiciousProcessAccessMask(grantedAccess))
         {
             return false;
         }

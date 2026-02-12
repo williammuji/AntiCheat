@@ -12,6 +12,8 @@ public:
     SensorExecutionResult Execute(SensorRuntimeContext &context) override;
 
 private:
+   friend class AdvancedAntiDebugSensorTestAccess;
+
    struct DebugDetectionResult
    {
        bool detected;
