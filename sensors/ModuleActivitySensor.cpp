@@ -57,7 +57,7 @@ bool ModuleActivitySensor::ScanModulesWithTimeout(SensorRuntimeContext &context,
              RecordFailure(anti_cheat::THREAD_MODULE_OPEN_MODULE_FAILED);
              return false;
          }
-         // 如果 Cache 为空但 API 成功，可能是真的没获取到还是 ScanContext 逻辑问题？
+         // 如果 Cache 为空但 API 成功，可能是真的没获取到还是 SensorRuntimeContext 逻辑问题？
          // 暂且认为失败
          RecordFailure(anti_cheat::THREAD_MODULE_MODULE_SCAN_FAILED);
          return false;

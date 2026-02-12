@@ -596,7 +596,7 @@ SensorExecutionResult ProcessHandleSensor::Execute(SensorRuntimeContext &context
          // cursorStart + entriesVisited 可能会无限增长？不会，因为 % total 在循环开始时用。
          // 但是 SetHandleCursorOffset 如果只存 offset，应该模 total 吗？
          // 原代码 context.SetHandleCursorOffset(cursorStart + entriesVisited);
-         // 它是累加的offset。ScanContext 内部可能是个简单的计数器。
+         // 它是累加的offset。SensorRuntimeContext 内部可能是个简单的计数器。
 
          // 修正：如果完整跑完，应该更新游标以供下次使用
         context.SetHandleCursorOffset(cursorStart + entriesVisited);

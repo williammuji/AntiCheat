@@ -22,13 +22,15 @@ add_library(CheatMonitorLib STATIC
     CheatMonitorReporter.cpp
     CheatMonitorBaselineManager.cpp
     CheatMonitorEnvironmentGuard.cpp
+    Logger.h
+    Logger.cpp
     CheatConfigManager.h
     CheatConfigManager.cpp
     HardwareInfoCollector.h
     HardwareInfoCollector.cpp
     WMIProcessMonitor.h
     WMIProcessMonitor.cpp
-    ScanContext.cpp
+    SensorRuntimeContext.cpp
     hde/hde32.h
     hde/hde32.cpp
     utils/SystemUtils.cpp
@@ -79,7 +81,7 @@ if (WIN32)
 endif()
 
 # 将我们的库链接到Protobuf库。
-target_link_libraries(CheatMonitorLib PUBLIC ${Protobuf_LIBRARIES})
+target_link_libraries(CheatMonitorLib PUBLIC protobuf::libprotobuf)
 
 # 添加Windows平台特定的库。这取代了在代码中使用 #pragma comment(lib, ...)，
 # 使得构建脚本更加清晰和可移植。
@@ -88,3 +90,6 @@ if(WIN32)
     target_link_libraries(CheatMonitorLib PUBLIC ole32 psapi user32 advapi32 iphlpapi wintrust crypt32 wbemuuid)
 endif()
 
+
+# 添加测试子目录
+add_subdirectory(test)
