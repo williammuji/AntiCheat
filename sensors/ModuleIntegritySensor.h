@@ -11,7 +11,7 @@ class ModuleIntegritySensor : public ISensor
 public:
     const char *GetName() const override { return "ModuleIntegritySensor"; }
     SensorWeight GetWeight() const override { return SensorWeight::CRITICAL; } // ~1000ms: 模块代码完整性检测（分段扫描）
-    SensorExecutionResult Execute(ScanContext &context) override;
+    SensorExecutionResult Execute(SensorRuntimeContext &context) override;
 
 private:
    struct CachedModuleInfo
@@ -24,10 +24,10 @@ private:
    };
    std::unordered_map<HMODULE, CachedModuleInfo> m_moduleCache;
 
-   void ProcessModuleCodeIntegrity(HMODULE hModule, const CachedModuleInfo &info, ScanContext &context,
+   void ProcessModuleCodeIntegrity(HMODULE hModule, const CachedModuleInfo &info, SensorRuntimeContext &context,
                                    const std::unordered_map<std::wstring, std::vector<uint8_t>> &baselineHashes,
                                    size_t maxCodeSectionSize);
    void ValidateModuleCodeIntegrity(const wchar_t *modulePath_w, HMODULE hModule, PVOID codeBase, DWORD codeSize,
-                                    ScanContext &context,
+                                    SensorRuntimeContext &context,
                                     const std::unordered_map<std::wstring, std::vector<uint8_t>> &baselineHashes);
 };

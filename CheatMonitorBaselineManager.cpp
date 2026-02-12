@@ -1,5 +1,5 @@
 #include "CheatMonitor.h"
-#include "CheatMonitorImpl.h"
+#include "CheatMonitorEngine.h"
 #include "CheatConfigManager.h"
 #include "utils/SystemUtils.h"
 #include "utils/Utils.h"
@@ -12,7 +12,7 @@
 #include <wincrypt.h>
 #include <wintrust.h>
 
-void CheatMonitorImpl::InitializeProcessBaseline()
+void CheatMonitorEngine::InitializeProcessBaseline()
 {
     std::unordered_map<std::wstring, std::vector<uint8_t>> moduleBaselineHashes;
     std::unordered_map<std::string, std::vector<uint8_t>> iatBaselineHashes;
@@ -91,7 +91,7 @@ void CheatMonitorImpl::InitializeProcessBaseline()
     m_processBaselineEstablished = true;
 }
 
-void CheatMonitorImpl::VerifyModuleSignature(HMODULE hModule)
+void CheatMonitorEngine::VerifyModuleSignature(HMODULE hModule)
 {
     wchar_t modulePath_w[MAX_PATH];
     if (GetModuleFileNameW(hModule, modulePath_w, MAX_PATH) == 0) return;
@@ -171,7 +171,7 @@ void CheatMonitorImpl::VerifyModuleSignature(HMODULE hModule)
     }
 }
 
-bool CheatMonitorImpl::IsAddressInLegitimateModule(PVOID address, std::wstring &outModulePath)
+bool CheatMonitorEngine::IsAddressInLegitimateModule(PVOID address, std::wstring &outModulePath)
 {
     HMODULE hModule = NULL;
     if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
@@ -218,20 +218,20 @@ bool CheatMonitorImpl::IsAddressInLegitimateModule(PVOID address, std::wstring &
     return false;
 }
 
-bool CheatMonitorImpl::IsAddressInLegitimateModule(PVOID address)
+bool CheatMonitorEngine::IsAddressInLegitimateModule(PVOID address)
 {
     std::wstring dummyPath;
     return IsAddressInLegitimateModule(address, dummyPath);
 }
 
-void CheatMonitorImpl::InitializeSelfIntegrityBaseline()
+void CheatMonitorEngine::InitializeSelfIntegrityBaseline()
 {
     union
     {
-        bool (CheatMonitorImpl::*pmf)(PVOID, std::wstring &);
+        bool (CheatMonitorEngine::*pmf)(PVOID, std::wstring &);
         void *p;
     } u;
-    u.pmf = &CheatMonitorImpl::IsAddressInLegitimateModule;
+    u.pmf = &CheatMonitorEngine::IsAddressInLegitimateModule;
     if (u.p)
     {
         uint8_t buffer[16];
@@ -248,16 +248,16 @@ void CheatMonitorImpl::InitializeSelfIntegrityBaseline()
     }
 }
 
-void CheatMonitorImpl::CheckSelfIntegrity()
+void CheatMonitorEngine::CheckSelfIntegrity()
 {
     if (m_isAddressInLegitimateModulePrologue.empty()) return;
 
     union
     {
-        bool (CheatMonitorImpl::*pmf)(PVOID, std::wstring &);
+        bool (CheatMonitorEngine::*pmf)(PVOID, std::wstring &);
         void *p;
     } u;
-    u.pmf = &CheatMonitorImpl::IsAddressInLegitimateModule;
+    u.pmf = &CheatMonitorEngine::IsAddressInLegitimateModule;
     if (!u.p) return;
 
     uint8_t currentBytes[16];
@@ -282,7 +282,7 @@ void CheatMonitorImpl::CheckSelfIntegrity()
     }
 }
 
-std::vector<anti_cheat::ThreadSnapshot> CheatMonitorImpl::CollectThreadSnapshots()
+std::vector<anti_cheat::ThreadSnapshot> CheatMonitorEngine::CollectThreadSnapshots()
 {
     std::vector<anti_cheat::ThreadSnapshot> snapshots;
     DWORD currentPid = GetCurrentProcessId();
@@ -371,7 +371,7 @@ static DWORD SafeReadPETimestamp(HMODULE hModule)
     return timestamp;
 }
 
-std::vector<anti_cheat::ModuleSnapshot> CheatMonitorImpl::CollectModuleSnapshots()
+std::vector<anti_cheat::ModuleSnapshot> CheatMonitorEngine::CollectModuleSnapshots()
 {
     std::vector<anti_cheat::ModuleSnapshot> snapshots;
     std::vector<HMODULE> hMods(1024);
@@ -417,7 +417,7 @@ std::vector<anti_cheat::ModuleSnapshot> CheatMonitorImpl::CollectModuleSnapshots
     return snapshots;
 }
 
-std::string CheatMonitorImpl::GetCertificateThumbprint(const std::wstring &filePath)
+std::string CheatMonitorEngine::GetCertificateThumbprint(const std::wstring &filePath)
 {
     HCERTSTORE hStore = NULL;
     HCRYPTMSG hMsg = NULL;
@@ -477,7 +477,7 @@ std::string CheatMonitorImpl::GetCertificateThumbprint(const std::wstring &fileP
     return thumbprint;
 }
 
-std::string CheatMonitorImpl::CalculateSHA256String(const BYTE *data, size_t size)
+std::string CheatMonitorEngine::CalculateSHA256String(const BYTE *data, size_t size)
 {
     HCRYPTPROV hProv = 0;
     HCRYPTHASH hHash = 0;

@@ -1,5 +1,5 @@
 #include "ModuleIntegritySensor.h"
-#include "ScanContext.h"
+#include "SensorRuntimeContext.h"
 #include "utils/SystemUtils.h"
 #include "Logger.h"
 #include "utils/Utils.h"
@@ -8,7 +8,7 @@
 #include <algorithm>
 #include <sstream>
 
-SensorExecutionResult ModuleIntegritySensor::Execute(ScanContext &context)
+SensorExecutionResult ModuleIntegritySensor::Execute(SensorRuntimeContext &context)
 {
     // 重置失败原因
     m_lastFailureReason = anti_cheat::UNKNOWN_FAILURE;
@@ -173,7 +173,7 @@ SensorExecutionResult ModuleIntegritySensor::Execute(ScanContext &context)
     return SensorExecutionResult::SUCCESS;
 }
 
-void ModuleIntegritySensor::ProcessModuleCodeIntegrity(HMODULE hModule, const CachedModuleInfo &info, ScanContext &context,
+void ModuleIntegritySensor::ProcessModuleCodeIntegrity(HMODULE hModule, const CachedModuleInfo &info, SensorRuntimeContext &context,
                                     const std::unordered_map<std::wstring, std::vector<uint8_t>> &baselineHashes,
                                     size_t maxCodeSectionSize)
 {
@@ -214,7 +214,7 @@ void ModuleIntegritySensor::ProcessModuleCodeIntegrity(HMODULE hModule, const Ca
 }
 
 void ModuleIntegritySensor::ValidateModuleCodeIntegrity(const wchar_t *modulePath_w, HMODULE hModule, PVOID codeBase, DWORD codeSize,
-                                     ScanContext &context,
+                                     SensorRuntimeContext &context,
                                      const std::unordered_map<std::wstring, std::vector<uint8_t>> &baselineHashes)
 {
     // 1. Check for Writable Code Section (Anti-Patching / Hooking)

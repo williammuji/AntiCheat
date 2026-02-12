@@ -9,7 +9,7 @@ class VehHookSensor : public ISensor
 public:
     const char *GetName() const override { return "VehHookSensor"; }
     SensorWeight GetWeight() const override { return SensorWeight::LIGHT; } // 0-10ms: VEH检测
-    SensorExecutionResult Execute(ScanContext &context) override;
+    SensorExecutionResult Execute(SensorRuntimeContext &context) override;
 
 private:
     struct VehTraverseResult
@@ -29,5 +29,5 @@ private:
 
     static VehAccessResult AccessVehStructSafe(uintptr_t base, SystemUtils::WindowsVersion winVer);
     static VehTraverseResult TraverseVehListSafe(LIST_ENTRY *pHead, int budget_ms);
-    void AnalyzeHandlerSecurity(ScanContext &context, PVOID handlerAddress, int index);
+    void AnalyzeHandlerSecurity(SensorRuntimeContext &context, PVOID handlerAddress, int index);
 };

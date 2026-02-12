@@ -1,5 +1,5 @@
 #include "CheatMonitor.h"
-#include "CheatMonitorImpl.h"
+#include "CheatMonitorEngine.h"
 #include "ISensor.h"
 #include "IatHookSensor.h"
 #include "VehHookSensor.h"
@@ -28,7 +28,7 @@ typedef NTSTATUS(NTAPI *P_LdrRegisterDllNotification)(ULONG Flags, PLDR_DLL_NOTI
                                                       PVOID Context, PVOID *Cookie);
 typedef NTSTATUS(NTAPI *P_LdrUnregisterDllNotification)(PVOID Cookie);
 
-void CheatMonitorImpl::InitializeSystem()
+void CheatMonitorEngine::InitializeSystem()
 {
     if (m_lightweightSensors.empty())
     {
@@ -69,7 +69,7 @@ void CheatMonitorImpl::InitializeSystem()
     InitializeSelfIntegrityBaseline();
 }
 
-void CheatMonitorImpl::OnConfigUpdated()
+void CheatMonitorEngine::OnConfigUpdated()
 {
     std::string osVersionName = CheatConfigManager::GetInstance().GetMinOsVersionName();
     anti_cheat::OsVersion requiredOsVersion = CheatConfigManager::GetInstance().GetMinOsVersion();
@@ -79,7 +79,7 @@ void CheatMonitorImpl::OnConfigUpdated()
                (int)m_windowsVersion, (int)requiredOsVersion, osVersionSupported ? "是" : "否");
 }
 
-bool CheatMonitorImpl::IsCurrentOsSupported() const
+bool CheatMonitorEngine::IsCurrentOsSupported() const
 {
     anti_cheat::OsVersion requiredOsVersion = CheatConfigManager::GetInstance().GetMinOsVersion();
     switch (requiredOsVersion)
@@ -105,7 +105,7 @@ bool CheatMonitorImpl::IsCurrentOsSupported() const
     }
 }
 
-void CheatMonitorImpl::HardenProcessAndThreads()
+void CheatMonitorEngine::HardenProcessAndThreads()
 {
     bool isElevated = false;
     HANDLE hToken = NULL;
@@ -164,7 +164,7 @@ void CheatMonitorImpl::HardenProcessAndThreads()
     }
 }
 
-void CheatMonitorImpl::CheckParentProcessAtStartup()
+void CheatMonitorEngine::CheckParentProcessAtStartup()
 {
     DWORD parentPid = 0;
     std::string parentName;
@@ -183,14 +183,14 @@ void CheatMonitorImpl::CheckParentProcessAtStartup()
     }
 }
 
-void CheatMonitorImpl::DetectVirtualMachine()
+void CheatMonitorEngine::DetectVirtualMachine()
 {
     DetectVmByCpuid();
     DetectVmByRegistry();
     DetectVmByMacAddress();
 }
 
-void CheatMonitorImpl::DetectVmByCpuid()
+void CheatMonitorEngine::DetectVmByCpuid()
 {
     std::array<int, 4> cpuid_info;
     __cpuid(cpuid_info.data(), 1);
@@ -210,7 +210,7 @@ void CheatMonitorImpl::DetectVmByCpuid()
     }
 }
 
-void CheatMonitorImpl::DetectVmByRegistry()
+void CheatMonitorEngine::DetectVmByRegistry()
 {
     const wchar_t *vmKeys[] = {L"HARDWARE\\DESCRIPTION\\System\\BIOS\\SystemManufacturer",
                                L"HARDWARE\\DESCRIPTION\\System\\BIOS\\SystemProductName"};
@@ -242,7 +242,7 @@ void CheatMonitorImpl::DetectVmByRegistry()
     }
 }
 
-void CheatMonitorImpl::DetectVmByMacAddress()
+void CheatMonitorEngine::DetectVmByMacAddress()
 {
     const std::vector<std::string> vmMacPrefixes = {"00:05:69", "00:0C:29", "00:1C:14",
                                                      "00:50:56", "08:00:27", "00:15:5D"};
@@ -276,7 +276,7 @@ void CheatMonitorImpl::DetectVmByMacAddress()
     }
 }
 
-uintptr_t CheatMonitorImpl::FindVehListAddress()
+uintptr_t CheatMonitorEngine::FindVehListAddress()
 {
     PVOID pDecoyHandler = nullptr;
     int retryCount = 0;
@@ -337,17 +337,17 @@ uintptr_t CheatMonitorImpl::FindVehListAddress()
     return structBaseAddress;
 }
 
-VOID CALLBACK CheatMonitorImpl::DllLoadCallback(ULONG NotificationReason, const LDR_DLL_NOTIFICATION_DATA *NotificationData,
+VOID CALLBACK CheatMonitorEngine::DllLoadCallback(ULONG NotificationReason, const LDR_DLL_NOTIFICATION_DATA *NotificationData,
                                                 PVOID Context)
 {
     if (NotificationReason == LDR_DLL_NOTIFICATION_REASON_LOADED)
     {
-        auto *impl = static_cast<CheatMonitorImpl *>(Context);
+        auto *impl = static_cast<CheatMonitorEngine *>(Context);
         if (impl) impl->OnDllLoaded(NotificationData->Loaded);
     }
 }
 
-void CheatMonitorImpl::RegisterDllNotification()
+void CheatMonitorEngine::RegisterDllNotification()
 {
     if (!SystemUtils::HasApiCapability(SystemUtils::ApiCapability::LdrDllNotification))
     {
@@ -364,7 +364,7 @@ void CheatMonitorImpl::RegisterDllNotification()
     }
 }
 
-void CheatMonitorImpl::UnregisterDllNotification()
+void CheatMonitorEngine::UnregisterDllNotification()
 {
     if (m_dllNotificationCookie)
     {
@@ -382,7 +382,7 @@ void CheatMonitorImpl::UnregisterDllNotification()
     }
 }
 
-void CheatMonitorImpl::OnDllLoaded(const LDR_DLL_LOAD_NOTIFICATION_DATA &data)
+void CheatMonitorEngine::OnDllLoaded(const LDR_DLL_LOAD_NOTIFICATION_DATA &data)
 {
     if (!data.FullDllName || !data.FullDllName->Buffer) return;
     std::wstring modulePath(data.FullDllName->Buffer, data.FullDllName->Length / sizeof(WCHAR));
@@ -392,7 +392,7 @@ void CheatMonitorImpl::OnDllLoaded(const LDR_DLL_LOAD_NOTIFICATION_DATA &data)
     AddEvidence(anti_cheat::RUNTIME_MODULE_INJECTION, "Runtime DLL load detected: " + pathStr);
 }
 
-void CheatMonitorImpl::OnProcessCreated(DWORD pid, const std::wstring &name)
+void CheatMonitorEngine::OnProcessCreated(DWORD pid, const std::wstring &name)
 {
     std::wstring lowerName = name;
     std::transform(lowerName.begin(), lowerName.end(), lowerName.begin(), ::towlower);

@@ -1,5 +1,5 @@
-#include "ScanContext.h"
-#include "CheatMonitorImpl.h"
+#include "SensorRuntimeContext.h"
+#include "CheatMonitorEngine.h"
 #include "CheatConfigManager.h"
 #include "utils/Utils.h"
 #include "utils/SystemUtils.h"
@@ -7,16 +7,16 @@
 #include <psapi.h>
 #include <algorithm>
 
-ScanContext::ScanContext(CheatMonitorImpl *pimpl, bool targetedScan)
-    : m_pimpl(pimpl), m_isTargetedScan(targetedScan)
+SensorRuntimeContext::SensorRuntimeContext(CheatMonitorEngine *engine, bool targetedScan)
+    : m_engine(engine), m_isTargetedScan(targetedScan)
 {
 }
 
-ScanContext::~ScanContext()
+SensorRuntimeContext::~SensorRuntimeContext()
 {
 }
 
-void ScanContext::RefreshModuleCache()
+void SensorRuntimeContext::RefreshModuleCache()
 {
     CachedModules.clear();
     CachedMemoryRegions.clear();
@@ -31,7 +31,7 @@ void ScanContext::RefreshModuleCache()
     }
 }
 
-void ScanContext::RefreshMemoryCache()
+void SensorRuntimeContext::RefreshMemoryCache()
 {
     CachedMemoryRegions.clear();
     IsMemoryCacheValid = false;
@@ -55,199 +55,199 @@ void ScanContext::RefreshMemoryCache()
     IsMemoryCacheValid = true;
 }
 
-bool ScanContext::IsTargetedScan() const
+bool SensorRuntimeContext::IsTargetedScan() const
 {
     return m_isTargetedScan;
 }
 
-void ScanContext::AddEvidence(anti_cheat::CheatCategory category, const std::string &description)
+void SensorRuntimeContext::AddEvidence(anti_cheat::CheatCategory category, const std::string &description)
 {
-    m_pimpl->AddEvidence(category, description);
+    m_engine->AddEvidence(category, description);
 }
 
-std::shared_ptr<const std::vector<std::wstring>> ScanContext::GetHarmfulProcessNames() const
+std::shared_ptr<const std::vector<std::wstring>> SensorRuntimeContext::GetHarmfulProcessNames() const
 {
     return CheatConfigManager::GetInstance().GetHarmfulProcessNames();
 }
 
-std::shared_ptr<const std::vector<std::wstring>> ScanContext::GetHarmfulKeywords() const
+std::shared_ptr<const std::vector<std::wstring>> SensorRuntimeContext::GetHarmfulKeywords() const
 {
     return CheatConfigManager::GetInstance().GetHarmfulKeywords();
 }
 
-std::shared_ptr<const std::unordered_set<std::wstring>> ScanContext::GetWhitelistedProcessPaths() const
+std::shared_ptr<const std::unordered_set<std::wstring>> SensorRuntimeContext::GetWhitelistedProcessPaths() const
 {
     return CheatConfigManager::GetInstance().GetWhitelistedProcessPaths();
 }
 
-std::shared_ptr<const std::unordered_set<std::wstring>> ScanContext::GetWhitelistedWindowKeywords() const
+std::shared_ptr<const std::unordered_set<std::wstring>> SensorRuntimeContext::GetWhitelistedWindowKeywords() const
 {
     return CheatConfigManager::GetInstance().GetWhitelistedWindowKeywords();
 }
 
-std::shared_ptr<const std::unordered_set<std::wstring>> ScanContext::GetWhitelistedVEHModules() const
+std::shared_ptr<const std::unordered_set<std::wstring>> SensorRuntimeContext::GetWhitelistedVEHModules() const
 {
     return CheatConfigManager::GetInstance().GetWhitelistedVEHModules();
 }
 
-std::shared_ptr<const std::unordered_set<std::wstring>> ScanContext::GetWhitelistedSystemModules() const
+std::shared_ptr<const std::unordered_set<std::wstring>> SensorRuntimeContext::GetWhitelistedSystemModules() const
 {
     return CheatConfigManager::GetInstance().GetWhitelistedSystemModules();
 }
 
-std::shared_ptr<const std::unordered_set<std::wstring>> ScanContext::GetWhitelistedIntegrityIgnoreList() const
+std::shared_ptr<const std::unordered_set<std::wstring>> SensorRuntimeContext::GetWhitelistedIntegrityIgnoreList() const
 {
     return CheatConfigManager::GetInstance().GetWhitelistedIntegrityIgnoreList();
 }
 
-const std::unordered_map<std::string, std::vector<uint8_t>> &ScanContext::GetIatBaselineHashes() const
+const std::unordered_map<std::string, std::vector<uint8_t>> &SensorRuntimeContext::GetIatBaselineHashes() const
 {
-    return m_pimpl->m_iatBaselineHashes;
+    return m_engine->m_iatBaselineHashes;
 }
 
-const std::unordered_map<std::wstring, std::vector<uint8_t>> &ScanContext::GetModuleBaselineHashes() const
+const std::unordered_map<std::wstring, std::vector<uint8_t>> &SensorRuntimeContext::GetModuleBaselineHashes() const
 {
-    return m_pimpl->m_moduleBaselineHashes;
+    return m_engine->m_moduleBaselineHashes;
 }
 
-void ScanContext::UpdateModuleBaselineHash(const std::wstring &modulePath, const std::vector<uint8_t> &hash)
+void SensorRuntimeContext::UpdateModuleBaselineHash(const std::wstring &modulePath, const std::vector<uint8_t> &hash)
 {
-    m_pimpl->UpdateModuleBaselineHash(modulePath, hash);
+    m_engine->UpdateModuleBaselineHash(modulePath, hash);
 }
 
-const uintptr_t ScanContext::GetVehListAddress() const
+const uintptr_t SensorRuntimeContext::GetVehListAddress() const
 {
-    return m_pimpl->m_vehListAddress;
+    return m_engine->m_vehListAddress;
 }
 
-SystemUtils::WindowsVersion ScanContext::GetWindowsVersion() const
+SystemUtils::WindowsVersion SensorRuntimeContext::GetWindowsVersion() const
 {
-    return m_pimpl->m_windowsVersion;
+    return m_engine->m_windowsVersion;
 }
 
-bool ScanContext::IsCurrentOsSupported() const
+bool SensorRuntimeContext::IsCurrentOsSupported() const
 {
-    return m_pimpl->IsCurrentOsSupported();
+    return m_engine->IsCurrentOsSupported();
 }
 
 
-bool ScanContext::IsAddressInLegitimateModule(PVOID address, std::wstring &outModulePath)
+bool SensorRuntimeContext::IsAddressInLegitimateModule(PVOID address, std::wstring &outModulePath)
 {
-    return m_pimpl->IsAddressInLegitimateModule(address, outModulePath);
+    return m_engine->IsAddressInLegitimateModule(address, outModulePath);
 }
 
-bool ScanContext::IsAddressInLegitimateModule(PVOID address)
+bool SensorRuntimeContext::IsAddressInLegitimateModule(PVOID address)
 {
-    return m_pimpl->IsAddressInLegitimateModule(address);
+    return m_engine->IsAddressInLegitimateModule(address);
 }
 
-std::shared_ptr<const std::unordered_set<std::wstring>> ScanContext::GetKnownGoodHandleHolders() const
+std::shared_ptr<const std::unordered_set<std::wstring>> SensorRuntimeContext::GetKnownGoodHandleHolders() const
 {
     return CheatConfigManager::GetInstance().GetWhitelistedProcessPaths();
 }
 
-void ScanContext::UploadTelemetryMetricsReport(const anti_cheat::TelemetryMetrics &metrics)
+void SensorRuntimeContext::UploadTelemetryMetricsReport(const anti_cheat::TelemetryMetrics &metrics)
 {
-    m_pimpl->UploadTelemetryMetricsReport(metrics);
+    m_engine->UploadTelemetryMetricsReport(metrics);
 }
 
-void ScanContext::SendServerLog(const std::string &log_level, const std::string &log_category, const std::string &log_message)
+void SensorRuntimeContext::SendServerLog(const std::string &log_level, const std::string &log_category, const std::string &log_message)
 {
-    m_pimpl->SendServerLog(log_level, log_category, log_message);
+    m_engine->SendServerLog(log_level, log_category, log_message);
 }
 
-void ScanContext::RecordSensorWorkloadCounters(const std::string &name, uint64_t snapshot_size, uint64_t attempts, uint64_t hits)
+void SensorRuntimeContext::RecordSensorWorkloadCounters(const std::string &name, uint64_t snapshot_size, uint64_t attempts, uint64_t hits)
 {
-    m_pimpl->RecordSensorWorkloadCounters(name, snapshot_size, attempts, hits);
+    m_engine->RecordSensorWorkloadCounters(name, snapshot_size, attempts, hits);
 }
 
-std::set<DWORD> ScanContext::GetKnownThreadIds() const
+std::set<DWORD> SensorRuntimeContext::GetKnownThreadIds() const
 {
-    std::lock_guard<std::mutex> lock(m_pimpl->m_baselineMutex);
-    return m_pimpl->m_knownThreadIds;
+    std::lock_guard<std::mutex> lock(m_engine->m_baselineMutex);
+    return m_engine->m_knownThreadIds;
 }
 
-std::set<HMODULE> ScanContext::GetKnownModules() const
+std::set<HMODULE> SensorRuntimeContext::GetKnownModules() const
 {
-    std::lock_guard<std::mutex> lock(m_pimpl->m_baselineMutex);
-    return m_pimpl->m_knownModules;
+    std::lock_guard<std::mutex> lock(m_engine->m_baselineMutex);
+    return m_engine->m_knownModules;
 }
 
-bool ScanContext::InsertKnownThreadId(DWORD threadId)
+bool SensorRuntimeContext::InsertKnownThreadId(DWORD threadId)
 {
-    std::lock_guard<std::mutex> lock(m_pimpl->m_baselineMutex);
-    return m_pimpl->m_knownThreadIds.insert(threadId).second;
+    std::lock_guard<std::mutex> lock(m_engine->m_baselineMutex);
+    return m_engine->m_knownThreadIds.insert(threadId).second;
 }
 
-bool ScanContext::IsModuleKnown(HMODULE hModule) const
+bool SensorRuntimeContext::IsModuleKnown(HMODULE hModule) const
 {
-    std::lock_guard<std::mutex> lock(m_pimpl->m_baselineMutex);
-    return m_pimpl->m_knownModules.find(hModule) != m_pimpl->m_knownModules.end();
+    std::lock_guard<std::mutex> lock(m_engine->m_baselineMutex);
+    return m_engine->m_knownModules.find(hModule) != m_engine->m_knownModules.end();
 }
 
-bool ScanContext::InsertKnownModule(HMODULE hModule)
+bool SensorRuntimeContext::InsertKnownModule(HMODULE hModule)
 {
-    std::lock_guard<std::mutex> lock(m_pimpl->m_baselineMutex);
-    return m_pimpl->m_knownModules.insert(hModule).second;
+    std::lock_guard<std::mutex> lock(m_engine->m_baselineMutex);
+    return m_engine->m_knownModules.insert(hModule).second;
 }
 
-void ScanContext::VerifyModuleSignature(HMODULE hModule)
+void SensorRuntimeContext::VerifyModuleSignature(HMODULE hModule)
 {
-    m_pimpl->VerifyModuleSignature(hModule);
+    m_engine->VerifyModuleSignature(hModule);
 }
 
-void ScanContext::CheckSelfIntegrity()
+void SensorRuntimeContext::CheckSelfIntegrity()
 {
-    m_pimpl->CheckSelfIntegrity();
+    m_engine->CheckSelfIntegrity();
 }
 
-const HMODULE ScanContext::GetSelfModuleHandle() const
+const HMODULE SensorRuntimeContext::GetSelfModuleHandle() const
 {
-    return m_pimpl->m_hSelfModule;
+    return m_engine->m_hSelfModule;
 }
 
-size_t ScanContext::GetHandleCursorOffset() const
+size_t SensorRuntimeContext::GetHandleCursorOffset() const
 {
-    return m_pimpl->m_handleCursorOffset;
+    return m_engine->m_handleCursorOffset;
 }
 
-void ScanContext::SetHandleCursorOffset(size_t v)
+void SensorRuntimeContext::SetHandleCursorOffset(size_t v)
 {
-    m_pimpl->m_handleCursorOffset = v;
+    m_engine->m_handleCursorOffset = v;
 }
 
-size_t ScanContext::GetModuleCursorOffset() const
+size_t SensorRuntimeContext::GetModuleCursorOffset() const
 {
-    return m_pimpl->m_moduleCursorOffset;
+    return m_engine->m_moduleCursorOffset;
 }
 
-void ScanContext::SetModuleCursorOffset(size_t v)
+void SensorRuntimeContext::SetModuleCursorOffset(size_t v)
 {
-    m_pimpl->m_moduleCursorOffset = v;
+    m_engine->m_moduleCursorOffset = v;
 }
 
-size_t ScanContext::GetProcessCursorOffset() const
+size_t SensorRuntimeContext::GetProcessCursorOffset() const
 {
-    return m_pimpl->m_processCursorOffset;
+    return m_engine->m_processCursorOffset;
 }
 
-void ScanContext::SetProcessCursorOffset(size_t v)
+void SensorRuntimeContext::SetProcessCursorOffset(size_t v)
 {
-    m_pimpl->m_processCursorOffset = v;
+    m_engine->m_processCursorOffset = v;
 }
 
-std::unordered_map<DWORD, std::chrono::steady_clock::time_point> &ScanContext::GetPidThrottleUntil()
+std::unordered_map<DWORD, std::chrono::steady_clock::time_point> &SensorRuntimeContext::GetPidThrottleUntil()
 {
-    return m_pimpl->m_pidThrottleUntil;
+    return m_engine->m_pidThrottleUntil;
 }
 
 std::unordered_map<std::wstring, std::pair<Utils::SignatureStatus, std::chrono::steady_clock::time_point>> &
-ScanContext::GetProcessSigCache()
+SensorRuntimeContext::GetProcessSigCache()
 {
-    return m_pimpl->m_processSigCache;
+    return m_engine->m_processSigCache;
 }
 
-std::unordered_map<std::wstring, std::chrono::steady_clock::time_point> &ScanContext::GetProcessSigThrottleUntil()
+std::unordered_map<std::wstring, std::chrono::steady_clock::time_point> &SensorRuntimeContext::GetProcessSigThrottleUntil()
 {
-    return m_pimpl->m_processSigThrottleUntil;
+    return m_engine->m_processSigThrottleUntil;
 }

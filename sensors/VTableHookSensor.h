@@ -10,10 +10,10 @@ public:
     VTableHookSensor() = default;
     virtual ~VTableHookSensor() = default;
 
-    virtual SensorExecutionResult Execute(ScanContext &context) override;
+    virtual SensorExecutionResult Execute(SensorRuntimeContext &context) override;
     virtual const char* GetName() const override { return "VTableHookSensor"; }
     virtual SensorWeight GetWeight() const override { return SensorWeight::LIGHT; }
 
 private:
-    void CheckVTable(ScanContext& context, PVOID vtableBase, const char* name, int entryCount);
+    void CheckVTable(SensorRuntimeContext& context, PVOID vtableBase, const char* name, int entryCount);
 };

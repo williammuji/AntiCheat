@@ -1,19 +1,19 @@
-﻿#include "ProcessAndWindowMonitorSensor.h"
-#include "ScanContext.h"
+#include "ProcessAndWindowMonitorSensor.h"
+#include "SensorRuntimeContext.h"
 #include "utils/SystemUtils.h"
 #include "Logger.h"
 #include "utils/Utils.h"
 #include <psapi.h>
 #include <tlhelp32.h>
 
-SensorExecutionResult ProcessAndWindowMonitorSensor::Execute(ScanContext &context)
+SensorExecutionResult ProcessAndWindowMonitorSensor::Execute(SensorRuntimeContext &context)
 {
     m_lastFailureReason = anti_cheat::UNKNOWN_FAILURE;
 
     // 1. 枚举窗口
     struct EnumContext {
         ProcessAndWindowMonitorSensor* sensor;
-        ScanContext* context;
+        SensorRuntimeContext* context;
     };
     EnumContext enumCtx = {this, &context};
 
@@ -47,7 +47,7 @@ SensorExecutionResult ProcessAndWindowMonitorSensor::Execute(ScanContext &contex
     return SensorExecutionResult::SUCCESS;
 }
 
-void ProcessAndWindowMonitorSensor::CheckWindow(HWND hwnd, ScanContext &context)
+void ProcessAndWindowMonitorSensor::CheckWindow(HWND hwnd, SensorRuntimeContext &context)
 {
     if (!IsWindowVisible(hwnd)) return;
 
@@ -89,7 +89,7 @@ void ProcessAndWindowMonitorSensor::CheckWindow(HWND hwnd, ScanContext &context)
     }
 }
 
-void ProcessAndWindowMonitorSensor::CheckProcess(DWORD pid, const std::wstring& processName, ScanContext &context)
+void ProcessAndWindowMonitorSensor::CheckProcess(DWORD pid, const std::wstring& processName, SensorRuntimeContext &context)
 {
     if (pid == GetCurrentProcessId()) return; // Skip self
 

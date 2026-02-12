@@ -1,13 +1,13 @@
 #include <windows.h>
 #include "VTableHookSensor.h"
-#include "../include/ScanContext.h"
+#include "SensorRuntimeContext.h"
 #include "../Logger.h"
 #include "../utils/Utils.h"
 #include <string>
 #include <sstream>
 #include <algorithm>
 
-SensorExecutionResult VTableHookSensor::Execute(ScanContext &context)
+SensorExecutionResult VTableHookSensor::Execute(SensorRuntimeContext &context)
 {
     m_lastFailureReason = anti_cheat::UNKNOWN_FAILURE;
 
@@ -79,7 +79,7 @@ SensorExecutionResult VTableHookSensor::Execute(ScanContext &context)
     return SensorExecutionResult::SUCCESS;
 }
 
-void VTableHookSensor::CheckVTable(ScanContext& context, PVOID vtableBase, const char* name, int entryCount)
+void VTableHookSensor::CheckVTable(SensorRuntimeContext& context, PVOID vtableBase, const char* name, int entryCount)
 {
     if (!SystemUtils::IsReadableMemory(vtableBase, entryCount * sizeof(PVOID)))
     {
