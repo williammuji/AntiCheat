@@ -1,11 +1,11 @@
 #include "CheatMonitor.h"
-#include "CheatMonitorImpl.h"
+#include "CheatMonitorEngine.h"
 #include "CheatConfigManager.h"
 #include "Logger.h"
 #include "utils/Utils.h"
 #include <atomic>
 
-void CheatMonitorImpl::AddEvidence(anti_cheat::CheatCategory category, const std::string &description)
+void CheatMonitorEngine::AddEvidence(anti_cheat::CheatCategory category, const std::string &description)
 {
     std::lock_guard<std::mutex> lock(m_sessionMutex);
 
@@ -46,7 +46,7 @@ void CheatMonitorImpl::AddEvidence(anti_cheat::CheatCategory category, const std
     LOG_WARNING_F(AntiCheatLogger::LogCategory::SECURITY, "Evidence added: %s", description.c_str());
 }
 
-void CheatMonitorImpl::UploadHardwareReport()
+void CheatMonitorEngine::UploadHardwareReport()
 {
     auto sendWithFingerprint = [&](std::unique_ptr<anti_cheat::HardwareFingerprint> fp) {
         if (!fp)
@@ -110,11 +110,11 @@ void CheatMonitorImpl::UploadHardwareReport()
     sendWithFingerprint(std::move(fp));
 }
 
-void CheatMonitorImpl::UploadTargetedSensorReport(const std::string &requestId, const std::string &sensorName,
-                                                  SensorExecutionResult result,
-                                                  anti_cheat::SensorFailureReason failureReason, int duration_ms,
-                                                  const std::string &notes,
-                                                  const std::vector<anti_cheat::Evidence> &evidences)
+void CheatMonitorEngine::UploadTargetedSensorReport(const std::string &requestId, const std::string &sensorName,
+                                                    SensorExecutionResult result,
+                                                    anti_cheat::SensorFailureReason failureReason, int duration_ms,
+                                                    const std::string &notes,
+                                                    const std::vector<anti_cheat::Evidence> &evidences)
 {
     anti_cheat::Report report;
     report.set_type(anti_cheat::REPORT_TARGETED_SENSOR);
@@ -132,7 +132,7 @@ void CheatMonitorImpl::UploadTargetedSensorReport(const std::string &requestId, 
     SendReport(report);
 }
 
-void CheatMonitorImpl::UploadEvidenceReport()
+void CheatMonitorEngine::UploadEvidenceReport()
 {
     std::vector<anti_cheat::Evidence> evidencesToSend;
     {
@@ -157,7 +157,7 @@ void CheatMonitorImpl::UploadEvidenceReport()
     SendReport(report);
 }
 
-void CheatMonitorImpl::UploadTelemetryMetricsReport(const anti_cheat::TelemetryMetrics &metrics)
+void CheatMonitorEngine::UploadTelemetryMetricsReport(const anti_cheat::TelemetryMetrics &metrics)
 {
     anti_cheat::Report report;
     report.set_type(anti_cheat::REPORT_TELEMETRY);
@@ -170,7 +170,7 @@ void CheatMonitorImpl::UploadTelemetryMetricsReport(const anti_cheat::TelemetryM
     SendReport(report);
 }
 
-void CheatMonitorImpl::UploadSnapshotReport()
+void CheatMonitorEngine::UploadSnapshotReport()
 {
     if (!CheatConfigManager::GetInstance().IsSnapshotUploadEnabled()) return;
 
@@ -204,7 +204,7 @@ void CheatMonitorImpl::UploadSnapshotReport()
     LOG_INFO(AntiCheatLogger::LogCategory::SYSTEM, "快照数据上报完成");
 }
 
-void CheatMonitorImpl::UploadSensorExecutionStatsReport()
+void CheatMonitorEngine::UploadSensorExecutionStatsReport()
 {
     anti_cheat::TelemetryMetrics metrics;
     {
@@ -232,8 +232,8 @@ void CheatMonitorImpl::UploadSensorExecutionStatsReport()
     UploadTelemetryMetricsReport(metrics);
 }
 
-void CheatMonitorImpl::RecordSensorExecutionStats(const char *name, int duration_ms, SensorExecutionResult result,
-                                                  anti_cheat::SensorFailureReason failureReason)
+void CheatMonitorEngine::RecordSensorExecutionStats(const char *name, int duration_ms, SensorExecutionResult result,
+                                                    anti_cheat::SensorFailureReason failureReason)
 {
     std::lock_guard<std::mutex> lock(m_sensorStatsMutex);
     auto &stats = m_sensorExecutionStats[name];
@@ -276,8 +276,8 @@ void CheatMonitorImpl::RecordSensorExecutionStats(const char *name, int duration
     }
 }
 
-void CheatMonitorImpl::RecordSensorWorkloadCounters(const std::string &name, uint64_t snapshot_size, uint64_t attempts,
-                                                     uint64_t hits)
+void CheatMonitorEngine::RecordSensorWorkloadCounters(const std::string &name, uint64_t snapshot_size, uint64_t attempts,
+                                                       uint64_t hits)
 {
     std::lock_guard<std::mutex> lock(m_sensorStatsMutex);
     auto &stats = m_sensorExecutionStats[name];
@@ -298,7 +298,7 @@ void CheatMonitorImpl::RecordSensorWorkloadCounters(const std::string &name, uin
     }
 }
 
-void CheatMonitorImpl::SendReport(const anti_cheat::Report &report)
+void CheatMonitorEngine::SendReport(const anti_cheat::Report &report)
 {
     std::string serialized_report;
     if (!report.SerializeToString(&serialized_report))
@@ -340,8 +340,8 @@ void CheatMonitorImpl::SendReport(const anti_cheat::Report &report)
     // TODO: HttpSend(server_url, serialized_report);
 }
 
-void CheatMonitorImpl::SendServerLog(const std::string &log_level, const std::string &log_category,
-                                     const std::string &log_message)
+void CheatMonitorEngine::SendServerLog(const std::string &log_level, const std::string &log_category,
+                                       const std::string &log_message)
 {
     anti_cheat::Report report;
     report.set_type(anti_cheat::REPORT_SERVER_LOG);

@@ -1,5 +1,5 @@
 #include "ProcessHollowingSensor.h"
-#include "ScanContext.h"
+#include "SensorRuntimeContext.h"
 #include "utils/SystemUtils.h"
 #include "utils/Utils.h"
 #include "Logger.h"
@@ -7,7 +7,7 @@
 #include <sstream>
 #include <algorithm>
 
-SensorExecutionResult ProcessHollowingSensor::Execute(ScanContext &context)
+SensorExecutionResult ProcessHollowingSensor::Execute(SensorRuntimeContext &context)
 {
     m_lastFailureReason = anti_cheat::UNKNOWN_FAILURE;
 

@@ -1,12 +1,12 @@
 #include "VehHookSensor.h"
-#include "ScanContext.h"
+#include "SensorRuntimeContext.h"
 #include "utils/SystemUtils.h"
 #include "Logger.h"
 #include "CheatConfigManager.h"
 #include <algorithm>
 #include <sstream>
 
-SensorExecutionResult VehHookSensor::Execute(ScanContext &context)
+SensorExecutionResult VehHookSensor::Execute(SensorRuntimeContext &context)
 {
     // 重置失败原因
     m_lastFailureReason = anti_cheat::UNKNOWN_FAILURE;
@@ -260,7 +260,7 @@ VehHookSensor::VehTraverseResult VehHookSensor::TraverseVehListSafe(LIST_ENTRY *
     return result;
 }
 
-void VehHookSensor::AnalyzeHandlerSecurity(ScanContext &context, PVOID handlerAddress, int index)
+void VehHookSensor::AnalyzeHandlerSecurity(SensorRuntimeContext &context, PVOID handlerAddress, int index)
 {
     if (!handlerAddress)
         return;

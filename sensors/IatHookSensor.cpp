@@ -1,10 +1,10 @@
 #include "IatHookSensor.h"
-#include "ScanContext.h"
+#include "SensorRuntimeContext.h"
 #include "utils/SystemUtils.h"
 #include "Logger.h"
 #include <vector>
 
-SensorExecutionResult IatHookSensor::Execute(ScanContext &context)
+SensorExecutionResult IatHookSensor::Execute(SensorRuntimeContext &context)
 {
     // 重置失败原因
     m_lastFailureReason = anti_cheat::UNKNOWN_FAILURE;
@@ -71,7 +71,7 @@ SensorExecutionResult IatHookSensor::Execute(ScanContext &context)
     return SensorExecutionResult::SUCCESS;
 }
 
-bool IatHookSensor::PerformIatIntegrityCheck(ScanContext &context, HMODULE hSelf)
+bool IatHookSensor::PerformIatIntegrityCheck(SensorRuntimeContext &context, HMODULE hSelf)
 {
     const BYTE *baseAddress = reinterpret_cast<const BYTE *>(hSelf);
 
@@ -90,7 +90,7 @@ bool IatHookSensor::PerformIatIntegrityCheck(ScanContext &context, HMODULE hSelf
     return true;
 }
 
-bool IatHookSensor::ValidatePeStructure(const BYTE *baseAddress, ScanContext &context)
+bool IatHookSensor::ValidatePeStructure(const BYTE *baseAddress, SensorRuntimeContext &context)
 {
     // 验证DOS头
     if (!baseAddress || !SystemUtils::IsValidPointer(baseAddress, sizeof(IMAGE_DOS_HEADER)))
@@ -128,7 +128,7 @@ bool IatHookSensor::ValidatePeStructure(const BYTE *baseAddress, ScanContext &co
     return true;
 }
 
-bool IatHookSensor::CheckImportTableIntegrity(ScanContext &context, const BYTE *baseAddress)
+bool IatHookSensor::CheckImportTableIntegrity(SensorRuntimeContext &context, const BYTE *baseAddress)
 {
     const IMAGE_NT_HEADERS *pNtHeaders = reinterpret_cast<const IMAGE_NT_HEADERS *>(
             baseAddress + reinterpret_cast<const IMAGE_DOS_HEADER *>(baseAddress)->e_lfanew);
@@ -162,7 +162,7 @@ bool IatHookSensor::CheckImportTableIntegrity(ScanContext &context, const BYTE *
     return true;
 }
 
-void IatHookSensor::CheckIatHooks(ScanContext &context, const BYTE *baseAddress,
+void IatHookSensor::CheckIatHooks(SensorRuntimeContext &context, const BYTE *baseAddress,
                                   const IMAGE_IMPORT_DESCRIPTOR *pImportDesc)
 {
     const auto &baselineHashes = context.GetIatBaselineHashes();

@@ -1,11 +1,11 @@
 #include "AdvancedAntiDebugSensor.h"
-#include "ScanContext.h"
+#include "SensorRuntimeContext.h"
 #include "utils/SystemUtils.h"
 #include "Logger.h"
 #include <array>
 #include <functional>
 
-SensorExecutionResult AdvancedAntiDebugSensor::Execute(ScanContext &context)
+SensorExecutionResult AdvancedAntiDebugSensor::Execute(SensorRuntimeContext &context)
 {
     // 重置失败原因
     m_lastFailureReason = anti_cheat::UNKNOWN_FAILURE;
@@ -255,7 +255,7 @@ AdvancedAntiDebugSensor::DebugDetectionResult AdvancedAntiDebugSensor::CheckProc
     return result;
 }
 
-void AdvancedAntiDebugSensor::CheckRemoteDebugger(ScanContext &context)
+void AdvancedAntiDebugSensor::CheckRemoteDebugger(SensorRuntimeContext &context)
 {
     auto result = CheckRemoteDebugger_Internal();
     if (result.detected)
@@ -268,7 +268,7 @@ void AdvancedAntiDebugSensor::CheckRemoteDebugger(ScanContext &context)
     }
 }
 
-void AdvancedAntiDebugSensor::CheckPEBBeingDebugged(ScanContext &context)
+void AdvancedAntiDebugSensor::CheckPEBBeingDebugged(SensorRuntimeContext &context)
 {
     auto result = CheckPEBBeingDebugged_Internal();
     if (result.detected)
@@ -281,7 +281,7 @@ void AdvancedAntiDebugSensor::CheckPEBBeingDebugged(ScanContext &context)
     }
 }
 
-void AdvancedAntiDebugSensor::CheckCloseHandleDebugger(ScanContext &context)
+void AdvancedAntiDebugSensor::CheckCloseHandleDebugger(SensorRuntimeContext &context)
 {
     auto result = CheckCloseHandleDebugger_Internal();
     if (result.exceptionCode != 0)
@@ -290,7 +290,7 @@ void AdvancedAntiDebugSensor::CheckCloseHandleDebugger(ScanContext &context)
     }
 }
 
-void AdvancedAntiDebugSensor::CheckDebugRegisters(ScanContext &context)
+void AdvancedAntiDebugSensor::CheckDebugRegisters(SensorRuntimeContext &context)
 {
     auto result = CheckDebugRegisters_Internal();
     if (result.detected)
@@ -303,7 +303,7 @@ void AdvancedAntiDebugSensor::CheckDebugRegisters(ScanContext &context)
     }
 }
 
-void AdvancedAntiDebugSensor::CheckProcessHeapFlags(ScanContext &context)
+void AdvancedAntiDebugSensor::CheckProcessHeapFlags(SensorRuntimeContext &context)
 {
     auto result = CheckProcessHeapFlags_Internal();
     if (result.detected)
@@ -316,7 +316,7 @@ void AdvancedAntiDebugSensor::CheckProcessHeapFlags(ScanContext &context)
     }
 }
 
-void AdvancedAntiDebugSensor::CheckProcessDebugPort(ScanContext &context)
+void AdvancedAntiDebugSensor::CheckProcessDebugPort(SensorRuntimeContext &context)
 {
     auto result = CheckProcessDebugPort_Internal();
     if (result.detected)
@@ -329,7 +329,7 @@ void AdvancedAntiDebugSensor::CheckProcessDebugPort(ScanContext &context)
     }
 }
 
-void AdvancedAntiDebugSensor::CheckProcessDebugFlags(ScanContext &context)
+void AdvancedAntiDebugSensor::CheckProcessDebugFlags(SensorRuntimeContext &context)
 {
     auto result = CheckProcessDebugFlags_Internal();
     if (result.detected)
@@ -342,7 +342,7 @@ void AdvancedAntiDebugSensor::CheckProcessDebugFlags(ScanContext &context)
     }
 }
 
-void AdvancedAntiDebugSensor::CheckKernelDebuggerNtQuery(ScanContext &context)
+void AdvancedAntiDebugSensor::CheckKernelDebuggerNtQuery(SensorRuntimeContext &context)
 {
     auto result = CheckKernelDebuggerNtQuery_Internal();
     if (result.detected)
@@ -355,7 +355,7 @@ void AdvancedAntiDebugSensor::CheckKernelDebuggerNtQuery(ScanContext &context)
     }
 }
 
-SensorExecutionResult AdvancedAntiDebugSensor::CheckKernelDebuggerKUSER(ScanContext &context)
+SensorExecutionResult AdvancedAntiDebugSensor::CheckKernelDebuggerKUSER(SensorRuntimeContext &context)
 {
     auto result = CheckKernelDebuggerKUSER_Internal();
     if (result.detected)

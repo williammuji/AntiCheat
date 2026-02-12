@@ -8,7 +8,7 @@ class AdvancedAntiDebugSensor : public ISensor
 public:
     const char *GetName() const override { return "AdvancedAntiDebugSensor"; }
     SensorWeight GetWeight() const override { return SensorWeight::LIGHT; } // < 1ms: 轻量级反调试检测
-    SensorExecutionResult Execute(ScanContext &context) override;
+    SensorExecutionResult Execute(SensorRuntimeContext &context) override;
 
 private:
    struct DebugDetectionResult
@@ -28,13 +28,13 @@ private:
    static DebugDetectionResult CheckProcessDebugPort_Internal();
    static DebugDetectionResult CheckProcessDebugFlags_Internal();
 
-   void CheckRemoteDebugger(ScanContext &context);
-   void CheckPEBBeingDebugged(ScanContext &context);
-   void CheckCloseHandleDebugger(ScanContext &context);
-   void CheckDebugRegisters(ScanContext &context);
-   void CheckProcessHeapFlags(ScanContext &context);
-   void CheckProcessDebugPort(ScanContext &context);
-   void CheckProcessDebugFlags(ScanContext &context);
-   void CheckKernelDebuggerNtQuery(ScanContext &context);
-   SensorExecutionResult CheckKernelDebuggerKUSER(ScanContext &context);
+   void CheckRemoteDebugger(SensorRuntimeContext &context);
+   void CheckPEBBeingDebugged(SensorRuntimeContext &context);
+   void CheckCloseHandleDebugger(SensorRuntimeContext &context);
+   void CheckDebugRegisters(SensorRuntimeContext &context);
+   void CheckProcessHeapFlags(SensorRuntimeContext &context);
+   void CheckProcessDebugPort(SensorRuntimeContext &context);
+   void CheckProcessDebugFlags(SensorRuntimeContext &context);
+   void CheckKernelDebuggerNtQuery(SensorRuntimeContext &context);
+   SensorExecutionResult CheckKernelDebuggerKUSER(SensorRuntimeContext &context);
 };

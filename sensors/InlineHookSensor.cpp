@@ -1,5 +1,5 @@
 #include "InlineHookSensor.h"
-#include "ScanContext.h"
+#include "SensorRuntimeContext.h"
 #include "utils/SystemUtils.h"
 #include "Logger.h"
 #include "utils/Utils.h"
@@ -13,7 +13,7 @@ extern "C" {
 #include "hde/hde32.h"
 }
 
-SensorExecutionResult InlineHookSensor::Execute(ScanContext &context)
+SensorExecutionResult InlineHookSensor::Execute(SensorRuntimeContext &context)
 {
     m_lastFailureReason = anti_cheat::UNKNOWN_FAILURE;
 
@@ -54,7 +54,7 @@ SensorExecutionResult InlineHookSensor::Execute(ScanContext &context)
     return SensorExecutionResult::SUCCESS;
 }
 
-bool InlineHookSensor::IsModuleInUnifiedWhitelist(const std::wstring &modulePath, ScanContext &context) const
+bool InlineHookSensor::IsModuleInUnifiedWhitelist(const std::wstring &modulePath, SensorRuntimeContext &context) const
 {
     std::wstring lowered = modulePath;
     std::transform(lowered.begin(), lowered.end(), lowered.begin(), ::towlower);
@@ -76,7 +76,7 @@ bool InlineHookSensor::IsModuleInUnifiedWhitelist(const std::wstring &modulePath
     return false;
 }
 
-bool InlineHookSensor::IsAddressWhitelisted(PVOID address, ScanContext &context) const
+bool InlineHookSensor::IsAddressWhitelisted(PVOID address, SensorRuntimeContext &context) const
 {
     HMODULE hModule = nullptr;
     if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
@@ -94,7 +94,7 @@ bool InlineHookSensor::IsAddressWhitelisted(PVOID address, ScanContext &context)
     return IsModuleInUnifiedWhitelist(modulePath, context);
 }
 
-void InlineHookSensor::CheckModuleExports(HMODULE hMod, ScanContext& context)
+void InlineHookSensor::CheckModuleExports(HMODULE hMod, SensorRuntimeContext& context)
 {
     PIMAGE_DOS_HEADER pDos = (PIMAGE_DOS_HEADER)hMod;
     if (!SystemUtils::IsReadableMemory(pDos, sizeof(IMAGE_DOS_HEADER)) || pDos->e_magic != IMAGE_DOS_SIGNATURE) return;
@@ -142,7 +142,7 @@ void InlineHookSensor::CheckModuleExports(HMODULE hMod, ScanContext& context)
     }
 }
 
-void InlineHookSensor::CheckFunction(BYTE* pFunc, const char* funcName, ScanContext& context)
+void InlineHookSensor::CheckFunction(BYTE* pFunc, const char* funcName, SensorRuntimeContext& context)
 {
     hde32s hs;
     unsigned int len = hde32_disasm(pFunc, &hs);
@@ -197,7 +197,7 @@ void InlineHookSensor::CheckFunction(BYTE* pFunc, const char* funcName, ScanCont
     }
 }
 
-void InlineHookSensor::CheckHotpatchPreamble(BYTE* pPreamble, const char* funcName, ScanContext& context)
+void InlineHookSensor::CheckHotpatchPreamble(BYTE* pPreamble, const char* funcName, SensorRuntimeContext& context)
 {
     if (!SystemUtils::IsReadableMemory(pPreamble, 5)) return;
 

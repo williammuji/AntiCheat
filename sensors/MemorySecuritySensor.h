@@ -10,7 +10,7 @@ class MemorySecuritySensor : public ISensor
 public:
     const char *GetName() const override { return "MemorySecuritySensor"; }
     SensorWeight GetWeight() const override { return SensorWeight::HEAVY; } // 10-100ms: 内存安全检测
-    SensorExecutionResult Execute(ScanContext &context) override;
+    SensorExecutionResult Execute(SensorRuntimeContext &context) override;
 
 private:
     struct HiddenMemoryCheckResult
@@ -19,11 +19,11 @@ private:
         bool accessible = false;
     };
 
-    void DetectHiddenModule(ScanContext &context, const MEMORY_BASIC_INFORMATION &mbi);
-    void DetectMappedExecutableMemory(ScanContext &context, const MEMORY_BASIC_INFORMATION &mbi);
-    void DetectPrivateExecutableMemory(ScanContext &context, const MEMORY_BASIC_INFORMATION &mbi);
-    bool IsRegionInUnifiedWhitelist(PVOID baseAddress, ScanContext &context) const;
-    bool HasSecondaryConfirmation(ScanContext &context, const MEMORY_BASIC_INFORMATION &mbi) const;
+    void DetectHiddenModule(SensorRuntimeContext &context, const MEMORY_BASIC_INFORMATION &mbi);
+    void DetectMappedExecutableMemory(SensorRuntimeContext &context, const MEMORY_BASIC_INFORMATION &mbi);
+    void DetectPrivateExecutableMemory(SensorRuntimeContext &context, const MEMORY_BASIC_INFORMATION &mbi);
+    bool IsRegionInUnifiedWhitelist(PVOID baseAddress, SensorRuntimeContext &context) const;
+    bool HasSecondaryConfirmation(SensorRuntimeContext &context, const MEMORY_BASIC_INFORMATION &mbi) const;
     bool HasThreadStartInRegion(const MEMORY_BASIC_INFORMATION &mbi) const;
     static bool IsKnownSafeRegion(uintptr_t baseAddr, SIZE_T regionSize);
     HiddenMemoryCheckResult CheckHiddenMemoryRegion(PVOID baseAddress, SIZE_T regionSize);

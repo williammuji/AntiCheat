@@ -1,9 +1,9 @@
 #include "SystemCodeIntegritySensor.h"
-#include "ScanContext.h"
+#include "SensorRuntimeContext.h"
 #include "utils/SystemUtils.h"
 #include "Logger.h"
 
-SensorExecutionResult SystemCodeIntegritySensor::Execute(ScanContext &context)
+SensorExecutionResult SystemCodeIntegritySensor::Execute(SensorRuntimeContext &context)
 {
     // 重置失败原因
     m_lastFailureReason = anti_cheat::UNKNOWN_FAILURE;

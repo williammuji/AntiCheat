@@ -1,5 +1,5 @@
 #include "MemorySecuritySensor.h"
-#include "ScanContext.h"
+#include "SensorRuntimeContext.h"
 #include "utils/SystemUtils.h"
 #include "Logger.h"
 #include "CheatConfigManager.h"
@@ -9,7 +9,7 @@
 #include <algorithm>
 #include <tlhelp32.h>
 
-SensorExecutionResult MemorySecuritySensor::Execute(ScanContext &context)
+SensorExecutionResult MemorySecuritySensor::Execute(SensorRuntimeContext &context)
 {
     // 重置失败原因
     m_lastFailureReason = anti_cheat::UNKNOWN_FAILURE;
@@ -115,7 +115,7 @@ SensorExecutionResult MemorySecuritySensor::Execute(ScanContext &context)
     return SensorExecutionResult::SUCCESS;
 }
 
-void MemorySecuritySensor::DetectHiddenModule(ScanContext &context, const MEMORY_BASIC_INFORMATION &mbi)
+void MemorySecuritySensor::DetectHiddenModule(SensorRuntimeContext &context, const MEMORY_BASIC_INFORMATION &mbi)
 {
     uintptr_t baseAddr = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
     SIZE_T regionSize = mbi.RegionSize;
@@ -148,7 +148,7 @@ void MemorySecuritySensor::DetectHiddenModule(ScanContext &context, const MEMORY
     }
 }
 
-void MemorySecuritySensor::DetectMappedExecutableMemory(ScanContext &context, const MEMORY_BASIC_INFORMATION &mbi)
+void MemorySecuritySensor::DetectMappedExecutableMemory(SensorRuntimeContext &context, const MEMORY_BASIC_INFORMATION &mbi)
 {
     const uint32_t minRegionSize = CheatConfigManager::GetInstance().GetMinMemoryRegionSize();
     const uint32_t maxRegionSize = CheatConfigManager::GetInstance().GetMaxMemoryRegionSize();
@@ -171,7 +171,7 @@ void MemorySecuritySensor::DetectMappedExecutableMemory(ScanContext &context, co
     }
 }
 
-void MemorySecuritySensor::DetectPrivateExecutableMemory(ScanContext &context, const MEMORY_BASIC_INFORMATION &mbi)
+void MemorySecuritySensor::DetectPrivateExecutableMemory(SensorRuntimeContext &context, const MEMORY_BASIC_INFORMATION &mbi)
 {
     // 使用配置化的检测阈值
     const uint32_t minRegionSize = CheatConfigManager::GetInstance().GetMinMemoryRegionSize();
@@ -268,7 +268,7 @@ void MemorySecuritySensor::DetectPrivateExecutableMemory(ScanContext &context, c
     }
 }
 
-bool MemorySecuritySensor::IsRegionInUnifiedWhitelist(PVOID baseAddress, ScanContext &context) const
+bool MemorySecuritySensor::IsRegionInUnifiedWhitelist(PVOID baseAddress, SensorRuntimeContext &context) const
 {
     HMODULE hMod = nullptr;
     if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
@@ -303,7 +303,7 @@ bool MemorySecuritySensor::IsRegionInUnifiedWhitelist(PVOID baseAddress, ScanCon
     return false;
 }
 
-bool MemorySecuritySensor::HasSecondaryConfirmation(ScanContext &context, const MEMORY_BASIC_INFORMATION &mbi) const
+bool MemorySecuritySensor::HasSecondaryConfirmation(SensorRuntimeContext &context, const MEMORY_BASIC_INFORMATION &mbi) const
 {
     if (HasThreadStartInRegion(mbi))
     {

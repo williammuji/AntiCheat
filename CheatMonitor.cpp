@@ -1,12 +1,12 @@
 #include "CheatMonitor.h"
-#include "CheatMonitorImpl.h"
+#include "CheatMonitorEngine.h"
 #include "utils/SystemUtils.h"
 
 #include <memory>
 #include <mutex>
 #include <thread>
 
-struct CheatMonitor::Pimpl : public CheatMonitorImpl
+struct CheatMonitor::Pimpl : public CheatMonitorEngine
 {
 };
 
@@ -25,7 +25,7 @@ bool CheatMonitor::Initialize()
     {
         m_pimpl = std::make_unique<Pimpl>();
         m_pimpl->m_isSystemActive = true;
-        m_pimpl->m_monitorThread = std::thread(&CheatMonitorImpl::MonitorLoop, m_pimpl.get());
+        m_pimpl->m_monitorThread = std::thread(&CheatMonitorEngine::MonitorLoop, m_pimpl.get());
     }
     return true;
 }
@@ -101,12 +101,12 @@ bool CheatMonitor::IsCallerLegitimate()
     return m_pimpl->IsAddressInLegitimateModule(_ReturnAddress());
 }
 
-CheatMonitorImpl::CheatMonitorImpl()
+CheatMonitorEngine::CheatMonitorEngine()
 {
     m_windowsVersion = SystemUtils::GetWindowsVersion();
 }
 
-CheatMonitorImpl::~CheatMonitorImpl()
+CheatMonitorEngine::~CheatMonitorEngine()
 {
     if (m_wmiMonitor)
     {

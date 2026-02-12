@@ -1,15 +1,15 @@
 #include "CheatMonitor.h"
-#include "CheatMonitorImpl.h"
+#include "CheatMonitorEngine.h"
 #include "ISensor.h"
 #include "CheatConfigManager.h"
 #include "Logger.h"
 
-void CheatMonitorImpl::WakeMonitor()
+void CheatMonitorEngine::WakeMonitor()
 {
     m_cv.notify_one();
 }
 
-void CheatMonitorImpl::MonitorLoop()
+void CheatMonitorEngine::MonitorLoop()
 {
     InitializeSystem();
 
@@ -77,7 +77,7 @@ void CheatMonitorImpl::MonitorLoop()
     }
 }
 
-void CheatMonitorImpl::ResetSessionState()
+void CheatMonitorEngine::ResetSessionState()
 {
     {
         std::lock_guard<std::mutex> lock(m_sessionMutex);
@@ -105,25 +105,25 @@ void CheatMonitorImpl::ResetSessionState()
     LOG_INFO(AntiCheatLogger::LogCategory::SYSTEM, "Session state reset completed");
 }
 
-const std::chrono::milliseconds CheatMonitorImpl::GetLightScanInterval() const
+const std::chrono::milliseconds CheatMonitorEngine::GetLightScanInterval() const
 {
     const auto base_interval = std::chrono::seconds(CheatConfigManager::GetInstance().GetBaseScanInterval());
     const auto jitter = std::chrono::milliseconds(m_rng() % 2000);
     return base_interval + jitter;
 }
 
-const std::chrono::milliseconds CheatMonitorImpl::GetHeavyScanInterval() const
+const std::chrono::milliseconds CheatMonitorEngine::GetHeavyScanInterval() const
 {
     const auto base_interval = std::chrono::minutes(CheatConfigManager::GetInstance().GetHeavyScanIntervalMinutes());
     const auto jitter = std::chrono::milliseconds(m_rng() % 60000);
     return base_interval + jitter;
 }
 
-void CheatMonitorImpl::ExecuteLightweightSensors()
+void CheatMonitorEngine::ExecuteLightweightSensors()
 {
     if (m_lightweightSensors.empty()) return;
 
-    ScanContext context(this, false);
+    SensorRuntimeContext context(this, false);
     context.RefreshModuleCache();
 
     for (const auto &sensor : m_lightweightSensors)
@@ -132,11 +132,11 @@ void CheatMonitorImpl::ExecuteLightweightSensors()
     }
 }
 
-void CheatMonitorImpl::ExecuteHeavyweightSensors()
+void CheatMonitorEngine::ExecuteHeavyweightSensors()
 {
     if (m_heavyweightSensors.empty()) return;
 
-    ScanContext context(this, false);
+    SensorRuntimeContext context(this, false);
     context.RefreshModuleCache();
     context.RefreshMemoryCache();
 
@@ -158,8 +158,8 @@ void CheatMonitorImpl::ExecuteHeavyweightSensors()
     }
 }
 
-SensorExecutionResult CheatMonitorImpl::ExecuteAndMonitorSensor(ISensor *sensor, const char *name, bool isHeavyweight,
-                                                                ScanContext &context,
+SensorExecutionResult CheatMonitorEngine::ExecuteAndMonitorSensor(ISensor *sensor, const char *name, bool isHeavyweight,
+                                                                  SensorRuntimeContext &context,
                                                                 anti_cheat::SensorFailureReason *outFailure,
                                                                 int *outDurationMs)
 {
@@ -204,13 +204,13 @@ SensorExecutionResult CheatMonitorImpl::ExecuteAndMonitorSensor(ISensor *sensor,
     }
 }
 
-void CheatMonitorImpl::AddRandomJitter()
+void CheatMonitorEngine::AddRandomJitter()
 {
     std::uniform_int_distribution<long> jitter_dist(0, CheatConfigManager::GetInstance().GetJitterMilliseconds());
     std::this_thread::sleep_for(std::chrono::milliseconds(jitter_dist(m_rng)));
 }
 
-void CheatMonitorImpl::SubmitTargetedScanRequest(const std::string &requestId, const std::string &sensorName)
+void CheatMonitorEngine::SubmitTargetedScanRequest(const std::string &requestId, const std::string &sensorName)
 {
     if (requestId.empty() || sensorName.empty()) return;
 
@@ -227,7 +227,7 @@ void CheatMonitorImpl::SubmitTargetedScanRequest(const std::string &requestId, c
     if (added) WakeMonitor();
 }
 
-bool CheatMonitorImpl::TryDequeueTargetedScan(TargetedScanRequest &outRequest)
+bool CheatMonitorEngine::TryDequeueTargetedScan(TargetedScanRequest &outRequest)
 {
     std::lock_guard<std::mutex> lock(m_targetedScanMutex);
     if (m_targetedScanQueue.empty()) return false;
@@ -236,7 +236,7 @@ bool CheatMonitorImpl::TryDequeueTargetedScan(TargetedScanRequest &outRequest)
     return true;
 }
 
-void CheatMonitorImpl::ProcessPendingTargetedScans()
+void CheatMonitorEngine::ProcessPendingTargetedScans()
 {
     if (!m_isSessionActive.load()) return;
     TargetedScanRequest request;
@@ -246,7 +246,7 @@ void CheatMonitorImpl::ProcessPendingTargetedScans()
     }
 }
 
-void CheatMonitorImpl::RunTargetedSensorScan(const TargetedScanRequest &request)
+void CheatMonitorEngine::RunTargetedSensorScan(const TargetedScanRequest &request)
 {
     SensorExecutionResult result = SensorExecutionResult::FAILURE;
     anti_cheat::SensorFailureReason failureReason = anti_cheat::UNKNOWN_FAILURE;
@@ -276,7 +276,7 @@ void CheatMonitorImpl::RunTargetedSensorScan(const TargetedScanRequest &request)
     else
     {
         bool isHeavy = targetSensor->GetWeight() != SensorWeight::LIGHT;
-        ScanContext context(this, true);
+        SensorRuntimeContext context(this, true);
         context.RefreshModuleCache();
         if (isHeavy) context.RefreshMemoryCache();
 

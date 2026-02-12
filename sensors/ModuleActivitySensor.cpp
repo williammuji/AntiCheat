@@ -1,5 +1,5 @@
 #include "ModuleActivitySensor.h"
-#include "ScanContext.h"
+#include "SensorRuntimeContext.h"
 #include "CheatConfigManager.h"
 #include "utils/SystemUtils.h"
 #include "Logger.h"
@@ -8,7 +8,7 @@
 #include <algorithm>
 #include <sstream>
 
-SensorExecutionResult ModuleActivitySensor::Execute(ScanContext &context)
+SensorExecutionResult ModuleActivitySensor::Execute(SensorRuntimeContext &context)
 {
     // 重置失败原因
     m_lastFailureReason = anti_cheat::UNKNOWN_FAILURE;
@@ -38,7 +38,7 @@ SensorExecutionResult ModuleActivitySensor::Execute(ScanContext &context)
     return SensorExecutionResult::SUCCESS;
 }
 
-bool ModuleActivitySensor::ScanModulesWithTimeout(ScanContext &context, int budget_ms,
+bool ModuleActivitySensor::ScanModulesWithTimeout(SensorRuntimeContext &context, int budget_ms,
                                                   const std::chrono::steady_clock::time_point &startTime)
 {
     int moduleCount = 0;

@@ -1,5 +1,5 @@
 #include "ThreadActivitySensor.h"
-#include "ScanContext.h"
+#include "SensorRuntimeContext.h"
 #include "CheatConfigManager.h"
 #include "utils/SystemUtils.h"
 #include "Logger.h"
@@ -10,7 +10,7 @@
 #include <vector>
 #include <memory>
 
-SensorExecutionResult ThreadActivitySensor::Execute(ScanContext &context)
+SensorExecutionResult ThreadActivitySensor::Execute(SensorRuntimeContext &context)
 {
     m_lastFailureReason = anti_cheat::UNKNOWN_FAILURE;
 
@@ -44,7 +44,7 @@ SensorExecutionResult ThreadActivitySensor::Execute(ScanContext &context)
     return SensorExecutionResult::SUCCESS;
 }
 
-bool ThreadActivitySensor::ScanThreadsWithTimeout(ScanContext &context, int budget_ms,
+bool ThreadActivitySensor::ScanThreadsWithTimeout(SensorRuntimeContext &context, int budget_ms,
                                                   const std::chrono::steady_clock::time_point &startTime)
 {
     int threadCount = 0;
@@ -110,7 +110,7 @@ bool ThreadActivitySensor::ScanThreadsWithTimeout(ScanContext &context, int budg
     return !hasSystemFailure;
 }
 
-void ThreadActivitySensor::AnalyzeNewThread(ScanContext &context, DWORD threadId)
+void ThreadActivitySensor::AnalyzeNewThread(SensorRuntimeContext &context, DWORD threadId)
 {
     if (!SystemUtils::g_pNtQueryInformationThread) return;
 
@@ -164,7 +164,7 @@ void ThreadActivitySensor::AnalyzeNewThread(ScanContext &context, DWORD threadId
     }
 }
 
-void ThreadActivitySensor::AnalyzeThreadIntegrity(ScanContext &context, DWORD threadId)
+void ThreadActivitySensor::AnalyzeThreadIntegrity(SensorRuntimeContext &context, DWORD threadId)
 {
     if (!SystemUtils::g_pNtQueryInformationThread) return;
 

@@ -1,6 +1,6 @@
 #include <windows.h>
 #include "DriverIntegritySensor.h"
-#include "../include/ScanContext.h"
+#include "SensorRuntimeContext.h"
 #include "../utils/SystemUtils.h"
 #include "../Logger.h"
 #include "../utils/Utils.h"
@@ -15,7 +15,7 @@
 #pragma comment(lib, "wintrust.lib")
 #pragma comment(lib, "psapi.lib")
 
-SensorExecutionResult DriverIntegritySensor::Execute(ScanContext &context)
+SensorExecutionResult DriverIntegritySensor::Execute(SensorRuntimeContext &context)
 {
     m_lastFailureReason = anti_cheat::UNKNOWN_FAILURE;
 

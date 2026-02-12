@@ -1,5 +1,5 @@
 #include "ProcessHandleSensor.h"
-#include "ScanContext.h"
+#include "SensorRuntimeContext.h"
 #include "utils/SystemUtils.h"
 #include "Logger.h"
 #include "utils/Utils.h"
@@ -115,7 +115,7 @@ static bool IsHandlePointingToUs_Safe_Impl(HANDLE remoteHandleValue, DWORD remot
     return isPointingToUs;
 }
 
-SensorExecutionResult ProcessHandleSensor::Execute(ScanContext &context)
+SensorExecutionResult ProcessHandleSensor::Execute(SensorRuntimeContext &context)
 {
     // 重置失败原因
     m_lastFailureReason = anti_cheat::UNKNOWN_FAILURE;
