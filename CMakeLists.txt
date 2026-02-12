@@ -64,7 +64,7 @@ target_include_directories(CheatMonitorLib PUBLIC
 
 # 统一 XP toolset 目标宏（运行时能力由 SystemUtils 做动态降级/分支）
 if (MSVC)
-    target_compile_options(CheatMonitorLib PRIVATE /utf-8)
+    target_compile_options(CheatMonitorLib PRIVATE /utf-8 /wd4141)
 endif()
 
 if (WIN32)

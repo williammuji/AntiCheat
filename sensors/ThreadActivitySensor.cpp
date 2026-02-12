@@ -238,7 +238,16 @@ void ThreadActivitySensor::AnalyzeThreadIntegrity(ScanContext &context, DWORD th
 
 DWORD ThreadActivitySensor::GetProcessIdOfThread(HANDLE hThread)
 {
-    return ::GetProcessIdOfThread(hThread);
+    if (SystemUtils::g_pNtQueryInformationThread)
+    {
+        THREAD_BASIC_INFORMATION tbi = {0};
+        NTSTATUS status = SystemUtils::g_pNtQueryInformationThread(hThread, (THREADINFOCLASS)0, &tbi, sizeof(tbi), nullptr);
+        if (NT_SUCCESS(status))
+        {
+            return (DWORD)(uintptr_t)tbi.ClientId.UniqueProcess;
+        }
+    }
+    return 0;
 }
 
 std::string ThreadActivitySensor::GetThreadDetailedInfo(DWORD threadId, PVOID startAddress)
