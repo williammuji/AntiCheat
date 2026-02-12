@@ -210,7 +210,10 @@ jobs:
       shell: powershell
       run: |
         Write-Host "=== Sensor Integrity Check ==="
-        $monitorContent = Get-Content "CheatMonitor.cpp" -Raw
+        $guardContent = Get-Content "CheatMonitorEnvironmentGuard.cpp" -Raw
+        $schedulerContent = Get-Content "CheatMonitorScheduler.cpp" -Raw
+        $sensorHeaders = Get-ChildItem "sensors/*.h" | Get-Content -Raw
+        $allContent = $guardContent + $schedulerContent + ($sensorHeaders -join "`n")
         $errors = @()
         $warnings = @()
 
@@ -230,7 +233,7 @@ jobs:
         )
 
         foreach ($sensor in $expectedSensors) {
-          if ($monitorContent -match "std::make_unique<$sensor>") {
+          if ($guardContent -match "std::make_unique<$sensor>") {
             Write-Host "✅ Sensor registered: $sensor"
           } else {
             $errors += "Sensor not registered: $sensor"
@@ -246,9 +249,9 @@ jobs:
 
         foreach ($weight in $weightChecks.GetEnumerator()) {
           $pattern = "SensorWeight::$($weight.Key)"
-          $matches = ([regex]::Matches($monitorContent, [regex]::Escape($pattern))).Count
+          $matches = ([regex]::Matches($allContent, [regex]::Escape($pattern))).Count
           if ($matches -ge $weight.Value) {
-            Write-Host "✅ $($weight.Key) weight: $matches sensors (expected ≥$($weight.Value))"
+            Write-Host "✅ $($weight.Key) weight: $matches sensors (expected >=$($weight.Value))"
           } else {
             $warnings += "$($weight.Key) weight sensors insufficient: $matches < $($weight.Value)"
           }
@@ -264,7 +267,7 @@ jobs:
         }
 
         foreach ($feature in $prodFeatures.GetEnumerator()) {
-          if ($monitorContent -match $feature.Value) {
+          if ($schedulerContent -match $feature.Value -or $guardContent -match $feature.Value) {
             Write-Host "✅ Production feature: $($feature.Key)"
           } else {
             $errors += "Missing production feature: $($feature.Key)"
