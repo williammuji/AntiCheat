@@ -5,49 +5,49 @@
 
 #include "SensorRuntimeContext.h"
 
-// 浼犳劅鍣ㄦ潈閲嶅垎绾ф灇涓?
+// 传感器权重分级枚举
 enum class SensorWeight
 {
     LIGHT,    // 0-10ms: AdvancedAntiDebug, SystemCodeIntegrity, IatHook, VehHook
     HEAVY,    // 100-1000ms: ThreadActivitySensor, ModuleActivitySensor, MemorySecuritySensor
-    CRITICAL  // 1000-10000ms: ProcessHandle, ProcessAndWindowMonitor, ModuleIntegrity (鍒嗘鎵弿)
+    CRITICAL  // 1000-10000ms: ProcessHandle, ProcessAndWindowMonitor, ModuleIntegrity (分段扫描)
 };
 
-// 浼犳劅鍣ㄦ墽琛岀粨鏋滄灇涓?
+// 传感器执行结果枚举
 enum class SensorExecutionResult
 {
-    SUCCESS = 0,  // 鎴愬姛鎵ц
-    TIMEOUT = 1,  // 鎵ц瓒呮椂
-    FAILURE = 2   // 鎵ц澶辫触
+    SUCCESS = 0,  // 成功执行
+    TIMEOUT = 1,  // 执行超时
+    FAILURE = 2   // 执行失败
 };
 
-// ISensor: 鎵€鏈夋娴嬩紶鎰熷櫒鐨勬娊璞″熀绫绘帴鍙?(绛栫暐妯″紡)
+// ISensor: 所有检测传感器的抽象基类接口 (策略模式)
 class ISensor
 {
    public:
     virtual ~ISensor() = default;
-    virtual const char *GetName() const = 0;     // 鐢ㄤ簬鏃ュ織鍜岃皟璇?
-    virtual SensorWeight GetWeight() const = 0;  // 鑾峰彇浼犳劅鍣ㄦ潈閲嶅垎绾?
+    virtual const char *GetName() const = 0;     // 用于日志和调试
+    virtual SensorWeight GetWeight() const = 0;  // 获取传感器权重分级
     virtual SensorExecutionResult Execute(SensorRuntimeContext &context) = 0;
 
    public:
-    // 鑾峰彇鏈€鍚庝竴娆″け璐ュ師鍥?- 鍩虹被瀹炵幇
+    // 获取最后一次失败原因 - 基类实现
     anti_cheat::SensorFailureReason GetLastFailureReason() const
     {
         return m_lastFailureReason;
     }
 
    protected:
-    // 缁熶竴鐨勫け璐ュ師鍥犺褰曟柟娉?- 鍩虹被瀹炵幇
+    // 统一的失败原因记录方法 - 基类实现
     void RecordFailure(anti_cheat::SensorFailureReason reason)
     {
         m_lastFailureReason = reason;
     }
 
-    // 缁熶竴鐨勫け璐ュ師鍥犳垚鍛樺彉閲?- 鎵€鏈変紶鎰熷櫒鍏变韩
+    // 统一的失败原因成员变量 - 所有传感器共享
     anti_cheat::SensorFailureReason m_lastFailureReason = anti_cheat::UNKNOWN_FAILURE;
 
-    // 缁熶竴鐨凮S鐗堟湰妫€鏌ユ帴鍙?- 鍐呰仈瀹炵幇
+    // 统一的OS版本检查接口 - 内联实现
     bool IsOsSupported(SensorRuntimeContext &context) const
     {
         return context.IsCurrentOsSupported();

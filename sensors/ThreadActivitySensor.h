@@ -9,7 +9,7 @@ class ThreadActivitySensor : public ISensor
 {
 public:
     const char *GetName() const override { return "ThreadActivitySensor"; }
-    SensorWeight GetWeight() const override { return SensorWeight::HEAVY; } // 10-100ms: 绾跨▼鍜屾ā鍧楁椿鍔ㄧ洃鎺?
+    SensorWeight GetWeight() const override { return SensorWeight::HEAVY; } // 10-100ms: 线程和模块活动监控
     SensorExecutionResult Execute(SensorRuntimeContext &context) override;
 
 private:

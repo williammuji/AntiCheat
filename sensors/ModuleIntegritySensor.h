@@ -11,7 +11,7 @@ class ModuleIntegritySensor : public ISensor
 {
 public:
     const char *GetName() const override { return "ModuleIntegritySensor"; }
-    SensorWeight GetWeight() const override { return SensorWeight::CRITICAL; } // ~1000ms: 妯″潡浠ｇ爜瀹屾暣鎬ф娴嬶紙鍒嗘鎵弿锛?
+    SensorWeight GetWeight() const override { return SensorWeight::CRITICAL; } // ~1000ms: 模块代码完整性检测（分段扫描）
     SensorExecutionResult Execute(SensorRuntimeContext &context) override;
 
 private:
@@ -23,7 +23,7 @@ private:
        PVOID codeBase;
        DWORD codeSize;
        bool valid;
-       bool isSpecial; // 缂撳瓨鐗规畩妯″潡鏍囪
+       bool isSpecial; // 缓存特殊模块标记
    };
    std::unordered_map<HMODULE, CachedModuleInfo> m_moduleCache;
 
