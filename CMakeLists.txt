@@ -58,7 +58,6 @@ add_library(CheatMonitorLib STATIC
 target_include_directories(CheatMonitorLib PUBLIC
     ${CMAKE_CURRENT_BINARY_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/utils
     ${CMAKE_CURRENT_SOURCE_DIR}/sensors
     ${Protobuf_INCLUDE_DIRS}
