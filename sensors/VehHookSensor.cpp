@@ -103,7 +103,7 @@ SensorExecutionResult VehHookSensor::Execute(SensorRuntimeContext &context)
         // 策略6：限制检查数量和频率
         // CheatConfigManager::GetMaxVehHandlersToScan is not exposed in shared CheatConfigManager?
         // Need to check if available, or assume default.
-        // The viewed ScanContext does not expose it either directly.
+        // The viewed SensorRuntimeContext does not expose it either directly.
         // I will assume CheatConfigManager works or default to 50 if failing compilation.
         // Assuming CheatConfigManager has GetMaxVehHandlersToScan() based on CheatMonitor.cpp code.
         const size_t maxHandlers = (size_t)CheatConfigManager::GetInstance().GetMaxVehHandlersToScan();
