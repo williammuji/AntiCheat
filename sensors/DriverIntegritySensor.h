@@ -1,6 +1,7 @@
 #pragma once
 
-#include "ISensor.h"
+#include "../ISensor.h"
+
 
 class DriverIntegritySensor : public ISensor
 {

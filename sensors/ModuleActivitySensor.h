@@ -1,6 +1,7 @@
 #pragma once
 
-#include "ISensor.h"
+#include "../ISensor.h"
+
 #include <chrono>
 
 class ModuleActivitySensor : public ISensor

@@ -1,7 +1,8 @@
 #pragma once
 
 #include <windows.h>
-#include "ISensor.h"
+#include "../ISensor.h"
+
 #include <vector>
 #include <unordered_map>
 #include <unordered_set>
