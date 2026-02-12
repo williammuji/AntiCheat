@@ -3,8 +3,11 @@
 #include "utils/SystemUtils.h"
 #include "Logger.h"
 #include "CheatConfigManager.h"
+#include "utils/Utils.h"
 #include <vector>
 #include <sstream>
+#include <algorithm>
+#include <tlhelp32.h>
 
 SensorExecutionResult MemorySecuritySensor::Execute(ScanContext &context)
 {
@@ -194,6 +197,11 @@ void MemorySecuritySensor::DetectPrivateExecutableMemory(ScanContext &context, c
     {
         if (!context.IsAddressInLegitimateModule(mbi.BaseAddress))
         {
+            if (IsRegionInUnifiedWhitelist(mbi.BaseAddress, context))
+            {
+                return;
+            }
+
             const uintptr_t base = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
 
             // 【高级降噪】：过滤低地址小块 RWX 内存（系统 trampolines/DEP）
@@ -223,7 +231,15 @@ void MemorySecuritySensor::DetectPrivateExecutableMemory(ScanContext &context, c
                 return;
             }
 
-            // 只有RWX内存且通过所有过滤才会到达这里
+            // 二次确认：仅在"线程起点异常/模块签名异常"二次信号成立时升级
+            if (!HasSecondaryConfirmation(context, mbi))
+            {
+                LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR,
+                            "跳过RWX区域上报（未满足二次确认）: 0x%zx, 大小=%zu", base, mbi.RegionSize);
+                return;
+            }
+
+            // 只有RWX内存且通过白名单与二次确认过滤才会到达这里
             std::ostringstream oss;
 
             // 进一步检查是否包含PE头，区分Shellcode和手动映射模块
@@ -250,6 +266,124 @@ void MemorySecuritySensor::DetectPrivateExecutableMemory(ScanContext &context, c
             context.AddEvidence(anti_cheat::RUNTIME_MEMORY_EXEC_PRIVATE, oss.str());
         }
     }
+}
+
+bool MemorySecuritySensor::IsRegionInUnifiedWhitelist(PVOID baseAddress, ScanContext &context) const
+{
+    HMODULE hMod = nullptr;
+    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            reinterpret_cast<LPCWSTR>(baseAddress), &hMod) ||
+        !hMod)
+    {
+        return false;
+    }
+
+    wchar_t modulePath[MAX_PATH] = {0};
+    if (GetModuleFileNameW(hMod, modulePath, MAX_PATH) == 0)
+    {
+        return false;
+    }
+
+    std::wstring normalized = modulePath;
+    std::transform(normalized.begin(), normalized.end(), normalized.begin(), ::towlower);
+    if (Utils::IsWhitelistedModule(normalized))
+    {
+        return true;
+    }
+
+    auto ignoreList = context.GetWhitelistedIntegrityIgnoreList();
+    if (ignoreList)
+    {
+        const std::wstring name = Utils::GetFileName(normalized);
+        if (ignoreList->count(name) > 0)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool MemorySecuritySensor::HasSecondaryConfirmation(ScanContext &context, const MEMORY_BASIC_INFORMATION &mbi) const
+{
+    if (HasThreadStartInRegion(mbi))
+    {
+        return true;
+    }
+
+    HMODULE hMod = nullptr;
+    if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            reinterpret_cast<LPCWSTR>(mbi.BaseAddress), &hMod) &&
+        hMod)
+    {
+        wchar_t modulePath[MAX_PATH] = {0};
+        if (GetModuleFileNameW(hMod, modulePath, MAX_PATH) > 0)
+        {
+            if (!Utils::IsWhitelistedModule(modulePath))
+            {
+                Utils::SignatureStatus sig = Utils::VerifyFileSignature(modulePath, context.GetWindowsVersion());
+                if (sig == Utils::SignatureStatus::UNTRUSTED)
+                {
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
+bool MemorySecuritySensor::HasThreadStartInRegion(const MEMORY_BASIC_INFORMATION &mbi) const
+{
+    const uintptr_t regionStart = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
+    const uintptr_t regionEnd = regionStart + mbi.RegionSize;
+
+    HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+    if (hSnapshot == INVALID_HANDLE_VALUE)
+    {
+        return false;
+    }
+
+    const DWORD currentPid = GetCurrentProcessId();
+    THREADENTRY32 te = {};
+    te.dwSize = sizeof(te);
+    bool hit = false;
+
+    if (Thread32First(hSnapshot, &te))
+    {
+        do
+        {
+            if (te.th32OwnerProcessID != currentPid)
+            {
+                continue;
+            }
+
+            HANDLE hThread = OpenThread(THREAD_QUERY_INFORMATION, FALSE, te.th32ThreadID);
+            if (!hThread)
+            {
+                continue;
+            }
+
+            PVOID startAddress = nullptr;
+            if (SystemUtils::g_pNtQueryInformationThread &&
+                NT_SUCCESS(SystemUtils::g_pNtQueryInformationThread(
+                        hThread, (THREADINFOCLASS)9, &startAddress, sizeof(startAddress), nullptr)) &&
+                startAddress)
+            {
+                const uintptr_t addr = reinterpret_cast<uintptr_t>(startAddress);
+                if (addr >= regionStart && addr < regionEnd)
+                {
+                    hit = true;
+                }
+            }
+            CloseHandle(hThread);
+            if (hit)
+            {
+                break;
+            }
+        } while (Thread32Next(hSnapshot, &te));
+    }
+
+    CloseHandle(hSnapshot);
+    return hit;
 }
 
 bool MemorySecuritySensor::IsKnownSafeRegion(uintptr_t baseAddr, SIZE_T regionSize)

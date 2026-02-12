@@ -1,9 +1,11 @@
 #include "ProcessHollowingSensor.h"
 #include "ScanContext.h"
 #include "utils/SystemUtils.h"
+#include "utils/Utils.h"
 #include "Logger.h"
 #include <vector>
 #include <sstream>
+#include <algorithm>
 
 SensorExecutionResult ProcessHollowingSensor::Execute(ScanContext &context)
 {
@@ -20,7 +22,7 @@ SensorExecutionResult ProcessHollowingSensor::Execute(ScanContext &context)
     // 2. 读取内存中的PE头
     // 注意：这里直接读取本进程内存，无需ReadProcessMemory
     PIMAGE_DOS_HEADER pDosHeader = (PIMAGE_DOS_HEADER)hModule;
-    if (IsBadReadPtr(pDosHeader, sizeof(IMAGE_DOS_HEADER)))
+    if (!SystemUtils::IsReadableMemory(pDosHeader, sizeof(IMAGE_DOS_HEADER)))
     {
          RecordFailure(anti_cheat::MEMORY_ACCESS_EXCEPTION);
          return SensorExecutionResult::FAILURE;
@@ -33,7 +35,7 @@ SensorExecutionResult ProcessHollowingSensor::Execute(ScanContext &context)
     }
 
     PIMAGE_NT_HEADERS pNtHeaders = (PIMAGE_NT_HEADERS)((BYTE*)hModule + pDosHeader->e_lfanew);
-    if (IsBadReadPtr(pNtHeaders, sizeof(IMAGE_NT_HEADERS)))
+    if (!SystemUtils::IsReadableMemory(pNtHeaders, sizeof(IMAGE_NT_HEADERS)))
     {
          RecordFailure(anti_cheat::MEMORY_ACCESS_EXCEPTION);
          return SensorExecutionResult::FAILURE;
@@ -94,22 +96,51 @@ SensorExecutionResult ProcessHollowingSensor::Execute(ScanContext &context)
          return SensorExecutionResult::FAILURE;
     }
 
-    // 5. 关键字段比对：EntryPoint 和 SizeOfImage
-    // Process Hollowing 常见特征是 EntryPoint 被指向恶意代码，或 SizeOfImage 被修改
-    if (pNtHeaders->OptionalHeader.AddressOfEntryPoint != pFileNtHeaders->OptionalHeader.AddressOfEntryPoint)
+    std::wstring normalizedPath = modulePath;
+    std::transform(normalizedPath.begin(), normalizedPath.end(), normalizedPath.begin(), ::towlower);
+    if (Utils::IsWhitelistedModule(normalizedPath))
     {
-         std::ostringstream oss;
-         oss << "Process Hollowing Detected: EntryPoint Mismatch. Memory: 0x" << std::hex << pNtHeaders->OptionalHeader.AddressOfEntryPoint
-             << ", Disk: 0x" << pFileNtHeaders->OptionalHeader.AddressOfEntryPoint;
-         context.AddEvidence(anti_cheat::INTEGRITY_PROCESS_HOLLOWED, oss.str());
+        return SensorExecutionResult::SUCCESS;
     }
 
-    if (pNtHeaders->OptionalHeader.SizeOfImage != pFileNtHeaders->OptionalHeader.SizeOfImage)
+    // 5. 关键字段比对：EntryPoint 和 SizeOfImage
+    const bool entryMismatch =
+            pNtHeaders->OptionalHeader.AddressOfEntryPoint != pFileNtHeaders->OptionalHeader.AddressOfEntryPoint;
+    const bool sizeMismatch = pNtHeaders->OptionalHeader.SizeOfImage != pFileNtHeaders->OptionalHeader.SizeOfImage;
+
+    // 6. 二次确认：入口页权限异常/类型异常，或同时出现多个主特征
+    bool entryPageAnomaly = false;
+    BYTE *entryAddress = reinterpret_cast<BYTE *>(hModule) + pNtHeaders->OptionalHeader.AddressOfEntryPoint;
+    MEMORY_BASIC_INFORMATION entryMbi = {};
+    if (VirtualQuery(entryAddress, &entryMbi, sizeof(entryMbi)) == sizeof(entryMbi))
     {
-         std::ostringstream oss;
-         oss << "Process Hollowing Detected: SizeOfImage Mismatch. Memory: 0x" << std::hex << pNtHeaders->OptionalHeader.SizeOfImage
-             << ", Disk: 0x" << pFileNtHeaders->OptionalHeader.SizeOfImage;
-         context.AddEvidence(anti_cheat::INTEGRITY_PROCESS_HOLLOWED, oss.str());
+        const bool execWritable =
+                (entryMbi.Protect & PAGE_EXECUTE_READWRITE) || (entryMbi.Protect & PAGE_EXECUTE_WRITECOPY);
+        const bool notImageType = entryMbi.Type != MEM_IMAGE;
+        entryPageAnomaly = execWritable || notImageType;
+    }
+    const bool multiPrimarySignals = entryMismatch && sizeMismatch;
+    const bool confirmed = multiPrimarySignals || ((entryMismatch || sizeMismatch) && entryPageAnomaly);
+
+    if (confirmed)
+    {
+        std::ostringstream oss;
+        oss << "Process Hollowing Detected:";
+        if (entryMismatch)
+        {
+            oss << " EntryPoint mismatch(mem=0x" << std::hex << pNtHeaders->OptionalHeader.AddressOfEntryPoint
+                << ",disk=0x" << pFileNtHeaders->OptionalHeader.AddressOfEntryPoint << ")";
+        }
+        if (sizeMismatch)
+        {
+            oss << " SizeOfImage mismatch(mem=0x" << std::hex << pNtHeaders->OptionalHeader.SizeOfImage
+                << ",disk=0x" << pFileNtHeaders->OptionalHeader.SizeOfImage << ")";
+        }
+        if (entryPageAnomaly)
+        {
+            oss << " EntryPageAnomaly(protect=0x" << std::hex << entryMbi.Protect << ",type=0x" << entryMbi.Type << ")";
+        }
+        context.AddEvidence(anti_cheat::INTEGRITY_PROCESS_HOLLOWED, oss.str());
     }
 
     return SensorExecutionResult::SUCCESS;

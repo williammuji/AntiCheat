@@ -18,6 +18,10 @@ protobuf_generate_cpp(PROTO_SRCS PROTO_HDRS anti_cheat.proto)
 add_library(CheatMonitorLib STATIC
     CheatMonitor.h
     CheatMonitor.cpp
+    CheatMonitorScheduler.cpp
+    CheatMonitorReporter.cpp
+    CheatMonitorBaselineManager.cpp
+    CheatMonitorEnvironmentGuard.cpp
     CheatConfigManager.h
     CheatConfigManager.cpp
     HardwareInfoCollector.h
@@ -58,15 +62,15 @@ target_include_directories(CheatMonitorLib PUBLIC
     ${Protobuf_INCLUDE_DIRS}
 )
 
-# 统一编译宏与最低操作系统目标：仅支持 Windows 7 SP1 及以上
+# 统一 XP toolset 目标宏（运行时能力由 SystemUtils 做动态降级/分支）
 if (MSVC)
     target_compile_options(CheatMonitorLib PRIVATE /utf-8)
 endif()
 
 if (WIN32)
     target_compile_definitions(CheatMonitorLib PUBLIC
-        WINVER=0x0601
-        _WIN32_WINNT=0x0601
+        WINVER=0x0501
+        _WIN32_WINNT=0x0501
         UNICODE
         _UNICODE
         NOMINMAX

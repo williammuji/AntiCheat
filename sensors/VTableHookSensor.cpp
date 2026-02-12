@@ -21,14 +21,18 @@ SensorExecutionResult VTableHookSensor::Execute(ScanContext &context)
         {
             // SDK Version 32 (D3D_SDK_VERSION)
             PVOID pD3D9 = pDirect3DCreate9(32);
-            if (pD3D9)
+            if (pD3D9 && SystemUtils::IsReadableMemory(pD3D9, sizeof(PVOID)))
             {
                 PVOID* vtable = *(PVOID**)pD3D9;
-                CheckVTable(context, vtable, "IDirect3D9", 16);
+                if (vtable && SystemUtils::IsReadableMemory(vtable, 16 * sizeof(PVOID)))
+                {
+                    CheckVTable(context, vtable, "IDirect3D9", 16);
+                }
 
                 // Release: VTable index 2
                 typedef ULONG(WINAPI * PRelease)(PVOID);
-                PRelease pRelease = (PRelease)vtable[2];
+                PRelease pRelease =
+                        (vtable && SystemUtils::IsReadableMemory(vtable + 2, sizeof(PVOID))) ? (PRelease)vtable[2] : nullptr;
                 if (pRelease)
                 {
                     pRelease(pD3D9);
@@ -49,13 +53,21 @@ SensorExecutionResult VTableHookSensor::Execute(ScanContext &context)
             PVOID pFactory = nullptr;
             if (SUCCEEDED(pCreateDXGIFactory(IID_IDXGIFactory, &pFactory)) && pFactory)
             {
-                PVOID* vtable = *(PVOID**)pFactory;
-                // IDXGIFactory vtable check
-                CheckVTable(context, vtable, "IDXGIFactory", 10);
+                PVOID* vtable = nullptr;
+                if (SystemUtils::IsReadableMemory(pFactory, sizeof(PVOID)))
+                {
+                    vtable = *(PVOID**)pFactory;
+                }
+                if (vtable && SystemUtils::IsReadableMemory(vtable, 10 * sizeof(PVOID)))
+                {
+                    // IDXGIFactory vtable check
+                    CheckVTable(context, vtable, "IDXGIFactory", 10);
+                }
 
                 // Release: VTable index 2
                 typedef ULONG(WINAPI * PRelease)(PVOID);
-                PRelease pRelease = (PRelease)vtable[2];
+                PRelease pRelease =
+                        (vtable && SystemUtils::IsReadableMemory(vtable + 2, sizeof(PVOID))) ? (PRelease)vtable[2] : nullptr;
                 if (pRelease)
                 {
                     pRelease(pFactory);
@@ -69,7 +81,7 @@ SensorExecutionResult VTableHookSensor::Execute(ScanContext &context)
 
 void VTableHookSensor::CheckVTable(ScanContext& context, PVOID vtableBase, const char* name, int entryCount)
 {
-    if (IsBadReadPtr(vtableBase, entryCount * sizeof(PVOID)))
+    if (!SystemUtils::IsReadableMemory(vtableBase, entryCount * sizeof(PVOID)))
     {
         return;
     }
@@ -83,6 +95,51 @@ void VTableHookSensor::CheckVTable(ScanContext& context, PVOID vtableBase, const
         std::wstring modulePath;
         if (!context.IsAddressInLegitimateModule(funcAddr, modulePath))
         {
+            if (modulePath.empty())
+            {
+                HMODULE hMod = nullptr;
+                if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                               GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                       reinterpret_cast<LPCWSTR>(funcAddr), &hMod) &&
+                    hMod)
+                {
+                    wchar_t pathBuf[MAX_PATH] = {0};
+                    if (GetModuleFileNameW(hMod, pathBuf, MAX_PATH) > 0)
+                    {
+                        modulePath = pathBuf;
+                    }
+                }
+            }
+
+            if (!modulePath.empty() && Utils::IsWhitelistedModule(modulePath))
+            {
+                continue;
+            }
+
+            auto ignoreList = context.GetWhitelistedIntegrityIgnoreList();
+            if (ignoreList)
+            {
+                std::wstring lowerPath = modulePath;
+                std::transform(lowerPath.begin(), lowerPath.end(), lowerPath.begin(), ::towlower);
+                std::wstring fileName = Utils::GetFileName(lowerPath);
+                if (ignoreList->count(fileName) > 0)
+                {
+                    continue;
+                }
+            }
+
+            auto systemModules = context.GetWhitelistedSystemModules();
+            if (systemModules && !modulePath.empty())
+            {
+                std::wstring lowerPath = modulePath;
+                std::transform(lowerPath.begin(), lowerPath.end(), lowerPath.begin(), ::towlower);
+                std::wstring fileName = Utils::GetFileName(lowerPath);
+                if (systemModules->count(fileName) > 0)
+                {
+                    continue;
+                }
+            }
+
             // 地址不在任何合法模块中，极可是 Hook
             std::ostringstream oss;
             oss << "VTable Hook Detected: " << name << " [Index " << i << "] -> 0x"

@@ -59,6 +59,7 @@ struct CheatMonitorImpl
     std::unordered_map<std::string, anti_cheat::SensorExecutionStats> m_sensorExecutionStats;
 
     // === Module Signature Cache ===
+    mutable std::mutex m_signatureCacheMutex;
     enum class SignatureVerdict
     {
         UNKNOWN,
@@ -107,7 +108,7 @@ struct CheatMonitorImpl
     std::unique_ptr<anti_cheat::WMIProcessMonitor> m_wmiMonitor;
 
     // === Others ===
-    HWND m_hGameWindow = NULL;
+    std::atomic<uintptr_t> m_gameWindowHandle{0};
     std::random_device m_rd;
     mutable std::mt19937 m_rng{std::random_device{}()};
 
