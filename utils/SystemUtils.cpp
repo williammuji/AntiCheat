@@ -148,7 +148,11 @@ namespace SystemUtils
 
     uint64_t GetApiCapabilityMask()
     {
-        static const uint64_t kCapabilities = BuildCapabilityMask(GetWindowsVersion());
+        if (g_hasWindowsVersionOverrideForTesting)
+        {
+            return BuildCapabilityMask(g_windowsVersionOverrideForTesting);
+        }
+        static uint64_t kCapabilities = BuildCapabilityMask(GetWindowsVersion());
         return kCapabilities;
     }
 

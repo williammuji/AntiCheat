@@ -3,9 +3,12 @@ cmake_minimum_required(VERSION 3.15)
 project(CheatMonitor LANGUAGES CXX)
 include(CTest)
 
+
 # 设置项目使用的C++标准为C++14
 set(CMAKE_CXX_STANDARD 14)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+option(BUILD_TESTING "Build the testing tree." OFF)
 
 # 查找本项目必需的Protobuf包。
 # 这一步会找到Protobuf编译器(protoc)和相关的库文件。
@@ -91,5 +94,7 @@ if(WIN32)
 endif()
 
 
-# 添加测试子目录
-add_subdirectory(test)
+if(BUILD_TESTING)
+    # 添加测试子目录
+    add_subdirectory(test)
+endif()

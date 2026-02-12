@@ -1,4 +1,4 @@
-#include "CheatMonitor.h"
+﻿#include "CheatMonitor.h"
 #include <Windows.h>
 #include <chrono>
 #include <iostream>
@@ -30,7 +30,7 @@ int main(int argc, char **argv)
   std::cout << "--- Anti-Cheat Test Harness ---" << std::endl;
   std::cout << "This program will test the core functionalities of the CheatMonitor library." << std::endl;
 
-  // 1. 初始化 CheatMonitor
+  // 1. 鍒濆鍖?CheatMonitor
   std::cout << "\n[Step 1] Initializing CheatMonitor..." << std::endl;
   if (!CheatMonitor::GetInstance().Initialize())
   {
@@ -39,20 +39,20 @@ int main(int argc, char **argv)
   }
   std::cout << "[OK] CheatMonitor initialized successfully." << std::endl;
 
-  // 2. 模拟玩家登录
+  // 2. 妯℃嫙鐜╁鐧诲綍
   std::cout << "\n[Step 2] Simulating player login (UserID: 123, Name: TestPlayer)..." << std::endl;
   CheatMonitor::GetInstance().OnPlayerLogin(123, "TestPlayer");
   std::cout << "[OK] Player login processed. Monitor is now active." << std::endl;
   std::cout << "     Note: Snapshot upload should be triggered automatically on login." << std::endl;
 
-  // 3. 等待一段时间，让监控系统建立基线
+  // 3. 绛夊緟涓€娈垫椂闂达紝璁╃洃鎺х郴缁熷缓绔嬪熀绾?
   std::cout << "\n[Step 3] Waiting for baseline establishment..." << std::endl;
   std::this_thread::sleep_for(baselineWait);
 
-  // 4. 执行一系列应该被检测到的测试行为
+  // 4. 鎵ц涓€绯诲垪搴旇琚娴嬪埌鐨勬祴璇曡涓?
   std::cout << "\n[Step 4] Performing test actions to be detected..." << std::endl;
 
-  // 测试 A: 分配可执行内存 (模拟注入的Shellcode)
+  // 娴嬭瘯 A: 鍒嗛厤鍙墽琛屽唴瀛?(妯℃嫙娉ㄥ叆鐨凷hellcode)
   std::cout << "  -> Test A: Allocating executable memory..." << std::endl;
   LPVOID pMem = VirtualAlloc(NULL, 1024, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
   if (pMem)
@@ -64,7 +64,7 @@ int main(int argc, char **argv)
     std::cerr << "     [WARN] Could not allocate executable memory for test." << std::endl;
   }
 
-  // 测试 B: 创建一个新线程
+  // 娴嬭瘯 B: 鍒涘缓涓€涓柊绾跨▼
   std::cout << "  -> Test B: Creating a new thread..." << std::endl;
   std::thread testThread([&testThreadWait]() {
     std::cout << "[Test Thread] >>>> Hello from the new thread! <<<<" << std::endl;
@@ -73,16 +73,16 @@ int main(int argc, char **argv)
   });
   std::cout << "     New thread created. This should be detected by the new activity scanner." << std::endl;
 
-  // 5. 等待足够长的时间，让后台扫描线程有机会运行并检测到这些行为
+  // 5. 绛夊緟瓒冲闀跨殑鏃堕棿锛岃鍚庡彴鎵弿绾跨▼鏈夋満浼氳繍琛屽苟妫€娴嬪埌杩欎簺琛屼负
   std::cout << "\n[Step 5] Waiting for scans to detect activities..." << std::endl;
   std::this_thread::sleep_for(detectionWait);
 
-  // 5.5 手动触发快照上报（测试功能）
+  // 5.5 鎵嬪姩瑙﹀彂蹇収涓婃姤锛堟祴璇曞姛鑳斤級
   std::cout << "\n[Step 5.5] Manually triggering snapshot upload for testing..." << std::endl;
   CheatMonitor::GetInstance().UploadSnapshot();
   std::cout << "[OK] Snapshot upload triggered. Check logs for thread/module counts." << std::endl;
 
-  // 6. 清理测试资源
+  // 6. 娓呯悊娴嬭瘯璧勬簮
   std::cout << "\n[Step 6] Cleaning up test resources..." << std::endl;
   if (pMem)
   {
@@ -95,12 +95,12 @@ int main(int argc, char **argv)
     std::cout << "  -> Joined test thread." << std::endl;
   }
 
-  // 7. 模拟玩家登出
+  // 7. 妯℃嫙鐜╁鐧诲嚭
   std::cout << "\n[Step 7] Simulating player logout..." << std::endl;
   CheatMonitor::GetInstance().OnPlayerLogout();
   std::cout << "[OK] Player logout processed. A report should have been generated and printed to the console." << std::endl;
 
-  // 8. 关闭监控系统
+  // 8. 鍏抽棴鐩戞帶绯荤粺
   std::cout << "\n[Step 8] Shutting down CheatMonitor..." << std::endl;
   CheatMonitor::GetInstance().Shutdown();
   std::cout << "[OK] CheatMonitor shut down." << std::endl;

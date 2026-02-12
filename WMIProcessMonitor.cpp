@@ -11,6 +11,47 @@
 namespace anti_cheat
 {
 
+// 内部Sink类：用于解耦WMI异步回调与WMIProcessMonitor的生命周期
+// 即使WMIProcessMonitor被销毁，Sink对象仍能通过引用计数存活，直到WMI释放它
+class WmiSink : public IWbemObjectSink
+{
+public:
+    WmiSink(WMIProcessMonitor* parent) : m_parent(parent), m_refCount(1) {}
+
+    void Detach() { m_parent = nullptr; }
+
+    // IUnknown
+    virtual ULONG STDMETHODCALLTYPE AddRef() override { return ++m_refCount; }
+    virtual ULONG STDMETHODCALLTYPE Release() override {
+        ULONG res = --m_refCount;
+        if (res == 0) delete this;
+        return res;
+    }
+    virtual HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppv) override {
+        if (riid == IID_IUnknown || riid == IID_IWbemObjectSink) {
+            *ppv = static_cast<IWbemObjectSink*>(this);
+            AddRef();
+            return WBEM_S_NO_ERROR;
+        }
+        *ppv = NULL;
+        return E_NOINTERFACE;
+    }
+
+    // IWbemObjectSink
+    virtual HRESULT STDMETHODCALLTYPE Indicate(long lObjectCount, IWbemClassObject** apObjArray) override {
+        if (m_parent) return m_parent->InternalIndicate(lObjectCount, apObjArray);
+        return WBEM_S_NO_ERROR;
+    }
+    virtual HRESULT STDMETHODCALLTYPE SetStatus(long lFlags, HRESULT hResult, BSTR strParam, IWbemClassObject* pObjParam) override {
+        if (m_parent) return m_parent->InternalSetStatus(lFlags, hResult, strParam, pObjParam);
+        return WBEM_S_NO_ERROR;
+    }
+
+private:
+    WMIProcessMonitor* m_parent;
+    std::atomic<ULONG> m_refCount;
+};
+
 WMIProcessMonitor::WMIProcessMonitor(ProcessCallback callback)
     : m_callback(std::move(callback))
 {
@@ -27,10 +68,12 @@ bool WMIProcessMonitor::Initialize()
     if (m_initialized) return true;
 
     bool initialized = false;
+    /*
     if (SystemUtils::HasApiCapability(SystemUtils::ApiCapability::WmiAsyncProcessMonitor))
     {
         initialized = InitializeWmiAsync();
     }
+    */
 
     if (!initialized)
     {
@@ -48,7 +91,11 @@ bool WMIProcessMonitor::InitializeWmiAsync()
     HRESULT hres;
 
     hres = CoInitializeEx(0, COINIT_MULTITHREADED);
-    if (FAILED(hres) && hres != RPC_E_CHANGED_MODE)
+    if (SUCCEEDED(hres))
+    {
+        m_comInitialized = true;
+    }
+    else if (hres != RPC_E_CHANGED_MODE)
     {
         LOG_ERROR_F(AntiCheatLogger::LogCategory::SYSTEM,
                     "WMIProcessMonitor: Failed to initialize COM library. Err code = 0x%x", hres);
@@ -56,7 +103,7 @@ bool WMIProcessMonitor::InitializeWmiAsync()
     }
 
     hres = CoInitializeSecurity(NULL, -1, NULL, NULL, RPC_C_AUTHN_LEVEL_DEFAULT, RPC_C_IMP_LEVEL_IMPERSONATE, NULL,
-                                EOAC_NONE, NULL);
+                                 EOAC_NONE, NULL);
     if (FAILED(hres) && hres != RPC_E_TOO_LATE)
     {
         LOG_WARNING_F(AntiCheatLogger::LogCategory::SYSTEM, "WMIProcessMonitor: CoInitializeSecurity warning: 0x%x", hres);
@@ -97,8 +144,10 @@ bool WMIProcessMonitor::InitializeWmiAsync()
                             (void **)&m_pUnsecApp);
     if (SUCCEEDED(hres))
     {
+        m_pInternalSink = new WmiSink(this); // 创建内部Sink
+
         IUnknown *pStubUnk = nullptr;
-        hres = m_pUnsecApp->CreateObjectStub(this, &pStubUnk);
+        hres = m_pUnsecApp->CreateObjectStub(m_pInternalSink, &pStubUnk);
         if (SUCCEEDED(hres))
         {
             hres = pStubUnk->QueryInterface(IID_IWbemObjectSink, (void **)&m_pStubSink);
@@ -106,7 +155,9 @@ bool WMIProcessMonitor::InitializeWmiAsync()
         }
     }
 
-    IWbemObjectSink *pSink = m_pStubSink ? m_pStubSink : this;
+    IWbemObjectSink *pSink = m_pStubSink ? m_pStubSink : m_pInternalSink;
+    if (!pSink) return false;
+
     hres = m_pSvc->ExecNotificationQueryAsync(
             _bstr_t("WQL"), _bstr_t("SELECT * FROM __InstanceCreationEvent WITHIN 1 WHERE TargetInstance ISA 'Win32_Process'"),
             WBEM_FLAG_SEND_STATUS, NULL, pSink);
@@ -118,6 +169,7 @@ bool WMIProcessMonitor::InitializeWmiAsync()
         return false;
     }
 
+    m_wmiCallInProgress = true;
     m_backendMode = BackendMode::WmiAsync;
     LOG_INFO(AntiCheatLogger::LogCategory::SYSTEM, "WMIProcessMonitor: Using WMI async backend.");
     return true;
@@ -167,6 +219,7 @@ void WMIProcessMonitor::Shutdown()
 {
     {
         std::lock_guard<std::mutex> lock(m_initMutex);
+        if (m_shuttingDown) return;
         m_shuttingDown = true;
     }
     m_pollingActive = false;
@@ -175,18 +228,37 @@ void WMIProcessMonitor::Shutdown()
         m_pollingThread.join();
     }
 
+    LOG_DEBUG(AntiCheatLogger::LogCategory::SYSTEM, "WMIProcessMonitor: Shutdown started.");
     if (m_pSvc)
     {
-        m_pSvc->CancelAsyncCall(m_pStubSink ? m_pStubSink : this);
+        LOG_DEBUG(AntiCheatLogger::LogCategory::SYSTEM, "WMIProcessMonitor: Canceling async call.");
+        m_pSvc->CancelAsyncCall(m_pStubSink ? m_pStubSink : m_pInternalSink);
     }
 
     {
         std::unique_lock<std::mutex> lk(m_callbackMutex);
-        m_callbackCv.wait(lk, [&]() { return m_activeIndications.load() == 0; });
+        LOG_DEBUG(AntiCheatLogger::LogCategory::SYSTEM, "WMIProcessMonitor: Waiting for pending callbacks/WMI finish.");
+        // 等待所有正在进行的回调完成，以及WMI确认异步调用结束
+        bool waitSuccess = m_callbackCv.wait_for(lk, std::chrono::seconds(5), [&]() {
+            return m_activeIndications.load() == 0 && !m_wmiCallInProgress.load();
+        });
+        if (!waitSuccess)
+        {
+            LOG_WARNING_F(AntiCheatLogger::LogCategory::SYSTEM, "WMIProcessMonitor: Shutdown wait timeout. Indications: %u, InProgress: %d",
+                        m_activeIndications.load(), m_wmiCallInProgress.load());
+        }
     }
 
     {
         std::lock_guard<std::mutex> lock(m_initMutex);
+        if (m_pInternalSink)
+        {
+            LOG_DEBUG(AntiCheatLogger::LogCategory::SYSTEM, "WMIProcessMonitor: Detaching internal sink.");
+            // 关键：解耦并释放我们持有的引用，但WMI持有的引用会让Sink对象在后台继续存活直到WMI完成
+            static_cast<WmiSink*>(m_pInternalSink)->Detach();
+            m_pInternalSink->Release();
+            m_pInternalSink = nullptr;
+        }
         if (m_pSvc)
         {
             m_pSvc->Release();
@@ -210,10 +282,20 @@ void WMIProcessMonitor::Shutdown()
         m_seenPids.clear();
         m_initialized = false;
         m_backendMode = BackendMode::None;
+
+        LOG_DEBUG(AntiCheatLogger::LogCategory::SYSTEM, "WMIProcessMonitor: Releasing COM resources.");
+        /*
+        if (m_comInitialized)
+        {
+            CoUninitialize();
+            m_comInitialized = false;
+        }
+        */
     }
+    LOG_DEBUG(AntiCheatLogger::LogCategory::SYSTEM, "WMIProcessMonitor: Shutdown completed.");
 }
 
-HRESULT STDMETHODCALLTYPE WMIProcessMonitor::Indicate(long lObjectCount, IWbemClassObject** apObjArray)
+HRESULT WMIProcessMonitor::InternalIndicate(long lObjectCount, IWbemClassObject** apObjArray)
 {
     struct IndicateScope
     {
@@ -290,32 +372,15 @@ HRESULT STDMETHODCALLTYPE WMIProcessMonitor::Indicate(long lObjectCount, IWbemCl
     return WBEM_S_NO_ERROR;
 }
 
-ULONG STDMETHODCALLTYPE WMIProcessMonitor::AddRef()
-{
-    return ++m_refCount;
-}
 
-ULONG STDMETHODCALLTYPE WMIProcessMonitor::Release()
+HRESULT WMIProcessMonitor::InternalSetStatus(long lFlags, HRESULT hResult, BSTR strParam, IWbemClassObject* pObjParam)
 {
-    ULONG lRef = --m_refCount;
-    return lRef;
-}
-
-HRESULT STDMETHODCALLTYPE WMIProcessMonitor::QueryInterface(REFIID riid, void** ppv)
-{
-    if (riid == IID_IUnknown || riid == IID_IWbemObjectSink)
+    if (lFlags == WBEM_STATUS_COMPLETE)
     {
-        *ppv = (IWbemObjectSink*)this;
-        AddRef();
-        return WBEM_S_NO_ERROR;
+        m_wmiCallInProgress = false;
+        std::lock_guard<std::mutex> lock(m_callbackMutex);
+        m_callbackCv.notify_all();
     }
-    *ppv = NULL;
-    return E_NOINTERFACE;
-}
-
-
-HRESULT STDMETHODCALLTYPE WMIProcessMonitor::SetStatus(long lFlags, HRESULT hResult, BSTR strParam, IWbemClassObject* pObjParam)
-{
     return WBEM_S_NO_ERROR;
 }
 

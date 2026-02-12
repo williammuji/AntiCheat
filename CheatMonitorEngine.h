@@ -26,7 +26,7 @@
 struct CheatMonitorEngine
 {
     CheatMonitorEngine();
-    ~CheatMonitorEngine();
+    virtual ~CheatMonitorEngine();
 
     SystemUtils::WindowsVersion m_windowsVersion;
     std::atomic<bool> m_isSystemActive = false;

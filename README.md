@@ -95,6 +95,9 @@ Anti-cheat system for MMORPG games with multi-layered detection and sensor-based
 # build with vcpkg (recommended)
 .\scripts\build.ps1 -BuildType Release -Arch x64 -UseVcpkg
 
+# build with tests
+.\scripts\build.ps1 -BuildType Debug -Arch x64 -UseVcpkg -BuildTests
+
 # build without vcpkg (requires manual protobuf installation)
 .\scripts\build.ps1 -BuildType Release -Arch x64 -ProtobufRoot "C:\path\to\protobuf\install"
 ```
@@ -103,7 +106,9 @@ Anti-cheat system for MMORPG games with multi-layered detection and sensor-based
 ```bash
 mkdir build-x64 && cd build-x64
 
-cmake .. -G "Visual Studio 17 2022" -A x64 -DProtobuf_ROOT="C:\path\to\protobuf\install"
+cmake .. -G "Visual Studio 17 2022" -A x64 \
+          -DProtobuf_ROOT="C:\path\to\protobuf\install" \
+          -DBUILD_TESTING=ON
 
 cmake --build . --config Release
 ```

@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <windows.h>
 #include "../ISensor.h"
@@ -13,7 +13,7 @@ class ProcessHandleSensor : public ISensor
 {
 public:
     const char *GetName() const override { return "ProcessHandleSensor"; }
-    SensorWeight GetWeight() const override { return SensorWeight::CRITICAL; } // 1000-10000ms: 进程句柄扫描
+    SensorWeight GetWeight() const override { return SensorWeight::CRITICAL; } // 1000-10000ms: 杩涚▼鍙ユ焺鎵弿
     SensorExecutionResult Execute(SensorRuntimeContext &context) override;
 
 private:
@@ -22,7 +22,7 @@ private:
    static bool IsSevereHandleOverflow(ULONG_PTR totalHandles, ULONG maxHandlesToScan);
    static bool ShouldAbortDueToRetryCount(int retries);
 
-   // 预分配缓冲区管理（C风格，兼容SEH）
+   // 棰勫垎閰嶇紦鍐插尯绠＄悊锛圕椋庢牸锛屽吋瀹筍EH锛?
    struct HandleBufferManager
    {
        BYTE *buffer;
@@ -34,7 +34,7 @@ private:
        void Reset();
    };
 
-   // 获取进程创建时间标识（用于缓存验证）
+   // 鑾峰彇杩涚▼鍒涘缓鏃堕棿鏍囪瘑锛堢敤浜庣紦瀛橀獙璇侊級
    static uint32_t GetProcessCreationTime(DWORD pid);
    bool IsHandlePointingToUs_Safe(const void *pHandleEntry, DWORD ownPid);
 };

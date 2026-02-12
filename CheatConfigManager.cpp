@@ -37,16 +37,23 @@ std::shared_ptr<CheatConfigManager::ConfigData> CheatConfigManager::GetCurrentCo
 
 void CheatConfigManager::UpdateConfigFromServer(const std::string& server_data)
 {
-    auto new_config_proto = std::make_unique<anti_cheat::ClientConfig>();
-    if (!new_config_proto->ParseFromString(server_data))
+    // 创建新的配置数据副本，首先填充默认值
+    auto new_config_data = std::make_shared<ConfigData>();
+    SetDefaultValues(*new_config_data);
+
+    // 解析服务器数据并合并到现有配置中
+    anti_cheat::ClientConfig server_config;
+    if (server_config.ParseFromString(server_data))
     {
-        // Log error: "Failed to parse server config"
+        // 使用 MergeFrom 将服务器提供的字段覆盖默认值
+        new_config_data->config->MergeFrom(server_config);
+    }
+    else
+    {
+        // 如果解析失败，保留默认值（或记录错误）
         return;
     }
 
-    // 创建新的配置数据副本
-    auto new_config_data = std::make_shared<ConfigData>();
-    new_config_data->config = std::move(new_config_proto);
     UpdateWideStringCaches(*new_config_data);
 
     // 原子地交换指针

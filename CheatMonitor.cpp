@@ -104,6 +104,9 @@ bool CheatMonitor::IsCallerLegitimate()
 CheatMonitorEngine::CheatMonitorEngine()
 {
     m_windowsVersion = SystemUtils::GetWindowsVersion();
+    // 动态获取反作弊模块句柄（支持静态编译到EXE或单独作为DLL）
+    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                       reinterpret_cast<LPCWSTR>(CheatMonitor::GetInstance), &m_hSelfModule);
 }
 
 CheatMonitorEngine::~CheatMonitorEngine()
