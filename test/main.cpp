@@ -3,6 +3,8 @@
 #include <chrono>
 #include <iostream>
 #include <thread>
+#include <cstdlib>
+
 
 // 一个简单的函数，在新线程中运行，以测试新线程检测功能
 void TestThreadFunction()
