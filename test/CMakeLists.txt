@@ -16,7 +16,6 @@ add_executable(CheatMonitorTest main.cpp)
 target_include_directories(CheatMonitorTest PRIVATE
     ${CMAKE_SOURCE_DIR}
     ${CMAKE_BINARY_DIR}
-    ${CMAKE_CURRENT_SOURCE_DIR}/../include
     ${Protobuf_INCLUDE_DIRS}
 )
 

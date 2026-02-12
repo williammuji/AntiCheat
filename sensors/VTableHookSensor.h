@@ -1,7 +1,7 @@
 #pragma once
 
 #include <windows.h>
-#include "../include/ISensor.h"
+#include "ISensor.h"
 #include <vector>
 
 class VTableHookSensor : public ISensor
