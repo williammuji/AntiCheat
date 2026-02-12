@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <windows.h>
 #include "../ISensor.h"
@@ -8,7 +8,7 @@ class AdvancedAntiDebugSensor : public ISensor
 {
 public:
     const char *GetName() const override { return "AdvancedAntiDebugSensor"; }
-    SensorWeight GetWeight() const override { return SensorWeight::LIGHT; } // < 1ms: 轻量级反调试检测
+    SensorWeight GetWeight() const override { return SensorWeight::LIGHT; } // < 1ms: 杞婚噺绾у弽璋冭瘯妫€娴?
     SensorExecutionResult Execute(SensorRuntimeContext &context) override;
 
 private:

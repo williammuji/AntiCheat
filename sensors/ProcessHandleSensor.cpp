@@ -9,7 +9,7 @@
 
 bool ProcessHandleSensor::HasSuspiciousProcessAccessMask(ULONG grantedAccess)
 {
-    return (grantedAccess & (PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_VM_OPERATION | PROCESS_ALL_ACCESS)) != 0;
+    return (grantedAccess & (PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_VM_OPERATION)) != 0;
 }
 
 bool ProcessHandleSensor::IsSevereHandleOverflow(ULONG_PTR totalHandles, ULONG maxHandlesToScan)

@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <windows.h>
 #include "../ISensor.h"
@@ -10,7 +10,7 @@ class MemorySecuritySensor : public ISensor
 {
 public:
     const char *GetName() const override { return "MemorySecuritySensor"; }
-    SensorWeight GetWeight() const override { return SensorWeight::HEAVY; } // 10-100ms: 内存安全检测
+    SensorWeight GetWeight() const override { return SensorWeight::HEAVY; } // 10-100ms: 鍐呭瓨瀹夊叏妫€娴?
     SensorExecutionResult Execute(SensorRuntimeContext &context) override;
 
 private:

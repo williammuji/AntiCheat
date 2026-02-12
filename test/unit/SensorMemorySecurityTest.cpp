@@ -38,7 +38,7 @@ TEST(SensorMemorySecurityTest, KnownSafeRegionRules)
 TEST(SensorMemorySecurityTest, HiddenRegionPeSignatureTriggersReport)
 {
     MemorySecuritySensor sensor;
-    std::vector<unsigned char> fake(4096, 0);
+    std::vector<unsigned char> fake(128 * 1024, 0);
     auto *dos = reinterpret_cast<IMAGE_DOS_HEADER *>(fake.data());
     dos->e_magic = IMAGE_DOS_SIGNATURE;
     dos->e_lfanew = 0x80;

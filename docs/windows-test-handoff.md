@@ -22,7 +22,8 @@ cmake -B build -S . `
   -DCMAKE_TOOLCHAIN_FILE="C:/path/to/vcpkg/scripts/buildsystems/vcpkg.cmake" `
   -DVCPKG_TARGET_TRIPLET="x64-windows" `
   -DVCPKG_HOST_TRIPLET="x64-windows" `
-  -DVCPKG_MANIFEST_FEATURES=tests
+  -DVCPKG_MANIFEST_FEATURES=tests `
+  -DBUILD_TESTING=ON
 
 cmake --build build --config Debug --parallel 4
 ```
@@ -54,7 +55,8 @@ cmake -B build-x86 -S . `
   -DCMAKE_TOOLCHAIN_FILE="C:/path/to/vcpkg/scripts/buildsystems/vcpkg.cmake" `
   -DVCPKG_TARGET_TRIPLET="x86-windows" `
   -DVCPKG_HOST_TRIPLET="x86-windows" `
-  -DVCPKG_MANIFEST_FEATURES=tests
+  -DVCPKG_MANIFEST_FEATURES=tests `
+  -DBUILD_TESTING=ON
 
 cmake --build build-x86 --config Debug --parallel 4
 ctest --test-dir build-x86 -C Debug --output-on-failure

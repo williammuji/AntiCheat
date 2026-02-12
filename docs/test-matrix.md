@@ -49,6 +49,7 @@
 ## Smoke Test (Implemented)
 
 - `test/main.cpp` supports CI-friendly non-interactive mode with `--quick`.
+- Configure with `-DBUILD_TESTING=ON`.
 - `ctest` target `smoke.quick` executes harness with bounded duration.
 
 ## Next Regression Targets (Priority Order)

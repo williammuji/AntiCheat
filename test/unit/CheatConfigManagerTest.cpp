@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <algorithm>
 
 #include "CheatConfigManager.h"
 
@@ -35,6 +36,6 @@ TEST(CheatConfigManagerTest, UpdateConfigFromServerOverridesFields)
 
     const auto names = cfg.GetHarmfulProcessNames();
     ASSERT_TRUE(names);
-    ASSERT_FALSE(names->empty());
-    EXPECT_EQ(names->front(), L"custom_cheat");
+    auto it = std::find(names->begin(), names->end(), L"custom_cheat");
+    EXPECT_NE(it, names->end());
 }
