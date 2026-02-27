@@ -266,13 +266,20 @@ std::string ThreadActivitySensor::GetThreadDetailedInfo(DWORD threadId, PVOID st
     std::ostringstream oss;
     oss << std::hex << std::uppercase;
 
-    if (!SystemUtils::g_pNtQueryInformationThread) oss << "警告: NtQueryInformationThread API不可用\n";
+    if (!SystemUtils::g_pNtQueryInformationThread)
+    {
+        oss << "警告: NtQueryInformationThread API不可用，部分信息可能缺失\n";
+    }
 
     HANDLE hThread = OpenThread(THREAD_QUERY_INFORMATION, FALSE, threadId);
     if (!hThread) hThread = OpenThread(THREAD_QUERY_LIMITED_INFORMATION, FALSE, threadId);
 
     auto thread_closer = [](HANDLE h) { if (h) CloseHandle(h); };
     std::unique_ptr<void, decltype(thread_closer)> thread_handle(hThread, thread_closer);
+
+    DWORD ownerPid = 0;
+    std::wstring processName;
+    std::string suspectedOrigin = "未知";
 
     if (hThread)
     {
@@ -281,23 +288,116 @@ std::string ThreadActivitySensor::GetThreadDetailedInfo(DWORD threadId, PVOID st
         {
             SYSTEMTIME st;
             FileTimeToSystemTime(&creationTime, &st);
-            oss << "创建时间: " << std::dec << st.wYear << "-" << std::setfill('0') << std::setw(2) << st.wMonth << "-" << std::setw(2) << st.wDay << "\n";
+            oss << "创建时间: " << std::dec << st.wYear << "-" << std::setfill('0') << std::setw(2) << st.wMonth
+                << "-" << std::setw(2) << st.wDay << " " << std::setw(2) << st.wHour << ":" << std::setw(2)
+                << st.wMinute << ":" << std::setw(2) << st.wSecond << "\n";
         }
 
-        // ... truncated remaining detailed info logic for brevity, assuming minimal implementation is enough for now
-        // or copy mostly from original if needed.
-        // Original logic was quite long. I will implement a concise version.
-
-        DWORD ownerPid = GetProcessIdOfThread(hThread);
-        oss << "所属进程PID: " << std::dec << ownerPid << "\n";
-
-        MEMORY_BASIC_INFORMATION mbi = {0};
-        if (VirtualQuery(startAddress, &mbi, sizeof(mbi)))
+        typedef HRESULT(WINAPI * PGetThreadDescription)(HANDLE, PWSTR *);
+        static PGetThreadDescription pGetThreadDescription =
+                (PGetThreadDescription)GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "GetThreadDescription");
+        if (pGetThreadDescription)
         {
-             oss << "内存区域基址: 0x" << std::hex << (uintptr_t)mbi.BaseAddress << "\n";
-             oss << "区域大小: 0x" << mbi.RegionSize << "\n";
-             oss << "保护属性: 0x" << mbi.Protect << "\n";
-             oss << "类型: " << (mbi.Type == MEM_IMAGE ? "IMAGE" : (mbi.Type == MEM_MAPPED ? "MAPPED" : "PRIVATE")) << "\n";
+            PWSTR threadName = nullptr;
+            if (SUCCEEDED(pGetThreadDescription(hThread, &threadName)) && threadName && wcslen(threadName) > 0)
+            {
+                oss << "线程名称: " << Utils::WideToString(threadName) << "\n";
+                LocalFree(threadName);
+            }
+        }
+
+        ownerPid = GetProcessIdOfThread(hThread);
+    }
+
+    if (ownerPid != 0)
+    {
+        processName = Utils::GetProcessNameByPid(ownerPid);
+    }
+
+    MEMORY_BASIC_INFORMATION mbi = {0};
+    bool hasMemoryInfo = (VirtualQuery(startAddress, &mbi, sizeof(mbi)) != 0);
+
+    // 威胁分析
+    if (ownerPid != 0 && ownerPid != GetCurrentProcessId())
+    {
+        suspectedOrigin = "[CRITICAL] 远程线程注入 (来自 PID: " + std::to_string(ownerPid);
+        if (!processName.empty()) suspectedOrigin += ", 进程: " + Utils::WideToString(processName);
+        suspectedOrigin += ")";
+    }
+    else if (hasMemoryInfo)
+    {
+        bool isExecutable = (mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) != 0;
+        bool isWritable = (mbi.Protect & (PAGE_READWRITE | PAGE_EXECUTE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_WRITECOPY)) != 0;
+
+        if (mbi.Type == MEM_PRIVATE && isExecutable)
+        {
+            suspectedOrigin = isWritable ? "[CRITICAL] Shellcode (私有可写可执行内存)" : "[WARNING] Shellcode (私有可执行内存)";
+        }
+        else if (mbi.Type == MEM_MAPPED && isExecutable)
+        {
+            suspectedOrigin = "[WARNING] 可能的反射DLL注入 (映射文件可执行内存)";
+        }
+
+        HMODULE hNtdll = GetModuleHandleW(L"ntdll.dll");
+        if (hNtdll)
+        {
+            if (startAddress == GetProcAddress(hNtdll, "KiUserApcDispatcher") ||
+                startAddress == GetProcAddress(hNtdll, "AsmKiUserApcDispatcher"))
+            {
+                suspectedOrigin = "[CRITICAL] APC注入 (起始于 ntdll APC分发函数)";
+            }
+            else if (startAddress == GetProcAddress(hNtdll, "RtlUserThreadStart"))
+            {
+                suspectedOrigin = "备注: 正常线程入口 (RtlUserThreadStart)";
+            }
+        }
+    }
+
+    oss << "\n【威胁评估】" << suspectedOrigin << "\n";
+    oss << "  线程ID (TID): " << std::dec << threadId << "\n";
+    oss << "  起始地址: 0x" << std::hex << reinterpret_cast<uintptr_t>(startAddress) << "\n";
+    if (ownerPid != 0) oss << "  所属进程PID: " << std::dec << ownerPid << "\n";
+
+    if (hasMemoryInfo)
+    {
+        oss << "\n【内存详细信息】\n";
+        oss << "  区域大小: 0x" << std::hex << mbi.RegionSize << "\n";
+        oss << "  当前保护: 0x" << mbi.Protect << " (";
+        if (mbi.Protect & PAGE_EXECUTE_READWRITE) oss << "RWX ";
+        else if (mbi.Protect & PAGE_EXECUTE_READ) oss << "RX ";
+        else if (mbi.Protect & PAGE_READWRITE) oss << "RW ";
+        else if (mbi.Protect & PAGE_READONLY) oss << "R ";
+        oss << ")\n";
+
+        if (mbi.AllocationProtect != 0 && mbi.AllocationProtect != mbi.Protect)
+        {
+            oss << "  初始保护: 0x" << mbi.AllocationProtect << " [检测到属性变更]\n";
+        }
+
+        oss << "  内存类型: " << (mbi.Type == MEM_IMAGE ? "IMAGE" : (mbi.Type == MEM_MAPPED ? "MAPPED" : "PRIVATE")) << "\n";
+
+        HMODULE hMod = nullptr;
+        if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCWSTR)startAddress, &hMod) && hMod)
+        {
+            wchar_t modPath[MAX_PATH] = {0};
+            if (GetModuleFileNameW(hMod, modPath, MAX_PATH))
+            {
+                auto validation = Utils::ValidateModule(modPath, SystemUtils::GetWindowsVersion());
+                oss << "  关联模块: " << Utils::WideToString(modPath) << "\n";
+                oss << "  验证状态: " << validation.reason << (validation.isTrusted ? "" : " [UNTRUSTED!]") << "\n";
+            }
+        }
+
+        BYTE features[16] = {0};
+        auto readRes = SystemUtils::ReadProcessMemorySafe(startAddress, features, sizeof(features));
+        if (readRes.success && readRes.bytesRead > 0)
+        {
+            oss << "  特征(16B): ";
+            for (size_t i = 0; i < readRes.bytesRead; i++) oss << std::setfill('0') << std::setw(2) << (int)features[i] << " ";
+            oss << "\n";
+
+            if (features[0] == 0x4D && features[1] == 0x5A) oss << "  [!] 检测到 PE 文件头 (MZ)\n";
+            else if (features[0] == 0x55 && features[1] == 0x8B && features[2] == 0xEC) oss << "  [!] 检测到标准函数序言 (Push EBP...)\n";
         }
     }
 
