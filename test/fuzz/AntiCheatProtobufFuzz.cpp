@@ -32,7 +32,14 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
 #ifndef FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION
 int main(int argc, char **argv) {
     // 模拟一些损坏数据
-    std::vector<uint8_t> bad_data = {0x08, 0x96, 0x01, 0x12, 0x0A, 0xFF};
+    std::vector<uint8_t> bad_data;
+    bad_data.push_back(0x08);
+    bad_data.push_back(0x96);
+    bad_data.push_back(0x01);
+    bad_data.push_back(0x12);
+    bad_data.push_back(0x0A);
+    bad_data.push_back(0xFF);
+
     LLVMFuzzerTestOneInput(bad_data.data(), bad_data.size());
     std::cout << "Fuzz stub executed successfully." << std::endl;
     return 0;

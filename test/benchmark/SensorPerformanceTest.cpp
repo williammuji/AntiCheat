@@ -7,6 +7,7 @@
 
 #include "ISensor.h"
 #include "SensorRuntimeContext.h"
+#include "CheatMonitorEngine.h"
 #include "utils/SystemUtils.h"
 
 // 包含所有传感器头文件
@@ -37,9 +38,10 @@ int main() {
     std::cout << "=== Anti-Cheat Sensor Performance Benchmark ===" << std::endl;
     std::cout << "Windows Version: " << (int)SystemUtils::GetWindowsVersion() << std::endl;
 
-    SensorRuntimeContext context;
+    CheatMonitorEngine engine;
+    SensorRuntimeContext context(&engine);
     // 模拟基本初始化环境
-    context.SetGameWindowHandle(NULL);
+    engine.m_gameWindowHandle = 0;
 
     std::vector<std::unique_ptr<ISensor>> sensors;
     sensors.push_back(std::make_unique<AdvancedAntiDebugSensor>());

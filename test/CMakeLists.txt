@@ -50,7 +50,9 @@ if(ANTICHEAT_ENABLE_UNIT_TESTS)
         target_link_libraries(CheatMonitorUnitTests PRIVATE
             CheatMonitorLib
             protobuf::libprotobuf
+            GTest::gtest
             GTest::gtest_main
+            GTest::gmock
         )
 
         if(BUILD_TESTING)
