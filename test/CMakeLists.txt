@@ -86,3 +86,5 @@ target_include_directories(AntiCheatProtobufFuzz PRIVATE ${CMAKE_SOURCE_DIR} ${C
 if(BUILD_TESTING)
     add_test(NAME fuzz.protobuf.parsing COMMAND AntiCheatProtobufFuzz)
 endif()
+
+add_executable(AsanDemo c:/temp/asan_demo.cpp)

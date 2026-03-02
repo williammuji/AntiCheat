@@ -111,6 +111,7 @@ struct CheatMonitorEngine
     std::unordered_set<std::string> m_consumedTargetedScanIds;
 
     std::atomic<uint64_t> m_sequenceId{0};
+    std::string m_sessionId;
 
     std::vector<uint8_t> m_isAddressInLegitimateModulePrologue;
     void InitializeSelfIntegrityBaseline();

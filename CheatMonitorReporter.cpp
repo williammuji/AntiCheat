@@ -339,9 +339,14 @@ void CheatMonitorEngine::SendReport(const anti_cheat::Report &report)
     LOG_INFO_F(AntiCheatLogger::LogCategory::SYSTEM, "Uploading %s report... Size: %zu bytes, content items: %zu",
                report_type_name, serialized_report.length(), content_size);
 
-    // --- 协议加固：增加序号与签名 ---
+    // --- 协议加固：增加序号、会话ID、时间戳与签名 ---
     anti_cheat::Report signed_report = report;
     signed_report.set_sequence_id(++m_sequenceId);
+    signed_report.set_session_id(m_sessionId);
+
+    auto now = std::chrono::system_clock::now();
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
+    signed_report.set_timestamp_ms(static_cast<uint64_t>(ms));
 
     std::string hmac_key = CheatConfigManager::GetInstance().GetHmacKey();
     if (!hmac_key.empty())

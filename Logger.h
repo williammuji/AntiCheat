@@ -25,7 +25,8 @@ enum class LogCategory
     SENSOR = 1,       // 传感器相关
     PERFORMANCE = 2,  // 性能相关
     SECURITY = 3,     // 安全相关
-    SYSTEM = 4        // 系统相关
+    SYSTEM = 4,       // 系统相关
+    MODULE = 5        // 模块相关
 };
 
 // 主要日志接口

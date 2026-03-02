@@ -113,6 +113,28 @@ cmake .. -G "Visual Studio 17 2022" -A x64 \
 cmake --build . --config Release
 ```
 
+## Testing & Benchmarking
+
+### Unit Tests
+You can run all unit tests and fuzz tests using `ctest`:
+```bash
+# Run all tests (x64)
+ctest --test-dir build-x64 -C Debug --output-on-failure
+
+# Run all tests (x86)
+ctest --test-dir build-x86 -C Debug --output-on-failure
+```
+
+### Performance Benchmark
+To run a detailed performance benchmark for all sensors:
+```bash
+# Detailed benchmark (x64)
+.\build-x64\test\Debug\SensorPerformanceTest.exe
+
+# Detailed benchmark (x86)
+.\build-x86\test\Debug\SensorPerformanceTest.exe
+```
+
 ## Example
 
 ```cpp

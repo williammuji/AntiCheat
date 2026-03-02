@@ -66,6 +66,7 @@ void CheatMonitorEngine::InitializeSystem()
     CheckParentProcessAtStartup();
     DetectVirtualMachine();
     InitializeProcessBaseline();
+    m_vehListAddress = FindVehListAddress();
     InitializeSelfIntegrityBaseline();
 }
 

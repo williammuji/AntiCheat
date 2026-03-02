@@ -328,6 +328,8 @@ message Report {
 
   uint64 sequence_id = 8;       // 防重放序号
   string signature = 9;         // HMAC-SHA256 签名
+  string session_id = 10;       // 每次启动生成的唯一会话ID (UUID)
+  uint64 timestamp_ms = 11;     // 上报时的客户端时间戳
 }
 
 // 操作系统版本要求 - 配置哪个版本值就支持该版本及以上

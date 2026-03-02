@@ -36,3 +36,11 @@ TEST(SystemUtilsHashTest, CapabilityMatrixCanBeOverriddenForTesting)
     SystemUtils::ClearWindowsVersionOverrideForTesting();
     EXPECT_FALSE(SystemUtils::HasWindowsVersionOverrideForTesting());
 }
+
+TEST(SystemUtilsHashTest, TriggerAsanForDemo)
+{
+    // 这是一个有意的内存越界，用于演示 ASAN 报告
+    volatile int* p = new int[10];
+    p[15] = 0xDEADBEEF;
+    delete[] p;
+}

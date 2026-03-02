@@ -8,7 +8,7 @@ include(CTest)
 set(CMAKE_CXX_STANDARD 14)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-option(ANTICHEAT_ENABLE_ASAN "Enable AddressSanitizer" OFF)
+option(ANTICHEAT_ENABLE_ASAN "Enable AddressSanitizer" ON)
 if(ANTICHEAT_ENABLE_ASAN)
     if(MSVC)
         add_compile_options(/fsanitize=address)
@@ -50,6 +50,7 @@ add_library(CheatMonitorLib STATIC
     hde/hde32.cpp
     utils/SystemUtils.cpp
     utils/Utils.cpp
+    utils/CryptoUtils.cpp
     sensors/IatHookSensor.cpp
     sensors/VehHookSensor.cpp
     sensors/InlineHookSensor.cpp

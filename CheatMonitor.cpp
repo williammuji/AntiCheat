@@ -107,6 +107,19 @@ CheatMonitorEngine::CheatMonitorEngine()
     // 动态获取反作弊模块句柄（支持静态编译到EXE或单独作为DLL）
     GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
                        reinterpret_cast<LPCWSTR>(CheatMonitor::GetInstance), &m_hSelfModule);
+
+    // 生成会话 ID (类似 UUID 格式)
+    char session[37];
+    const char *chars = "abcdef0123456789";
+    for (int i = 0; i < 36; ++i)
+    {
+        if (i == 8 || i == 13 || i == 18 || i == 23)
+            session[i] = '-';
+        else
+            session[i] = chars[m_rng() % 16];
+    }
+    session[36] = 0;
+    m_sessionId = session;
 }
 
 CheatMonitorEngine::~CheatMonitorEngine()
