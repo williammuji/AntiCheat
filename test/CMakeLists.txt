@@ -29,6 +29,8 @@ if(ANTICHEAT_ENABLE_UNIT_TESTS)
         add_executable(CheatMonitorUnitTests
             unit/SystemUtilsHashTest.cpp
             unit/UtilsStringTest.cpp
+            unit/WMIProcessMonitorMockTest.cpp
+            unit/CheatMonitorBaselineManagerTest.cpp
             unit/CheatConfigManagerTest.cpp
             unit/HdeDisasmTest.cpp
             unit/EngineOsGateTest.cpp
@@ -58,4 +60,27 @@ if(ANTICHEAT_ENABLE_UNIT_TESTS)
     else()
         message(WARNING "GTest not found. Unit tests are skipped. Enable vcpkg feature: tests.")
     endif()
+endif()
+
+# Phase A: 增加性能基准测试与并发压测
+add_executable(SensorPerformanceTest benchmark/SensorPerformanceTest.cpp)
+target_link_libraries(SensorPerformanceTest PRIVATE CheatMonitorLib protobuf::libprotobuf)
+target_include_directories(SensorPerformanceTest PRIVATE ${CMAKE_SOURCE_DIR} ${CMAKE_BINARY_DIR} ${Protobuf_INCLUDE_DIRS})
+
+add_executable(ControlApiConcurrencyTest unit/ControlApiConcurrencyTest.cpp)
+target_link_libraries(ControlApiConcurrencyTest PRIVATE CheatMonitorLib protobuf::libprotobuf)
+target_include_directories(ControlApiConcurrencyTest PRIVATE ${CMAKE_SOURCE_DIR} ${CMAKE_BINARY_DIR} ${Protobuf_INCLUDE_DIRS})
+
+if(BUILD_TESTING)
+    add_test(NAME performance.sensors COMMAND SensorPerformanceTest)
+    add_test(NAME stress.concurrency.api COMMAND ControlApiConcurrencyTest)
+endif()
+
+# Protobuf Fuzz Test
+add_executable(AntiCheatProtobufFuzz fuzz/AntiCheatProtobufFuzz.cpp)
+target_link_libraries(AntiCheatProtobufFuzz PRIVATE CheatMonitorLib protobuf::libprotobuf)
+target_include_directories(AntiCheatProtobufFuzz PRIVATE ${CMAKE_SOURCE_DIR} ${CMAKE_BINARY_DIR} ${Protobuf_INCLUDE_DIRS})
+
+if(BUILD_TESTING)
+    add_test(NAME fuzz.protobuf.parsing COMMAND AntiCheatProtobufFuzz)
 endif()

@@ -8,6 +8,17 @@ include(CTest)
 set(CMAKE_CXX_STANDARD 14)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+option(ANTICHEAT_ENABLE_ASAN "Enable AddressSanitizer" OFF)
+if(ANTICHEAT_ENABLE_ASAN)
+    if(MSVC)
+        add_compile_options(/fsanitize=address)
+        # MSVC ASan requires specific libraries to be linked, but usually handled by /fsanitize=address
+    else()
+        add_compile_options(-fsanitize=address)
+        add_link_options(-fsanitize=address)
+    endif()
+endif()
+
 option(BUILD_TESTING "Build the testing tree." OFF)
 
 # 查找本项目必需的Protobuf包。

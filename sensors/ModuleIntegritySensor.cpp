@@ -161,10 +161,10 @@ SensorExecutionResult ModuleIntegritySensor::Execute(SensorRuntimeContext &conte
     context.RecordSensorWorkloadCounters("ModuleIntegritySensor", (uint64_t)index, (uint64_t)processed,
                                          (uint64_t)processed);
 
-    // 如果发生超时，直接返回失败
+    // 如果发生超时，直接返回超时
     if (timeoutOccurred)
     {
-        return SensorExecutionResult::FAILURE;
+        return SensorExecutionResult::TIMEOUT;
     }
 
     // 检查模块枚举是否成功

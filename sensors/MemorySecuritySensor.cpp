@@ -116,10 +116,10 @@ SensorExecutionResult MemorySecuritySensor::Execute(SensorRuntimeContext &contex
         }
     }
 
-    // 如果发生超时，直接返回失败
+    // 如果发生超时，直接返回超时
     if (timeoutOccurred)
     {
-        return SensorExecutionResult::FAILURE;
+        return SensorExecutionResult::TIMEOUT;
     }
 
     // 统一的执行结果判断逻辑

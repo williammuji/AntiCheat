@@ -556,7 +556,7 @@ SensorExecutionResult ProcessHandleSensor::Execute(SensorRuntimeContext &context
                                   handlesProcessed, (ULONG)total, elapsed_ms);
                     this->RecordFailure(anti_cheat::PROCESS_HANDLE_SCAN_TIMEOUT);
                     context.SetHandleCursorOffset(cursorStart + entriesVisited);
-                    return SensorExecutionResult::FAILURE;
+                    return SensorExecutionResult::TIMEOUT;
                 }
             }
 
@@ -589,7 +589,7 @@ SensorExecutionResult ProcessHandleSensor::Execute(SensorRuntimeContext &context
                                   handlesProcessed, (ULONG)total, elapsed_ms);
                     this->RecordFailure(anti_cheat::PROCESS_HANDLE_SCAN_TIMEOUT);
                     context.SetHandleCursorOffset(cursorStart + entriesVisited);
-                    return SensorExecutionResult::FAILURE;
+                    return SensorExecutionResult::TIMEOUT;
                 }
             }
 
