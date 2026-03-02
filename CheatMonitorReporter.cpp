@@ -3,6 +3,7 @@
 #include "CheatConfigManager.h"
 #include "Logger.h"
 #include "utils/Utils.h"
+#include "utils/CryptoUtils.h"
 #include <atomic>
 
 void CheatMonitorEngine::AddEvidence(anti_cheat::CheatCategory category, const std::string &description)
@@ -337,7 +338,33 @@ void CheatMonitorEngine::SendReport(const anti_cheat::Report &report)
 
     LOG_INFO_F(AntiCheatLogger::LogCategory::SYSTEM, "Uploading %s report... Size: %zu bytes, content items: %zu",
                report_type_name, serialized_report.length(), content_size);
-    // TODO: HttpSend(server_url, serialized_report);
+
+    // --- 协议加固：增加序号与签名 ---
+    anti_cheat::Report signed_report = report;
+    signed_report.set_sequence_id(++m_sequenceId);
+
+    std::string hmac_key = CheatConfigManager::GetInstance().GetHmacKey();
+    if (!hmac_key.empty())
+    {
+        // 重新序列化以包含 sequence_id
+        std::string final_serialized;
+        if (signed_report.SerializeToString(&final_serialized))
+        {
+            std::vector<uint8_t> data(final_serialized.begin(), final_serialized.end());
+            std::string signature = CryptoUtils::CalculateHMAC_SHA256(data, hmac_key);
+            signed_report.set_signature(signature);
+        }
+    }
+
+    // 最终上报数据序列化
+    std::string upload_payload;
+    if (!signed_report.SerializeToString(&upload_payload))
+    {
+        LOG_ERROR(AntiCheatLogger::LogCategory::SYSTEM, "Failed to serialize signed report");
+        return;
+    }
+
+    // TODO: HttpSend(server_url, upload_payload);
 }
 
 void CheatMonitorEngine::SendServerLog(const std::string &log_level, const std::string &log_category,

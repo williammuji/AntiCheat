@@ -77,6 +77,10 @@ void CheatMonitorEngine::OnConfigUpdated()
     const bool osVersionSupported = IsCurrentOsSupported();
     LOG_INFO_F(AntiCheatLogger::LogCategory::SYSTEM, "OS版本门控结果: 当前OS=%d, 配置要求min_os=%d, 版本兼容=%s",
                (int)m_windowsVersion, (int)requiredOsVersion, osVersionSupported ? "是" : "否");
+
+    std::string hmacKey = CheatConfigManager::GetInstance().GetHmacKey();
+    LOG_INFO_F(AntiCheatLogger::LogCategory::SECURITY, "协议安全配置更新: HMAC签名=%s",
+               hmacKey.empty() ? "禁用" : "启用");
 }
 
 bool CheatMonitorEngine::IsCurrentOsSupported() const

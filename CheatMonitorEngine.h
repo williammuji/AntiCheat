@@ -110,6 +110,8 @@ struct CheatMonitorEngine
     std::deque<TargetedScanRequest> m_targetedScanQueue;
     std::unordered_set<std::string> m_consumedTargetedScanIds;
 
+    std::atomic<uint64_t> m_sequenceId{0};
+
     std::vector<uint8_t> m_isAddressInLegitimateModulePrologue;
     void InitializeSelfIntegrityBaseline();
     void CheckSelfIntegrity();

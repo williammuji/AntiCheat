@@ -323,8 +323,11 @@ message Report {
     TelemetryReport telemetry = 4;
     TargetedSensorReport targeted_sensor = 5;
     SnapshotReport snapshot = 6;
-    ServerLogReport server_log = 7;
+  ServerLogReport server_log = 7;
   }
+
+  uint64 sequence_id = 8;       // 防重放序号
+  string signature = 9;         // HMAC-SHA256 签名
 }
 
 // 操作系统版本要求 - 配置哪个版本值就支持该版本及以上
@@ -446,6 +449,8 @@ message ClientConfig {
   repeated string whitelisted_integrity_ignore_list = 36; // 完整性扫描忽略列表 (fmodex.dll等)
   repeated string whitelisted_integrity_dirs = 37;
   repeated string whitelisted_integrity_files = 38;
+
+  optional string hmac_key = 40;  // 用于报文签名的 HMAC 密钥
 }
 
 // 官方认可的第三方库配置

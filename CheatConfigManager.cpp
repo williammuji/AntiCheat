@@ -280,6 +280,11 @@ bool CheatConfigManager::IsSnapshotUploadEnabled() const
     return GetCurrentConfig()->config->enable_snapshot_upload();
 }
 
+std::string CheatConfigManager::GetHmacKey() const
+{
+    return GetCurrentConfig()->config->hmac_key();
+}
+
 // --- 模块完整性检测白名单 ---
 std::shared_ptr<const std::vector<std::wstring>> CheatConfigManager::GetWhitelistedIntegrityDirs() const
 {
@@ -777,6 +782,9 @@ void CheatConfigManager::SetDefaultValues(ConfigData& configData)
     // 新增：快照上报配置
     configData.config->set_snapshot_upload_interval_minutes(30);  // 默认30分钟上报一次
     configData.config->set_enable_snapshot_upload(true);          // 默认启用快照上报
+
+    // 默认不启用签名（hmac_key为空）
+    configData.config->set_hmac_key("");
 
     // 新增：官方第三方库白名单配置（示范数据；线上以服务端下发覆盖）
     configData.config->clear_trusted_third_party_modules();
