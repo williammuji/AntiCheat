@@ -51,9 +51,13 @@ if(ANTICHEAT_ENABLE_UNIT_TESTS)
             CheatMonitorLib
             protobuf::libprotobuf
             GTest::gtest
-            GTest::gtest_main
             GTest::gmock
         )
+
+        # Added manual main to SystemUtilsHashTest.cpp to ensure registration
+        target_compile_definitions(CheatMonitorUnitTests PRIVATE USE_MANUAL_MAIN)
+
+        # ASan DLL will be handled by add_asan_dll_copy function below
 
         if(BUILD_TESTING)
             add_test(NAME unit.all COMMAND CheatMonitorUnitTests)
@@ -87,4 +91,64 @@ if(BUILD_TESTING)
     add_test(NAME fuzz.protobuf.parsing COMMAND AntiCheatProtobufFuzz)
 endif()
 
-add_executable(AsanDemo c:/temp/asan_demo.cpp)
+# Helper to copy ASan DLL to target output
+function(add_asan_dll_copy target_name)
+    if(MSVC AND ANTICHEAT_ENABLE_ASAN)
+        # Attempt to find ASan DLL dynamically based on compiler path
+        get_filename_component(MSVC_BIN_DIR "${CMAKE_CXX_COMPILER}" DIRECTORY)
+
+        set(ASAN_DLL_NAME "clang_rt.asan_dynamic-i386.dll")
+        if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+            set(ASAN_DLL_NAME "clang_rt.asan_dynamic-x86_64.dll")
+        endif()
+
+        # Search for the DLL in the compiler's bin directory or its parents/siblings
+        # Standard locations include:
+        # Hostx64/x86 (for x86 targets on x64 host)
+        # Hostx64/x64 (for x64 targets on x64 host)
+        find_file(ASAN_DLL_PATH
+            NAMES ${ASAN_DLL_NAME}
+            PATHS
+                "${MSVC_BIN_DIR}"
+                "${MSVC_BIN_DIR}/.."
+                "${MSVC_BIN_DIR}/../../.."
+                "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/*/bin/Hostx64/x86"
+                "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/*/bin/Hostx64/x64"
+                "C:/Program Files/Microsoft Visual Studio/2022/Preview/VC/Tools/MSVC/*/bin/Hostx64/x86"
+                "C:/Program Files/Microsoft Visual Studio/2022/Preview/VC/Tools/MSVC/*/bin/Hostx64/x64"
+            PATH_SUFFIXES
+                ""
+                "x86"
+                "x64"
+                "Hostx64/x86"
+                "Hostx64/x64"
+                "Hostx86/x86"
+                "Hostx86/x64"
+            NO_DEFAULT_PATH
+        )
+
+        if(ASAN_DLL_PATH)
+            message(STATUS "Found ASan DLL for ${target_name}: ${ASAN_DLL_PATH}")
+            add_custom_command(TARGET ${target_name} POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${ASAN_DLL_PATH}"
+                $<TARGET_FILE_DIR:${target_name}>
+                COMMENT "Copying ASan runtime DLL (${ASAN_DLL_NAME}) to output directory for ${target_name}"
+            )
+            # Clear for next target
+            unset(ASAN_DLL_PATH CACHE)
+        else()
+            message(WARNING "ASan DLL ${ASAN_DLL_NAME} not found automatically near ${MSVC_BIN_DIR}. Linking might fail at runtime.")
+        endif()
+    endif()
+endfunction()
+
+add_asan_dll_copy(CheatMonitorTest)
+add_asan_dll_copy(CheatMonitorUnitTests)
+add_asan_dll_copy(SensorPerformanceTest)
+add_asan_dll_copy(ControlApiConcurrencyTest)
+add_asan_dll_copy(AntiCheatProtobufFuzz)
+
+# ASan Verification Tool (Standardized)
+add_executable(AsanVerification unit/AsanVerification.cpp)
+add_asan_dll_copy(AsanVerification)

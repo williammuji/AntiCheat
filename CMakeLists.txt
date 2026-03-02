@@ -12,7 +12,10 @@ option(ANTICHEAT_ENABLE_ASAN "Enable AddressSanitizer" ON)
 if(ANTICHEAT_ENABLE_ASAN)
     if(MSVC)
         add_compile_options(/fsanitize=address)
-        # MSVC ASan requires specific libraries to be linked, but usually handled by /fsanitize=address
+        # MSVC ASan requires incremental linking to be disabled
+        set(CMAKE_EXE_LINKER_FLAGS_DEBUG "${CMAKE_EXE_LINKER_FLAGS_DEBUG} /INCREMENTAL:NO")
+        set(CMAKE_MODULE_LINKER_FLAGS_DEBUG "${CMAKE_MODULE_LINKER_FLAGS_DEBUG} /INCREMENTAL:NO")
+        set(CMAKE_SHARED_LINKER_FLAGS_DEBUG "${CMAKE_SHARED_LINKER_FLAGS_DEBUG} /INCREMENTAL:NO")
     else()
         add_compile_options(-fsanitize=address)
         add_link_options(-fsanitize=address)

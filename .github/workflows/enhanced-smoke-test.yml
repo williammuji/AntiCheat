@@ -261,9 +261,9 @@ jobs:
 
         # Check weight classification
         $weightChecks = @{
-          "LIGHT" = 2;
-          "HEAVY" = 3;
-          "CRITICAL" = 1
+          "LIGHT" = 4;
+          "HEAVY" = 5;
+          "CRITICAL" = 2
         }
 
         foreach ($weight in $weightChecks.GetEnumerator()) {

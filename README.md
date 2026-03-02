@@ -84,58 +84,49 @@ Anti-cheat system for MMORPG games with multi-layered detection and sensor-based
 ## Build
 
 ### Prerequisites
-- **Visual Studio 2017 or later** (with C++ development tools)
+- **Visual Studio 2022**
 - **CMake 3.15 or later**
-- **Git** (for vcpkg dependency management)
-- **PowerShell 5.1 or later** (for build scripts)
-- **Protocol Buffers** (automatically managed by vcpkg)
+- **Git** (for vcpkg)
+- **PowerShell 5.1+**
 
 ### Quick Start (Recommended)
-```bash
-# build with vcpkg (recommended)
-.\scripts\build.ps1 -BuildType Release -Arch x64 -UseVcpkg
+```powershell
+# Standard x64 Release Build
+.\scripts\build.ps1 -UseVcpkg
 
-# build with tests
-.\scripts\build.ps1 -BuildType Debug -Arch x64 -UseVcpkg -BuildTests
-
-# build without vcpkg (requires manual protobuf installation)
-.\scripts\build.ps1 -BuildType Release -Arch x64 -ProtobufRoot "C:\path\to\protobuf\install"
+# x86 Debug Build with Tests and ASan (Recommended for Dev)
+.\scripts\build.ps1 -BuildType Debug -Arch x86 -UseVcpkg -BuildTests -EnableAsan
 ```
 
 ### Manual Build
-```bash
-mkdir build-x64 && cd build-x64
+```powershell
+# Configure for x86 Debug with ASan
+cmake -S . -B build-x86 -A Win32 -DANTICHEAT_ENABLE_ASAN=ON -DBUILD_TESTING=ON
 
-cmake .. -G "Visual Studio 17 2022" -A x64 \
-          -DProtobuf_ROOT="C:\path\to\protobuf\install" \
-          -DBUILD_TESTING=ON
-
-cmake --build . --config Release
+# Build
+cmake --build build-x86 --config Debug
 ```
 
 ## Testing & Benchmarking
 
-### Unit Tests
-You can run all unit tests and fuzz tests using `ctest`:
-```bash
-# Run all tests (x64)
-ctest --test-dir build-x64 -C Debug --output-on-failure
-
-# Run all tests (x86)
-ctest --test-dir build-x86 -C Debug --output-on-failure
+### 1. Unit Tests
+```powershell
+.\build-x86\test\Debug\CheatMonitorUnitTests.exe
 ```
 
-### Performance Benchmark
-To run a detailed performance benchmark for all sensors:
-```bash
-# Detailed benchmark (x64)
-.\build-x64\test\Debug\SensorPerformanceTest.exe
+### 2. Fuzz Testing
+```powershell
+.\build-x86\test\Debug\AntiCheatProtobufFuzz.exe
+```
 
-# Detailed benchmark (x86)
+### 3. Performance Benchmark
+```powershell
 .\build-x86\test\Debug\SensorPerformanceTest.exe
 ```
 
-## Example
+## GitHub CI
+- **Smoke Test**: Basic build and header integrity check.
+- **Enhanced Smoke Test**: Multi-platform build, sensor registration check, and full test suite execution.
 
 ```cpp
 #include "CheatMonitor.h"
