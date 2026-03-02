@@ -93,6 +93,9 @@ endif()
 
 # Helper to copy ASan DLL to target output
 function(add_asan_dll_copy target_name)
+    if(NOT TARGET ${target_name})
+        return()
+    endif()
     if(MSVC AND ANTICHEAT_ENABLE_ASAN)
         # Attempt to find ASan DLL dynamically based on compiler path
         get_filename_component(MSVC_BIN_DIR "${CMAKE_CXX_COMPILER}" DIRECTORY)
