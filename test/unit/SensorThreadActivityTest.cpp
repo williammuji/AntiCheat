@@ -74,3 +74,17 @@ TEST(SensorThreadActivityTest, AnalyzeIntegritySetsFailureOnNonIgnorableQueryErr
 
     SystemUtils::ResetNtApiBindingsForTesting();
 }
+
+TEST(SensorThreadActivityTest, ExecuteHonorsTimeoutThreshold)
+{
+    CheatMonitorEngine engine;
+    engine.InitializeSystem();
+    SensorRuntimeContext context(&engine);
+
+    CheatConfigManager::GetInstance().UpdateHeavyScanBudgetMs(0);
+
+    ThreadActivitySensor sensor;
+    auto result = sensor.Execute(context);
+
+    EXPECT_TRUE(result == SensorExecutionResult::TIMEOUT || result == SensorExecutionResult::FAILURE);
+}

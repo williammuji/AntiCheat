@@ -65,3 +65,21 @@ TEST(SensorVehHookTest, ExtractLowerModuleFileName)
     EXPECT_EQ(VehHookSensorTestAccess::FileNameLower(L"C:\\Windows\\System32\\KERNEL32.DLL"), L"kernel32.dll");
     EXPECT_EQ(VehHookSensorTestAccess::FileNameLower(L"ntdll.dll"), L"ntdll.dll");
 }
+
+TEST(SensorVehHookTest, TraverseVehListHonorsTimeout)
+{
+    VECTORED_HANDLER_ENTRY entry1 = {};
+    VECTORED_HANDLER_ENTRY entry2 = {};
+    LIST_ENTRY head = {};
+
+    head.Flink = &entry1.List;
+    head.Blink = &entry2.List;
+    entry1.List.Flink = &entry2.List;
+    entry1.List.Blink = &head;
+    entry2.List.Flink = &head;
+    entry2.List.Blink = &entry1.List;
+
+    // budgetMs = 0 should cause it to timeout
+    const auto result = VehHookSensorTestAccess::Traverse(&head, 0);
+    EXPECT_FALSE(result.success);
+}

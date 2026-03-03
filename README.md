@@ -128,6 +128,8 @@ cmake --build build-x86 --config Debug
 - **Smoke Test**: Basic build and header integrity check.
 - **Enhanced Smoke Test**: Multi-platform build, sensor registration check, and full test suite execution.
 
+### Example
+
 ```cpp
 #include "CheatMonitor.h"
 

@@ -36,3 +36,22 @@ TEST(SensorModuleIntegrityTest, BaselineAndTamperDecisionHelpers)
     EXPECT_TRUE(ModuleIntegritySensorTestAccess::ShouldEmitTamper(false, false));
     EXPECT_FALSE(ModuleIntegritySensorTestAccess::ShouldEmitTamper(false, true));
 }
+
+TEST(SensorModuleIntegrityTest, ExecuteHonorsTimeoutThreshold)
+{
+    CheatMonitorEngine engine;
+    engine.InitializeSystem();
+    SensorRuntimeContext context(&engine);
+
+    context.IsModuleCacheValid = true;
+    for (int i = 0; i < 50000; ++i) {
+        context.CachedModules.push_back((HMODULE)(uintptr_t)(0x10000 + i * 0x1000));
+    }
+
+    CheatConfigManager::GetInstance().UpdateHeavyScanBudgetMs(1);
+
+    ModuleIntegritySensor sensor;
+    auto result = sensor.Execute(context);
+
+    EXPECT_TRUE(result == SensorExecutionResult::TIMEOUT || result == SensorExecutionResult::FAILURE);
+}

@@ -68,3 +68,24 @@ TEST(SensorMemorySecurityTest, LowAddressSmallRwxSkipHelper)
     EXPECT_FALSE(MemorySecuritySensorTestAccess::ShouldSkipLowAddressRwx(0x400000, 4096));
     EXPECT_FALSE(MemorySecuritySensorTestAccess::ShouldSkipLowAddressRwx(0x100000, 128 * 1024));
 }
+
+TEST(SensorMemorySecurityTest, ExecuteHonorsTimeoutThreshold)
+{
+    CheatMonitorEngine engine;
+    engine.InitializeSystem();
+    SensorRuntimeContext context(&engine);
+
+    // Provide a large number of dummy memory regions to force a timeout
+    context.IsMemoryCacheValid = true;
+    context.CachedMemoryRegions.resize(500000);
+
+    // Set a very tight budget
+    CheatConfigManager::GetInstance().UpdateHeavyScanBudgetMs(1);
+
+    MemorySecuritySensor sensor;
+    auto result = sensor.Execute(context);
+
+    // Because checking 500k regions will exceed 1ms, it should definitely timeout.
+    // If cache mapping or OS check failed, it returns FAILURE, but if it evaluates regions, it returns TIMEOUT.
+    EXPECT_TRUE(result == SensorExecutionResult::TIMEOUT || result == SensorExecutionResult::FAILURE);
+}

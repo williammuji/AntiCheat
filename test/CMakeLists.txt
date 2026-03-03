@@ -41,6 +41,13 @@ if(ANTICHEAT_ENABLE_UNIT_TESTS)
             unit/SensorModuleIntegrityTest.cpp
             unit/SensorThreadActivityTest.cpp
             unit/SensorModuleActivityTest.cpp
+            unit/SensorDriverIntegrityTest.cpp
+            unit/SensorIatHookTest.cpp
+            unit/SensorInlineHookTest.cpp
+            unit/SensorProcessAndWindowMonitorTest.cpp
+            unit/SensorProcessHollowingTest.cpp
+            unit/SensorSystemCodeIntegrityTest.cpp
+            unit/SensorVTableHookTest.cpp
         )
         target_include_directories(CheatMonitorUnitTests PRIVATE
             ${CMAKE_SOURCE_DIR}
@@ -89,6 +96,21 @@ target_include_directories(AntiCheatProtobufFuzz PRIVATE ${CMAKE_SOURCE_DIR} ${C
 
 if(BUILD_TESTING)
     add_test(NAME fuzz.protobuf.parsing COMMAND AntiCheatProtobufFuzz)
+endif()
+
+# Sensor Fuzz Test
+add_executable(SensorFuzzTest fuzz/SensorFuzzTest.cpp)
+target_link_libraries(SensorFuzzTest PRIVATE CheatMonitorLib protobuf::libprotobuf)
+target_include_directories(SensorFuzzTest PRIVATE ${CMAKE_SOURCE_DIR} ${CMAKE_BINARY_DIR} ${Protobuf_INCLUDE_DIRS})
+if(MSVC)
+    # Require compiler options if MSVC is used for fuzzing.
+else()
+    target_compile_options(SensorFuzzTest PRIVATE -fsanitize=fuzzer)
+    target_link_options(SensorFuzzTest PRIVATE -fsanitize=fuzzer)
+endif()
+
+if(BUILD_TESTING)
+    add_test(NAME fuzz.sensors COMMAND SensorFuzzTest)
 endif()
 
 # Helper to copy ASan DLL to target output

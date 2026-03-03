@@ -47,3 +47,17 @@ TEST(SensorProcessHandleTest, OverflowAndRetryBoundaries)
     EXPECT_FALSE(ProcessHandleSensorTestAccess::ShouldAbortByRetry(3));
     EXPECT_TRUE(ProcessHandleSensorTestAccess::ShouldAbortByRetry(4));
 }
+
+TEST(SensorProcessHandleTest, ExecuteHonorsTimeoutThreshold)
+{
+    CheatMonitorEngine engine;
+    engine.InitializeSystem();
+    SensorRuntimeContext context(&engine);
+
+    CheatConfigManager::GetInstance().UpdateHeavyScanBudgetMs(0);
+
+    ProcessHandleSensor sensor;
+    auto result = sensor.Execute(context);
+
+    EXPECT_TRUE(result == SensorExecutionResult::TIMEOUT || result == SensorExecutionResult::FAILURE);
+}
