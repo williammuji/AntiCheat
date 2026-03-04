@@ -18,6 +18,7 @@ void CheatMonitorEngine::MonitorLoop()
     auto next_report_upload = std::chrono::steady_clock::now();
     auto next_sensor_stats_upload = std::chrono::steady_clock::now();
     auto next_snapshot_upload = std::chrono::steady_clock::now();
+    auto next_heartbeat_upload = std::chrono::steady_clock::now();
 
     while (m_isSystemActive.load())
     {
@@ -27,7 +28,7 @@ void CheatMonitorEngine::MonitorLoop()
         if (m_isSessionActive.load() && m_hasServerConfig.load())
         {
             earliest = std::min(
-                    {next_light_scan, next_heavy_scan, next_report_upload, next_sensor_stats_upload, next_snapshot_upload});
+                    {next_light_scan, next_heavy_scan, next_report_upload, next_sensor_stats_upload, next_snapshot_upload, next_heartbeat_upload});
         }
 
         {
@@ -73,6 +74,12 @@ void CheatMonitorEngine::MonitorLoop()
             if (CheatConfigManager::GetInstance().IsSnapshotUploadEnabled()) UploadSnapshotReport();
             next_snapshot_upload =
                     now + std::chrono::minutes(CheatConfigManager::GetInstance().GetSnapshotUploadIntervalMinutes());
+        }
+
+        if (now >= next_heartbeat_upload)
+        {
+            UploadHeartbeatReport();
+            next_heartbeat_upload = now + std::chrono::seconds(CheatConfigManager::GetInstance().GetHeartbeatIntervalSeconds());
         }
     }
 }
@@ -130,6 +137,7 @@ void CheatMonitorEngine::ExecuteLightweightSensors()
     {
         ExecuteAndMonitorSensor(sensor.get(), sensor->GetName(), false, context);
     }
+    m_lightScanCount++;
 }
 
 void CheatMonitorEngine::ExecuteHeavyweightSensors()
@@ -156,6 +164,7 @@ void CheatMonitorEngine::ExecuteHeavyweightSensors()
         }
         ExecuteAndMonitorSensor(sensor.get(), sensor->GetName(), true, context);
     }
+    m_heavyScanCount++;
 }
 
 SensorExecutionResult CheatMonitorEngine::ExecuteAndMonitorSensor(ISensor *sensor, const char *name, bool isHeavyweight,

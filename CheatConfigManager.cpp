@@ -280,6 +280,11 @@ bool CheatConfigManager::IsSnapshotUploadEnabled() const
     return GetCurrentConfig()->config->enable_snapshot_upload();
 }
 
+int32_t CheatConfigManager::GetHeartbeatIntervalSeconds() const
+{
+    return GetCurrentConfig()->config->heartbeat_interval_seconds();
+}
+
 std::string CheatConfigManager::GetHmacKey() const
 {
     return GetCurrentConfig()->config->hmac_key();
@@ -783,6 +788,9 @@ void CheatConfigManager::SetDefaultValues(ConfigData& configData)
     // 新增：快照上报配置
     configData.config->set_snapshot_upload_interval_minutes(30);  // 默认30分钟上报一次
     configData.config->set_enable_snapshot_upload(true);          // 默认启用快照上报
+
+    // 新增：心跳配置
+    configData.config->set_heartbeat_interval_seconds(60);        // 默认60秒心跳
 
     // 默认不启用签名（hmac_key为空）
     configData.config->set_hmac_key("");

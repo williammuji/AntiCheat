@@ -268,6 +268,7 @@ enum ReportType {
   REPORT_TARGETED_SENSOR = 4; // 临时单次传感器扫描结果
   REPORT_SNAPSHOT = 5;    // 快照数据上报
   REPORT_SERVER_LOG = 6;  // 服务器后台日志（客户端日志上传，服务器打印用）
+  REPORT_HEARTBEAT = 7;   // 客户端存活心跳
 }
 
 // 硬件信息专用上报消息
@@ -313,6 +314,16 @@ message ServerLogReport {
   string log_message = 5;    // 日志内容
 }
 
+// 心跳上报消息
+message HeartbeatReport {
+  string report_id = 1;
+  uint64 report_timestamp_ms = 2;
+  uint32 user_id = 3;              // 当前在线玩家 ID
+  string session_id = 4;           // 会话 UUID（与 Report.session_id 一致）
+  uint32 light_scan_count = 5;     // 自上次心跳以来轻量扫描次数（可用于异常检测）
+  uint32 heavy_scan_count = 6;     // 自上次心跳以来重量扫描次数
+}
+
 // 统一的上报包装器
 message Report {
   ReportType type = 1;
@@ -323,13 +334,14 @@ message Report {
     TelemetryReport telemetry = 4;
     TargetedSensorReport targeted_sensor = 5;
     SnapshotReport snapshot = 6;
-  ServerLogReport server_log = 7;
+    ServerLogReport server_log = 7;
+    HeartbeatReport heartbeat = 8;  // 存活心跳
   }
 
-  uint64 sequence_id = 8;       // 防重放序号
-  string signature = 9;         // HMAC-SHA256 签名
-  string session_id = 10;       // 每次启动生成的唯一会话ID (UUID)
-  uint64 timestamp_ms = 11;     // 上报时的客户端时间戳
+  uint64 sequence_id = 9;       // 防重放序号
+  string signature = 10;        // HMAC-SHA256 签名
+  string session_id = 11;       // 每次启动生成的唯一会话ID (UUID)
+  uint64 timestamp_ms = 12;     // 上报时的客户端时间戳
 }
 
 // 操作系统版本要求 - 配置哪个版本值就支持该版本及以上
@@ -442,6 +454,9 @@ message ClientConfig {
   // --- 快照上报配置 ---
   optional int32 snapshot_upload_interval_minutes = 32;  // 快照上报间隔(分钟)，默认30
   optional bool enable_snapshot_upload = 33;             // 是否启用快照上报，默认true
+
+  // --- 心跳配置 ---
+  optional int32 heartbeat_interval_seconds = 39;        // 心跳上报间隔(秒)，默认60
 
   // --- 官方第三方库白名单配置 ---
   repeated TrustedThirdPartyModule trusted_third_party_modules = 34;  // 官方认可的第三方库列表

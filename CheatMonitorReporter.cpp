@@ -332,6 +332,10 @@ void CheatMonitorEngine::SendReport(const anti_cheat::Report &report)
             report_type_name = "ServerLog";
             content_size = report.has_server_log() ? 1 : 0;
             break;
+        case anti_cheat::REPORT_HEARTBEAT:
+            report_type_name = "Heartbeat";
+            content_size = report.has_heartbeat() ? 1 : 0;
+            break;
         default:
             break;
     }
@@ -370,6 +374,29 @@ void CheatMonitorEngine::SendReport(const anti_cheat::Report &report)
     }
 
     // TODO: HttpSend(server_url, upload_payload);
+}
+
+void CheatMonitorEngine::UploadHeartbeatReport()
+{
+    anti_cheat::Report report;
+    report.set_type(anti_cheat::REPORT_HEARTBEAT);
+    auto heartbeat_report = report.mutable_heartbeat();
+    heartbeat_report->set_report_id(Utils::GenerateUuid());
+    heartbeat_report->set_report_timestamp_ms(
+            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
+                    .count());
+
+    uint32_t currentUserId = 0;
+    {
+        std::lock_guard<std::mutex> lock(m_sessionMutex);
+        currentUserId = m_currentUserId;
+    }
+    heartbeat_report->set_user_id(currentUserId);
+    heartbeat_report->set_session_id(m_sessionId);
+    heartbeat_report->set_light_scan_count(m_lightScanCount.exchange(0));
+    heartbeat_report->set_heavy_scan_count(m_heavyScanCount.exchange(0));
+
+    SendReport(report);
 }
 
 void CheatMonitorEngine::SendServerLog(const std::string &log_level, const std::string &log_category,

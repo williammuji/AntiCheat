@@ -83,6 +83,9 @@ class CheatConfigManager
     int32_t GetSnapshotUploadIntervalMinutes() const;  // 快照上报间隔(分钟)
     bool IsSnapshotUploadEnabled() const;              // 是否启用快照上报
 
+    // [新增] 心跳配置
+    int32_t GetHeartbeatIntervalSeconds() const;       // 心跳上报间隔(秒)
+
     // [新增] 官方第三方库白名单配置
     struct TrustedThirdPartyModule
     {

@@ -124,11 +124,11 @@ cmake --build build-x86 --config Debug
 .\build-x86\test\Debug\SensorPerformanceTest.exe
 ```
 
-## GitHub CI
+### GitHub CI
 - **Smoke Test**: Basic build and header integrity check.
 - **Enhanced Smoke Test**: Multi-platform build, sensor registration check, and full test suite execution.
 
-### Example
+## Example
 
 ```cpp
 #include "CheatMonitor.h"

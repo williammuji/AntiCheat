@@ -52,6 +52,9 @@ struct CheatMonitorEngine
     std::mutex m_sensorStatsMutex;
     std::unordered_map<std::string, anti_cheat::SensorExecutionStats> m_sensorExecutionStats;
 
+    std::atomic<uint32_t> m_lightScanCount{0};
+    std::atomic<uint32_t> m_heavyScanCount{0};
+
     mutable std::mutex m_signatureCacheMutex;
     enum class SignatureVerdict
     {
@@ -164,6 +167,7 @@ struct CheatMonitorEngine
                                     SensorExecutionResult result, anti_cheat::SensorFailureReason failureReason,
                                     int duration_ms, const std::string &notes,
                                     const std::vector<anti_cheat::Evidence> &evidences);
+    void UploadHeartbeatReport();
 
     void UploadHardwareReport();
     void UploadEvidenceReport();

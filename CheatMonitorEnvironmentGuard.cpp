@@ -39,13 +39,13 @@ void CheatMonitorEngine::InitializeSystem()
         m_lightweightSensors.push_back(std::make_unique<IatHookSensor>());
         m_lightweightSensors.push_back(std::make_unique<VehHookSensor>());
         m_lightweightSensors.push_back(std::make_unique<VTableHookSensor>());
+        m_lightweightSensors.push_back(std::make_unique<InlineHookSensor>());
+        m_lightweightSensors.push_back(std::make_unique<ProcessHollowingSensor>());
 
         m_heavyweightSensors.push_back(std::make_unique<ThreadActivitySensor>());
         m_heavyweightSensors.push_back(std::make_unique<ModuleActivitySensor>());
         m_heavyweightSensors.push_back(std::make_unique<MemorySecuritySensor>());
         m_heavyweightSensors.push_back(std::make_unique<DriverIntegritySensor>());
-        m_heavyweightSensors.push_back(std::make_unique<InlineHookSensor>());
-        m_heavyweightSensors.push_back(std::make_unique<ProcessHollowingSensor>());
         m_heavyweightSensors.push_back(std::make_unique<ProcessHandleSensor>());
         m_heavyweightSensors.push_back(std::make_unique<ModuleIntegritySensor>());
         m_heavyweightSensors.push_back(std::make_unique<ProcessAndWindowMonitorSensor>());
