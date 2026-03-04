@@ -26,6 +26,7 @@ class SensorRuntimeContext
     std::vector<HMODULE> CachedModules;
     std::vector<MEMORY_BASIC_INFORMATION> CachedMemoryRegions;
     bool IsMemoryCacheValid = false;
+    bool IsModuleCacheValid = false;
 
     explicit SensorRuntimeContext(CheatMonitorEngine *engine, bool targetedScan = false);
     ~SensorRuntimeContext();
@@ -76,6 +77,25 @@ class SensorRuntimeContext
     void SetModuleCursorOffset(size_t v);
     size_t GetProcessCursorOffset() const;
     void SetProcessCursorOffset(size_t v);
+
+    size_t GetThreadCursorOffset() const;
+    void SetThreadCursorOffset(size_t v);
+    size_t GetHookCursorOffset() const;
+    void SetHookCursorOffset(size_t v);
+    size_t GetDriverCursorOffset() const;
+    void SetDriverCursorOffset(size_t v);
+    size_t GetWindowCursorOffset() const;
+    void SetWindowCursorOffset(size_t v);
+
+    uint64_t GetModuleIntegrityPartialHash() const;
+    void SetModuleIntegrityPartialHash(uint64_t v);
+    size_t GetModuleInternalOffset() const;
+    void SetModuleInternalOffset(size_t v);
+
+    size_t GetExportCursorOffset() const;
+    void SetExportCursorOffset(size_t v);
+    size_t GetInlineHookModuleCursorOffset() const;
+    void SetInlineHookModuleCursorOffset(size_t v);
 
     std::unordered_map<DWORD, std::chrono::steady_clock::time_point> &GetPidThrottleUntil();
     std::unordered_map<std::wstring, std::pair<Utils::SignatureStatus, std::chrono::steady_clock::time_point>> &

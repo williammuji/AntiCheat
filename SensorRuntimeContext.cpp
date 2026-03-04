@@ -236,6 +236,86 @@ void SensorRuntimeContext::SetProcessCursorOffset(size_t v)
     m_engine->m_processCursorOffset = v;
 }
 
+size_t SensorRuntimeContext::GetThreadCursorOffset() const
+{
+    return m_engine->m_threadCursorOffset;
+}
+
+void SensorRuntimeContext::SetThreadCursorOffset(size_t v)
+{
+    m_engine->m_threadCursorOffset = v;
+}
+
+size_t SensorRuntimeContext::GetHookCursorOffset() const
+{
+    return m_engine->m_hookCursorOffset;
+}
+
+void SensorRuntimeContext::SetHookCursorOffset(size_t v)
+{
+    m_engine->m_hookCursorOffset = v;
+}
+
+size_t SensorRuntimeContext::GetDriverCursorOffset() const
+{
+    return m_engine->m_driverCursorOffset;
+}
+
+void SensorRuntimeContext::SetDriverCursorOffset(size_t v)
+{
+    m_engine->m_driverCursorOffset = v;
+}
+
+size_t SensorRuntimeContext::GetWindowCursorOffset() const
+{
+    return m_engine->m_windowCursorOffset;
+}
+
+void SensorRuntimeContext::SetWindowCursorOffset(size_t v)
+{
+    m_engine->m_windowCursorOffset = v;
+}
+
+uint64_t SensorRuntimeContext::GetModuleIntegrityPartialHash() const
+{
+    return m_engine->m_moduleIntegrityPartialHash;
+}
+
+void SensorRuntimeContext::SetModuleIntegrityPartialHash(uint64_t v)
+{
+    m_engine->m_moduleIntegrityPartialHash = v;
+}
+
+size_t SensorRuntimeContext::GetModuleInternalOffset() const
+{
+    return m_engine->m_moduleInternalOffset;
+}
+
+void SensorRuntimeContext::SetModuleInternalOffset(size_t v)
+{
+    m_engine->m_moduleInternalOffset = v;
+}
+
+size_t SensorRuntimeContext::GetExportCursorOffset() const
+{
+    return m_engine->m_exportCursorOffset;
+}
+
+void SensorRuntimeContext::SetExportCursorOffset(size_t v)
+{
+    m_engine->m_exportCursorOffset = v;
+}
+
+size_t SensorRuntimeContext::GetInlineHookModuleCursorOffset() const
+{
+    return m_engine->m_inlineHookModuleCursorOffset;
+}
+
+void SensorRuntimeContext::SetInlineHookModuleCursorOffset(size_t v)
+{
+    m_engine->m_inlineHookModuleCursorOffset = v;
+}
+
 std::unordered_map<DWORD, std::chrono::steady_clock::time_point> &SensorRuntimeContext::GetPidThrottleUntil()
 {
     return m_engine->m_pidThrottleUntil;

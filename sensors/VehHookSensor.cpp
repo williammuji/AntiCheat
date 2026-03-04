@@ -103,8 +103,8 @@ SensorExecutionResult VehHookSensor::Execute(SensorRuntimeContext &context)
         {
             LOG_WARNING(AntiCheatLogger::LogCategory::SENSOR, "VEH链表遍历超时");
             RecordFailure(anti_cheat::VEH_EXECUTION_TIMEOUT);
+            return SensorExecutionResult::TIMEOUT;
         }
-        return SensorExecutionResult::FAILURE;
     }
 
     for (int i = 0; i < traverseResult.handlerCount; ++i)
@@ -139,7 +139,7 @@ SensorExecutionResult VehHookSensor::Execute(SensorRuntimeContext &context)
                     LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR,
                                   "VEH检测超时，已检查%zu/%zu个处理器，耗时%ldms", i, checkCount, elapsed_ms);
                     RecordFailure(anti_cheat::VEH_EXECUTION_TIMEOUT);
-                    return SensorExecutionResult::FAILURE;
+                    return SensorExecutionResult::TIMEOUT;
                 }
             }
 
@@ -230,11 +230,11 @@ VehHookSensor::VehTraverseResult VehHookSensor::TraverseVehListSafe(LIST_ENTRY *
 
         while (pNode && pNode != pHead && safetyCounter++ < kMaxNodes && result.handlerCount < 2048)
         {
-            // 优化：每25次循环检查一次超时，因为安全计数器需要更频繁的检查
-            if (safetyCounter % 25 == 0)
+            // 优化：每5次循环检查一次超时，因为安全计数器需要更频繁的检查
+            if (safetyCounter % 5 == 0)
             {
                 auto now = std::chrono::steady_clock::now();
-                if (std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count() > budget_ms)
+                if (std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count() >= budget_ms)
                 {
                     result.success = false;  // 超时视为失败
                     return result;           // Timeout
@@ -255,8 +255,8 @@ VehHookSensor::VehTraverseResult VehHookSensor::TraverseVehListSafe(LIST_ENTRY *
             }
             else
             {
-                // 空的VEH Handler可能是异常情况，记录但继续处理
-                LOG_WARNING(AntiCheatLogger::LogCategory::SENSOR, "VEH检测: 发现空的Handler，可能是异常情况");
+                // 空的VEH Handler在某些系统环境下可能出现，记录为调试信息
+                LOG_DEBUG(AntiCheatLogger::LogCategory::SENSOR, "VEH检测: 发现空的Handler，跳过");
             }
 
             LIST_ENTRY *pNext = pNode->Flink;

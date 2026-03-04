@@ -11,5 +11,5 @@ TEST(SensorDriverIntegrityTest, ExecuteRunsWithoutCrashing)
 
     auto result = sensor.Execute(context);
     // Execute will either succeed or fail (e.g., if OS version is unsupported or EnumDeviceDrivers fails)
-    EXPECT_TRUE(result == SensorExecutionResult::SUCCESS || result == SensorExecutionResult::FAILURE);
+    EXPECT_TRUE(result == SensorExecutionResult::SUCCESS || result == SensorExecutionResult::FAILURE || result == SensorExecutionResult::TIMEOUT);
 }

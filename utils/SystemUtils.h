@@ -269,6 +269,8 @@ namespace SystemUtils
     void CheckCloseHandleException();
     bool IsKernelDebuggerPresent_KUserSharedData();
     std::vector<uint8_t> CalculateFnv1aHash(const BYTE *data, size_t size);
+    uint64_t CalculateFnv1aHashPartial(const BYTE *data, size_t size, uint64_t initialHash);
+    std::vector<uint8_t> HashToBytes(uint64_t hash);
     void DumpPESections(const std::wstring &filePath);
     std::string CalculateModuleHashFromDisk(const std::wstring &filePath);
 

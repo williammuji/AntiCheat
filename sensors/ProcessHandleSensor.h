@@ -14,7 +14,7 @@ class ProcessHandleSensor : public ISensor
 public:
     const char *GetName() const override { return "ProcessHandleSensor"; }
     SensorWeight GetWeight() const override { return SensorWeight::CRITICAL; } // 1000-10000ms: 进程句柄扫描
-    SensorExecutionResult Execute(SensorRuntimeContext &context) override;
+    virtual SensorExecutionResult Execute(SensorRuntimeContext &context) override;
 
 private:
    friend class ProcessHandleSensorTestAccess;

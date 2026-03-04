@@ -30,6 +30,8 @@ typedef NTSTATUS(NTAPI *P_LdrUnregisterDllNotification)(PVOID Cookie);
 
 void CheatMonitorEngine::InitializeSystem()
 {
+    SystemUtils::EnsureNtApisLoaded();
+
     if (m_lightweightSensors.empty())
     {
         m_lightweightSensors.push_back(std::make_unique<AdvancedAntiDebugSensor>());
@@ -159,13 +161,13 @@ void CheatMonitorEngine::HardenProcessAndThreads()
     {
         NTSTATUS status = SystemUtils::g_pNtSetInformationThread(GetCurrentThread(), (THREADINFOCLASS)17, nullptr, 0);
         if (!NT_SUCCESS(status))
-            LOG_WARNING_F(AntiCheatLogger::LogCategory::SYSTEM, "线程隐藏设置失败，NTSTATUS: 0x%08X", status);
+            LOG_INFO_F(AntiCheatLogger::LogCategory::SYSTEM, "线程隐藏设置可能由于权限不足失败，NTSTATUS: 0x%08X", status);
         else
             LOG_INFO(AntiCheatLogger::LogCategory::SYSTEM, "监控线程已设置为对调试器隐藏");
     }
     else
     {
-        LOG_WARNING(AntiCheatLogger::LogCategory::SYSTEM, "NtSetInformationThread API 不可用，无法隐藏监控线程");
+        LOG_INFO(AntiCheatLogger::LogCategory::SYSTEM, "NtSetInformationThread API 不可用，无法隐藏监控线程");
     }
 }
 

@@ -1,6 +1,7 @@
 #include <cstdint>
 #include <cstddef>
 #include <vector>
+#include <iostream>
 
 #include "sensors/MemorySecuritySensor.h"
 #include "CheatMonitorEngine.h"
@@ -40,3 +41,14 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 
     return 0;
 }
+
+#ifndef FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION
+int main(int argc, char **argv)
+{
+    std::cout << "Starting Sensor Fuzz (Smoke Test)..." << std::endl;
+    std::vector<uint8_t> dummy_data = {0x4D, 0x5A, 0x90, 0x00, 0x03, 0x00, 0x00, 0x00};
+    LLVMFuzzerTestOneInput(dummy_data.data(), dummy_data.size());
+    std::cout << "Sensor Fuzz stub executed successfully." << std::endl;
+    return 0;
+}
+#endif

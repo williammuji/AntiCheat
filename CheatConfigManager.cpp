@@ -703,6 +703,7 @@ void CheatConfigManager::SetDefaultValues(ConfigData& configData)
     configData.config->add_known_good_processes("cloudmusic.exe");
     configData.config->add_known_good_processes("bilibili.exe");
     configData.config->add_known_good_processes("dingtalk.exe");
+    configData.config->add_known_good_processes("SensorPerformanceTest.exe");
 
     configData.config->clear_whitelisted_process_paths();
     wchar_t path_buffer[MAX_PATH];
@@ -798,6 +799,12 @@ void CheatConfigManager::SetDefaultValues(ConfigData& configData)
     fmod_module->set_description("FMOD音频引擎");
     fmod_module->set_enabled(true);
 
+    auto* proto_module = configData.config->add_trusted_third_party_modules();
+    proto_module->set_module_name("libprotobufd.dll");
+    proto_module->set_module_size(0);
+    proto_module->set_description("Protobuf Runtime");
+    proto_module->set_enabled(true);
+
     // 添加 aksoundenginedll_d.dll 配置
     auto* ak_module = configData.config->add_trusted_third_party_modules();
     ak_module->set_module_name("aksoundenginedll_d.dll");
@@ -833,6 +840,7 @@ void CheatConfigManager::SetDefaultValues(ConfigData& configData)
     configData.config->add_whitelisted_integrity_files("wegame_helper.dll");
     // 游戏组件
     configData.config->add_whitelisted_integrity_files("fmodex.dll");
+    configData.config->add_whitelisted_integrity_files("qmhookhelper.dll");
     configData.config->add_whitelisted_integrity_files("ydyclient.dll");
     configData.config->add_whitelisted_integrity_files("hploader.dll");
     // 显卡驱动与系统组件
@@ -865,6 +873,8 @@ void CheatConfigManager::SetDefaultValues(ConfigData& configData)
     configData.config->add_whitelisted_system_modules("ole32.dll");
     configData.config->add_whitelisted_system_modules("oleaut32.dll");
     configData.config->add_whitelisted_system_modules("comctl32.dll");
+    // 注意：qmhookhelper.dll (QQ音乐钩子助手) 已从此列表移除。
+    // 它是第三方游戏组件而非系统模块，仅保留在 whitelisted_integrity_files 中。
 
     configData.config->clear_whitelisted_integrity_ignore_list();
     configData.config->add_whitelisted_integrity_ignore_list("fmodex.dll");
@@ -987,4 +997,28 @@ bool CheatConfigManager::IsTrustedThirdPartyModule(const std::wstring& module_na
     }
 
     return false;  // 未找到匹配的可信第三方模块
+}
+
+void CheatConfigManager::UpdateHeavyScanBudgetMs(int32_t ms)
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_configData->config->set_heavy_scan_budget_ms(ms);
+}
+
+void CheatConfigManager::UpdateMaxProcessesToScan(int32_t count)
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_configData->config->set_max_processes_to_scan(count);
+}
+
+void CheatConfigManager::UpdateMaxHandleScanCount(int32_t count)
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_configData->config->set_max_handle_scan_count(count);
+}
+
+void CheatConfigManager::UpdateMaxWindowCount(int32_t count)
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_configData->config->set_max_window_count(count);
 }

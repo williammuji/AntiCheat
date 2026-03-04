@@ -11,7 +11,7 @@ class MemorySecuritySensor : public ISensor
 public:
     const char *GetName() const override { return "MemorySecuritySensor"; }
     SensorWeight GetWeight() const override { return SensorWeight::HEAVY; } // 10-100ms: 内存安全检测
-    SensorExecutionResult Execute(SensorRuntimeContext &context) override;
+    virtual SensorExecutionResult Execute(SensorRuntimeContext &context) override;
 
 private:
     friend class MemorySecuritySensorTestAccess;

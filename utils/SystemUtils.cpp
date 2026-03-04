@@ -475,20 +475,30 @@ namespace SystemUtils
         }
     }
 
-    std::vector<uint8_t> CalculateFnv1aHash(const BYTE *data, size_t size)
+    std::vector<uint8_t> HashToBytes(uint64_t hash)
     {
-        uint64_t hash = 14695981039346656037ULL;
-        const uint64_t fnv_prime = 1099511628211ULL;
+        std::vector<uint8_t> result(sizeof(hash));
+        memcpy(result.data(), &hash, sizeof(hash));
+        return result;
+    }
 
+    uint64_t CalculateFnv1aHashPartial(const BYTE *data, size_t size, uint64_t initialHash)
+    {
+        uint64_t hash = initialHash;
+        const uint64_t fnv_prime = 1099511628211ULL;
         for (size_t i = 0; i < size; ++i)
         {
             hash ^= data[i];
             hash *= fnv_prime;
         }
-        std::vector<uint8_t> result(sizeof(hash));
-        memcpy(result.data(), &hash, sizeof(hash));
-        return result;
+        return hash;
     }
+
+    std::vector<uint8_t> CalculateFnv1aHash(const BYTE *data, size_t size)
+    {
+        return HashToBytes(CalculateFnv1aHashPartial(data, size, 14695981039346656037ULL));
+    }
+
 
     void DumpPESections(const std::wstring &filePath)
     {

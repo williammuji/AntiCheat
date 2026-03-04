@@ -15,6 +15,10 @@ extern "C" {
 
 SensorExecutionResult InlineHookSensor::Execute(SensorRuntimeContext &context)
 {
+    auto startTime = std::chrono::steady_clock::now();
+    int budgetMs = CheatConfigManager::GetInstance().GetHeavyScanBudgetMs();
+    if (budgetMs <= 0) budgetMs = 1500;
+
     m_lastFailureReason = anti_cheat::UNKNOWN_FAILURE;
 
     // 基础系统模块列表 + 配置中的系统模块白名单
@@ -38,19 +42,45 @@ SensorExecutionResult InlineHookSensor::Execute(SensorRuntimeContext &context)
         moduleNames.insert(configuredSystemModules->begin(), configuredSystemModules->end());
     }
 
-    for (const auto& modName : moduleNames)
+    std::vector<std::wstring> targetModules(moduleNames.begin(), moduleNames.end());
+    // 添加主模块检查 (NULL)
+    targetModules.push_back(L"__SELF__");
+
+    size_t startModIdx = context.GetInlineHookModuleCursorOffset();
+    if (startModIdx >= targetModules.size()) startModIdx = 0;
+
+    for (size_t i = startModIdx; i < targetModules.size(); i++)
     {
-        HMODULE hMod = GetModuleHandleW(modName.c_str());
+        const auto& modName = targetModules[i];
+        HMODULE hMod = nullptr;
+        if (modName == L"__SELF__")
+        {
+            hMod = GetModuleHandleW(NULL);
+        }
+        else
+        {
+            hMod = GetModuleHandleW(modName.c_str());
+        }
+
         if (hMod)
         {
-            CheckModuleExports(hMod, context);
+            auto result = CheckModuleExports(hMod, context, startTime, budgetMs);
+            if (result == SensorExecutionResult::TIMEOUT)
+            {
+                context.SetInlineHookModuleCursorOffset(i);
+                LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR,
+                           "InlineHookSensor 扫描超时: 模块=%ls (索引: %zu/%zu)",
+                           modName.c_str(), i, targetModules.size());
+                return SensorExecutionResult::TIMEOUT;
+            }
         }
+        // 成功处理完一个模块，重置内部导出项游标
+        context.SetExportCursorOffset(0);
     }
 
-    // 也可以检查主模块
-    HMODULE hSelf = GetModuleHandleW(NULL);
-    if (hSelf) CheckModuleExports(hSelf, context);
-
+    // 全部扫描完成，重置游标
+    context.SetInlineHookModuleCursorOffset(0);
+    context.SetExportCursorOffset(0);
     return SensorExecutionResult::SUCCESS;
 }
 
@@ -94,28 +124,42 @@ bool InlineHookSensor::IsAddressWhitelisted(PVOID address, SensorRuntimeContext 
     return IsModuleInUnifiedWhitelist(modulePath, context);
 }
 
-void InlineHookSensor::CheckModuleExports(HMODULE hMod, SensorRuntimeContext& context)
+SensorExecutionResult InlineHookSensor::CheckModuleExports(HMODULE hMod, SensorRuntimeContext& context,
+                                               std::chrono::steady_clock::time_point startTime, int budgetMs)
 {
     PIMAGE_DOS_HEADER pDos = (PIMAGE_DOS_HEADER)hMod;
-    if (!SystemUtils::IsReadableMemory(pDos, sizeof(IMAGE_DOS_HEADER)) || pDos->e_magic != IMAGE_DOS_SIGNATURE) return;
+    if (!SystemUtils::IsReadableMemory(pDos, sizeof(IMAGE_DOS_HEADER)) || pDos->e_magic != IMAGE_DOS_SIGNATURE) return SensorExecutionResult::SUCCESS;
 
     PIMAGE_NT_HEADERS pNt = (PIMAGE_NT_HEADERS)((BYTE*)hMod + pDos->e_lfanew);
-    if (!SystemUtils::IsReadableMemory(pNt, sizeof(IMAGE_NT_HEADERS)) || pNt->Signature != IMAGE_NT_SIGNATURE) return;
+    if (!SystemUtils::IsReadableMemory(pNt, sizeof(IMAGE_NT_HEADERS)) || pNt->Signature != IMAGE_NT_SIGNATURE) return SensorExecutionResult::SUCCESS;
 
     DWORD exportDirRVA = pNt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress;
-    if (exportDirRVA == 0) return;
+    if (exportDirRVA == 0) return SensorExecutionResult::SUCCESS;
 
     DWORD exportDirSize = pNt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].Size;
 
     PIMAGE_EXPORT_DIRECTORY pExport = (PIMAGE_EXPORT_DIRECTORY)((BYTE*)hMod + exportDirRVA);
-    if (!SystemUtils::IsReadableMemory(pExport, sizeof(IMAGE_EXPORT_DIRECTORY))) return;
+    if (!SystemUtils::IsReadableMemory(pExport, sizeof(IMAGE_EXPORT_DIRECTORY))) return SensorExecutionResult::SUCCESS;
 
     DWORD* pAddressOfFunctions = (DWORD*)((BYTE*)hMod + pExport->AddressOfFunctions);
     DWORD* pAddressOfNames = (DWORD*)((BYTE*)hMod + pExport->AddressOfNames);
     WORD* pAddressOfNameOrdinals = (WORD*)((BYTE*)hMod + pExport->AddressOfNameOrdinals);
 
-    for (DWORD i = 0; i < pExport->NumberOfNames; i++)
+    size_t startExportIdx = context.GetExportCursorOffset();
+
+    for (DWORD i = (DWORD)startExportIdx; i < pExport->NumberOfNames; i++)
     {
+        // 性能控制：每处理100个导出项检查一次时间
+        if (i % 100 == 0)
+        {
+            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - startTime).count();
+            if (elapsed > budgetMs)
+            {
+                context.SetExportCursorOffset(i);
+                return SensorExecutionResult::TIMEOUT;
+            }
+        }
         if (!SystemUtils::IsReadableMemory(&pAddressOfNames[i], sizeof(DWORD)) ||
             !SystemUtils::IsReadableMemory(&pAddressOfNameOrdinals[i], sizeof(WORD))) break;
 
@@ -140,6 +184,8 @@ void InlineHookSensor::CheckModuleExports(HMODULE hMod, SensorRuntimeContext& co
 
         CheckFunction(pFunc, funcName, context);
     }
+
+    return SensorExecutionResult::SUCCESS;
 }
 
 void InlineHookSensor::CheckFunction(BYTE* pFunc, const char* funcName, SensorRuntimeContext& context)

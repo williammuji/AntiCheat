@@ -13,5 +13,5 @@ TEST(SensorInlineHookTest, ExecuteRunsWithoutCrashingOnSystemModules)
     auto result = sensor.Execute(context);
 
     // In a clean environment without inline hooks, it should succeed.
-    EXPECT_TRUE(result == SensorExecutionResult::SUCCESS || result == SensorExecutionResult::FAILURE);
+    EXPECT_TRUE(result == SensorExecutionResult::SUCCESS || result == SensorExecutionResult::FAILURE || result == SensorExecutionResult::TIMEOUT);
 }

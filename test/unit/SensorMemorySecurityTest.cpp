@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
 
 #include "sensors/MemorySecuritySensor.h"
+#include "CheatMonitorEngine.h"
+#include "CheatConfigManager.h"
 
 class MemorySecuritySensorTestAccess
 {

@@ -68,16 +68,14 @@ TEST(SensorVehHookTest, ExtractLowerModuleFileName)
 
 TEST(SensorVehHookTest, TraverseVehListHonorsTimeout)
 {
-    VECTORED_HANDLER_ENTRY entry1 = {};
-    VECTORED_HANDLER_ENTRY entry2 = {};
+    VECTORED_HANDLER_ENTRY entries[10] = {};
     LIST_ENTRY head = {};
-
-    head.Flink = &entry1.List;
-    head.Blink = &entry2.List;
-    entry1.List.Flink = &entry2.List;
-    entry1.List.Blink = &head;
-    entry2.List.Flink = &head;
-    entry2.List.Blink = &entry1.List;
+    head.Flink = &entries[0].List;
+    head.Blink = &entries[9].List;
+    for (int i = 0; i < 10; ++i) {
+        entries[i].List.Flink = (i == 9) ? &head : &entries[i + 1].List;
+        entries[i].List.Blink = (i == 0) ? &head : &entries[i - 1].List;
+    }
 
     // budgetMs = 0 should cause it to timeout
     const auto result = VehHookSensorTestAccess::Traverse(&head, 0);

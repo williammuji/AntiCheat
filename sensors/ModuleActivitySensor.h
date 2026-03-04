@@ -10,7 +10,7 @@ class ModuleActivitySensor : public ISensor
 public:
     const char *GetName() const override { return "ModuleActivitySensor"; }
     SensorWeight GetWeight() const override { return SensorWeight::HEAVY; } // 10-100ms: 模块活动监控
-    SensorExecutionResult Execute(SensorRuntimeContext &context) override;
+    virtual SensorExecutionResult Execute(SensorRuntimeContext &context) override;
 
 private:
    friend class ModuleActivitySensorTestAccess;

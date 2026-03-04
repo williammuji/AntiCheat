@@ -6,6 +6,7 @@
 #include "utils/Scanners.h"
 #include "CheatConfigManager.h"
 #include <algorithm>
+#include <limits>
 #include <sstream>
 
 bool ModuleIntegritySensor::IsWritableCodeProtection(DWORD protect)
@@ -58,7 +59,7 @@ SensorExecutionResult ModuleIntegritySensor::Execute(SensorRuntimeContext &conte
                                         : std::max(1, CheatConfigManager::GetInstance().GetMaxModulesPerScan());
     bool timeoutOccurred = false;
     bool stopEnumerate = false;
-    std::wstring lastProcessedModuleName;
+    std::wstring lastModName;
     ModuleScanner::EnumerateModules([&](HMODULE hModule) {
         if (stopEnumerate)
             return;
@@ -117,15 +118,15 @@ SensorExecutionResult ModuleIntegritySensor::Execute(SensorRuntimeContext &conte
             m_moduleCache[hModule] = modInfo;
         }
 
-        // 更新lastProcessedModuleName用于日志（使用缓存的路径）
-        lastProcessedModuleName = modInfo.modulePath;
-        std::transform(lastProcessedModuleName.begin(), lastProcessedModuleName.end(),
-                       lastProcessedModuleName.begin(), ::towlower);
+        // 更新lastModName用于日志（使用缓存的路径）
+        lastModName = modInfo.modulePath;
+        std::transform(lastModName.begin(), lastModName.end(),
+                       lastModName.begin(), ::towlower);
 
         // 超时检查
         {
             auto now = std::chrono::steady_clock::now();
-            if (!targetedScan &&
+            if (!targetedScan && processed > 0 &&
                 std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count() > budget_ms)
             {
                 const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count();
@@ -133,7 +134,7 @@ SensorExecutionResult ModuleIntegritySensor::Execute(SensorRuntimeContext &conte
                         AntiCheatLogger::LogCategory::SENSOR,
                         "ModuleIntegritySensor超时: elapsed=%lldms budget=%dms processed=%zu index=%zu current='%s'",
                         (long long)elapsed, budget_ms, processed, index,
-                        Utils::WideToString(lastProcessedModuleName).c_str());
+                        Utils::WideToString(lastModName).c_str());
                 RecordFailure(anti_cheat::MODULE_SCAN_TIMEOUT);
                 timeoutOccurred = true;
                 stopEnumerate = true;
@@ -141,7 +142,12 @@ SensorExecutionResult ModuleIntegritySensor::Execute(SensorRuntimeContext &conte
             }
         }
 
-        ProcessModuleCodeIntegrity(hModule, modInfo, context, baselineHashes, MAX_CODE_SECTION_SIZE);
+        if (ProcessModuleCodeIntegrity(hModule, modInfo, context, baselineHashes, MAX_CODE_SECTION_SIZE) == SensorExecutionResult::TIMEOUT)
+        {
+            timeoutOccurred = true;
+            stopEnumerate = true;
+            return;
+        }
         processed++;
         if (!targetedScan && processed >= (size_t)maxModules)
         {
@@ -192,7 +198,7 @@ SensorExecutionResult ModuleIntegritySensor::Execute(SensorRuntimeContext &conte
     return SensorExecutionResult::SUCCESS;
 }
 
-void ModuleIntegritySensor::ProcessModuleCodeIntegrity(HMODULE hModule, const CachedModuleInfo &info, SensorRuntimeContext &context,
+SensorExecutionResult ModuleIntegritySensor::ProcessModuleCodeIntegrity(HMODULE hModule, const CachedModuleInfo &info, SensorRuntimeContext &context,
                                     const std::unordered_map<std::wstring, std::vector<uint8_t>> &baselineHashes,
                                     size_t maxCodeSectionSize)
 {
@@ -214,7 +220,7 @@ void ModuleIntegritySensor::ProcessModuleCodeIntegrity(HMODULE hModule, const Ca
                           "ModuleIntegritySensor: 获取代码节信息失败, 模块=%s, hModule=0x%p",
                           Utils::WideToString(info.modulePath).c_str(), hModule);
         }
-        return;
+        return SensorExecutionResult::FAILURE;
     }
 
     // 检查代码节大小是否超过限制
@@ -224,15 +230,15 @@ void ModuleIntegritySensor::ProcessModuleCodeIntegrity(HMODULE hModule, const Ca
                       "ModuleIntegritySensor: 代码节过大，跳过模块: %s (大小: %lu > %zu MB)",
                       Utils::WideToString(info.modulePath).c_str(), info.codeSize / (1024 * 1024),
                       maxCodeSectionSize / (1024 * 1024));
-        return;
+        return SensorExecutionResult::SUCCESS;
     }
 
     // 将复杂逻辑移到外部处理
-    ValidateModuleCodeIntegrity(info.modulePath.c_str(), hModule, info.codeBase, info.codeSize, context,
-                                baselineHashes);
+    return ValidateModuleCodeIntegrity(info.modulePath.c_str(), hModule, info.codeBase, info.codeSize, context,
+                                 baselineHashes);
 }
 
-void ModuleIntegritySensor::ValidateModuleCodeIntegrity(const wchar_t *modulePath_w, HMODULE hModule, PVOID codeBase, DWORD codeSize,
+SensorExecutionResult ModuleIntegritySensor::ValidateModuleCodeIntegrity(const wchar_t *modulePath_w, HMODULE hModule, PVOID codeBase, DWORD codeSize,
                                      SensorRuntimeContext &context,
                                      const std::unordered_map<std::wstring, std::vector<uint8_t>> &baselineHashes)
 {
@@ -252,7 +258,46 @@ void ModuleIntegritySensor::ValidateModuleCodeIntegrity(const wchar_t *modulePat
     }
 
     std::wstring modulePath(modulePath_w);
-    std::vector<uint8_t> currentHash = SystemUtils::CalculateFnv1aHash(static_cast<BYTE *>(codeBase), codeSize);
+    uint64_t currentHashState = context.GetModuleIntegrityPartialHash();
+    size_t internalOffset = context.GetModuleInternalOffset();
+
+    int budget_ms = CheatConfigManager::GetInstance().GetHeavyScanBudgetMs();
+    // budget_ms <= 0 表示配置未设置；此时不对单个模块的内层 Hash 施加时间限制，
+    // 让当前模块整体一次 Hash 完成（与外层超时机制协调）。
+    if (budget_ms <= 0) budget_ms = std::numeric_limits<int>::max();
+
+    auto startTime = std::chrono::steady_clock::now();
+
+    if (internalOffset == 0)
+    {
+        currentHashState = 14695981039346656037ULL;
+    }
+
+    const size_t CHUNK_SIZE = 64 * 1024;
+    const BYTE* pBase = static_cast<const BYTE*>(codeBase);
+
+    while (internalOffset < codeSize)
+    {
+        size_t bytesToHash = std::min<size_t>(CHUNK_SIZE, (size_t)codeSize - internalOffset);
+        currentHashState = SystemUtils::CalculateFnv1aHashPartial(pBase + internalOffset, bytesToHash, currentHashState);
+        internalOffset += bytesToHash;
+
+        auto now = std::chrono::steady_clock::now();
+        if (std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count() >= budget_ms)
+        {
+            // Ensure we only timeout if we've made some progress in THIS call
+            // OR if the setup has taken significant time.
+            // But we already updated internalOffset, so we HAVE made progress.
+            context.SetModuleInternalOffset(internalOffset);
+            context.SetModuleIntegrityPartialHash(currentHashState);
+            LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR, "ModuleIntegritySensor 模块内超时: %s (进度: %zu/%lu)", Utils::WideToString(modulePath).c_str(), internalOffset, (unsigned long)codeSize);
+            return SensorExecutionResult::TIMEOUT;
+        }
+    }
+
+    std::vector<uint8_t> currentHash = SystemUtils::HashToBytes(currentHashState);
+    context.SetModuleInternalOffset(0);
+    context.SetModuleIntegrityPartialHash(0);
 
     // 检查是否为自身模块
     HMODULE selfModule = context.GetSelfModuleHandle();
@@ -260,7 +305,7 @@ void ModuleIntegritySensor::ValidateModuleCodeIntegrity(const wchar_t *modulePat
     {
         LOG_WARNING(AntiCheatLogger::LogCategory::SENSOR, "ModuleIntegritySensor: 无法获取自身模块句柄");
         this->RecordFailure(anti_cheat::MODULE_INTEGRITY_GET_SELF_MODULE_FAILED);
-        return;
+        return SensorExecutionResult::FAILURE;
     }
     bool isSelfModule = (hModule == selfModule);
 
@@ -375,4 +420,5 @@ void ModuleIntegritySensor::ValidateModuleCodeIntegrity(const wchar_t *modulePat
             }
         }
     }
+    return SensorExecutionResult::SUCCESS;
 }

@@ -2,6 +2,7 @@
 
 #include "sensors/ThreadActivitySensor.h"
 #include "CheatMonitorEngine.h"
+#include "CheatConfigManager.h"
 #include "utils/SystemUtils.h"
 
 class ThreadActivitySensorTestAccess

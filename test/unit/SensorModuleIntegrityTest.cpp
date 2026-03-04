@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
 
 #include "sensors/ModuleIntegritySensor.h"
+#include "CheatMonitorEngine.h"
+#include "CheatConfigManager.h"
 
 class ModuleIntegritySensorTestAccess
 {

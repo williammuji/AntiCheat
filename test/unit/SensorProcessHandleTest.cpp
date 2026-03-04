@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
 
 #include "sensors/ProcessHandleSensor.h"
+#include "CheatMonitorEngine.h"
+#include "CheatConfigManager.h"
 
 class ProcessHandleSensorTestAccess
 {
@@ -60,4 +62,20 @@ TEST(SensorProcessHandleTest, ExecuteHonorsTimeoutThreshold)
     auto result = sensor.Execute(context);
 
     EXPECT_TRUE(result == SensorExecutionResult::TIMEOUT || result == SensorExecutionResult::FAILURE);
+}
+
+TEST(SensorProcessHandleTest, ExecuteCompletesWithLargeBudget)
+{
+    CheatMonitorEngine engine;
+    engine.InitializeSystem();
+    SensorRuntimeContext context(&engine);
+
+    // Give a large budget to ensure full scan completes
+    CheatConfigManager::GetInstance().UpdateHeavyScanBudgetMs(10000);
+
+    ProcessHandleSensor sensor;
+    auto result = sensor.Execute(context);
+
+    // Even if it scans 150k handles, 10s should be plenty.
+    EXPECT_EQ(result, SensorExecutionResult::SUCCESS);
 }

@@ -88,6 +88,7 @@ bool WMIProcessMonitor::Initialize()
 
 bool WMIProcessMonitor::InitializeWmiAsync()
 {
+    LOG_INFO(AntiCheatLogger::LogCategory::SYSTEM, "WMIProcessMonitor: Initializing WMI process monitor...");
     HRESULT hres;
 
     hres = CoInitializeEx(0, COINIT_MULTITHREADED);

@@ -3,47 +3,81 @@
 #include "utils/SystemUtils.h"
 #include "Logger.h"
 #include "utils/Utils.h"
+#include "CheatConfigManager.h"
 #include <psapi.h>
 #include <tlhelp32.h>
 
 SensorExecutionResult ProcessAndWindowMonitorSensor::Execute(SensorRuntimeContext &context)
 {
+    auto startTime = std::chrono::steady_clock::now();
+    int budget_ms = CheatConfigManager::GetInstance().GetHeavyScanBudgetMs();
+    if (budget_ms <= 0) budget_ms = 10;
+
+    size_t cursor = context.GetWindowCursorOffset();
+
     m_lastFailureReason = anti_cheat::UNKNOWN_FAILURE;
 
     // 1. 枚举窗口
-    struct EnumContext {
-        ProcessAndWindowMonitorSensor* sensor;
-        SensorRuntimeContext* context;
-    };
-    EnumContext enumCtx = {this, &context};
-
-    EnumWindows([](HWND hwnd, LPARAM lParam) -> BOOL {
-        EnumContext* ctx = (EnumContext*)lParam;
-        ctx->sensor->CheckWindow(hwnd, *(ctx->context));
+    std::vector<HWND> windows;
+    EnumWindows([](HWND hwnd, LPARAM lp) -> BOOL {
+        auto* vec = reinterpret_cast<std::vector<HWND>*>(lp);
+        vec->push_back(hwnd);
         return TRUE;
-    }, (LPARAM)&enumCtx);
+    }, reinterpret_cast<LPARAM>(&windows));
 
-    // 2. 枚举进程 (使用ToolHelp32，因其比PSAPI更轻量且信息全)
-    HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-    if (hSnapshot != INVALID_HANDLE_VALUE)
+    // 2. 枚举进程 (Snapshot)，同时收集进程名，避免后续 CheckProcess 拿不到名称
+    struct ProcessEntry {
+        DWORD pid;
+        std::wstring name;
+    };
+    std::vector<ProcessEntry> processes;
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snapshot != INVALID_HANDLE_VALUE)
     {
-        PROCESSENTRY32W pe32;
-        pe32.dwSize = sizeof(PROCESSENTRY32W);
-        if (Process32FirstW(hSnapshot, &pe32))
+        PROCESSENTRY32W pe = {sizeof(pe)};
+        if (Process32FirstW(snapshot, &pe))
         {
             do
             {
-                 CheckProcess(pe32.th32ProcessID, pe32.szExeFile, context);
-            } while (Process32NextW(hSnapshot, &pe32));
+                processes.push_back({pe.th32ProcessID, std::wstring(pe.szExeFile)});
+            } while (Process32NextW(snapshot, &pe));
         }
-        CloseHandle(hSnapshot);
+        CloseHandle(snapshot);
     }
     else
     {
-         this->RecordFailure(anti_cheat::PROCESS_ENUM_FAILED);
-         return SensorExecutionResult::FAILURE;
+        // 枚举失败，记录错误并返回
+        this->RecordFailure(anti_cheat::PROCESS_ENUM_FAILED);
+        return SensorExecutionResult::FAILURE;
     }
 
+    size_t totalItems = windows.size() + processes.size();
+    if (cursor >= totalItems) cursor = 0;
+
+    while (cursor < totalItems)
+    {
+        if (cursor < windows.size())
+        {
+            CheckWindow(windows[cursor], context);
+        }
+        else
+        {
+            const auto& proc = processes[cursor - windows.size()];
+            CheckProcess(proc.pid, proc.name, context);
+        }
+
+        cursor++;
+
+        auto now = std::chrono::steady_clock::now();
+        if (std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count() >= budget_ms)
+        {
+            context.SetWindowCursorOffset(cursor);
+            LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR, "ProcessAndWindowMonitorSensor: 扫描超时，已处理 %zu/%zu 个项", cursor, totalItems);
+            return SensorExecutionResult::TIMEOUT;
+        }
+    }
+
+    context.SetWindowCursorOffset(0);
     return SensorExecutionResult::SUCCESS;
 }
 

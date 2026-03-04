@@ -98,6 +98,12 @@ class CheatConfigManager
     std::shared_ptr<const std::vector<TrustedThirdPartyModule>> GetTrustedThirdPartyModules() const;
     bool IsTrustedThirdPartyModule(const std::wstring& module_name, uint64_t module_size, const std::string& code_hash) const;
 
+    // --- Testing Helpers ---
+    void UpdateHeavyScanBudgetMs(int32_t ms);
+    void UpdateMaxProcessesToScan(int32_t count);
+    void UpdateMaxHandleScanCount(int32_t count);
+    void UpdateMaxWindowCount(int32_t count);
+
     // [新增] 模块完整性检测白名单
     std::shared_ptr<const std::vector<std::wstring>> GetWhitelistedIntegrityDirs() const;
     std::shared_ptr<const std::vector<std::wstring>> GetWhitelistedIntegrityFiles() const;

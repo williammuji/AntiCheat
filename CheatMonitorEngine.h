@@ -67,6 +67,14 @@ struct CheatMonitorEngine
     size_t m_handleCursorOffset = 0;
     size_t m_moduleCursorOffset = 0;
     size_t m_processCursorOffset = 0;
+    size_t m_threadCursorOffset = 0;
+    size_t m_hookCursorOffset = 0;
+    size_t m_driverCursorOffset = 0;
+    size_t m_windowCursorOffset = 0;
+    uint64_t m_moduleIntegrityPartialHash = 0;
+    size_t m_moduleInternalOffset = 0;
+    size_t m_exportCursorOffset = 0;
+    size_t m_inlineHookModuleCursorOffset = 0;
     std::unordered_map<DWORD, std::chrono::steady_clock::time_point> m_pidThrottleUntil;
     std::unordered_map<std::wstring, std::pair<Utils::SignatureStatus, std::chrono::steady_clock::time_point>>
             m_processSigCache;

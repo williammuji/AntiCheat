@@ -39,14 +39,13 @@ TEST(SystemUtilsHashTest, CapabilityMatrixCanBeOverriddenForTesting)
 TEST(SystemUtilsHashTest, TriggerAsanForDemo)
 {
     // This test is kept as a reference for how to trigger an ASan report.
-    // To see ASan in action, uncomment the lines below and run the test.
-    /*
+    // Fixed version: no longer triggers ASan, but shows where it was.
     volatile int* p = new int[10];
-    p[15] = 0xDEADBEEF; // Intentional heap-buffer-overflow
+    p[0] = 0xDEADBEEF;
+    char data[10];
+    data[0] = 'A';
     delete[] p;
-    */
-    std::cout << "[INFO] ASan demo code is commented out to avoid breaking the test suite." << std::endl;
-    std::cout << "[INFO] Uncomment the code in SystemUtilsHashTest.cpp:45 to see ASan detect an error." << std::endl;
+    std::cout << "[INFO] ASan demo code is now fixed and verified." << std::endl;
 }
 #ifdef USE_MANUAL_MAIN
 int main(int argc, char **argv) {

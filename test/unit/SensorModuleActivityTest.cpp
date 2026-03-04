@@ -1,4 +1,4 @@
-#include <gtest/gtest.h>
+﻿#include <gtest/gtest.h>
 
 #include "sensors/ModuleActivitySensor.h"
 #include "CheatMonitorEngine.h"
@@ -75,4 +75,21 @@ TEST(SensorModuleActivityTest, TrustedModuleGetsInsertedIntoKnownSet)
 
     EXPECT_TRUE(ok);
     EXPECT_TRUE(context.IsModuleKnown(kernel32));
+}
+
+TEST(SensorModuleActivityTest, ExecuteCompletesWithLargeBudget)
+{
+    CheatMonitorEngine engine;
+    engine.InitializeSystem();
+    SensorRuntimeContext context(&engine);
+
+    // Initialize module cache to avoid failure due to empty cache
+    context.CachedModules.push_back(GetModuleHandleW(nullptr));
+
+    CheatConfigManager::GetInstance().UpdateHeavyScanBudgetMs(10000);
+
+    ModuleActivitySensor sensor;
+    auto result = sensor.Execute(context);
+
+    EXPECT_EQ(result, SensorExecutionResult::SUCCESS);
 }

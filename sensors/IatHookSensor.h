@@ -8,8 +8,8 @@ class IatHookSensor : public ISensor
 {
 public:
     const char *GetName() const override { return "IatHookSensor"; }
-    SensorWeight GetWeight() const override { return SensorWeight::LIGHT; } // < 1ms: IAT Hook检测
-    SensorExecutionResult Execute(SensorRuntimeContext &context) override;
+    SensorWeight GetWeight() const override { return SensorWeight::LIGHT; } // < 1ms: IAT Hook detection
+    virtual SensorExecutionResult Execute(SensorRuntimeContext &context) override;
 
 private:
     bool PerformIatIntegrityCheck(SensorRuntimeContext &context, HMODULE hSelf);

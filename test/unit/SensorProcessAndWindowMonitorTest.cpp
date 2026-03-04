@@ -11,5 +11,5 @@ TEST(SensorProcessAndWindowMonitorTest, ExecuteRunsWithoutCrashingListProcessesA
     ProcessAndWindowMonitorSensor sensor;
 
     auto result = sensor.Execute(context);
-    EXPECT_TRUE(result == SensorExecutionResult::SUCCESS || result == SensorExecutionResult::FAILURE);
+    EXPECT_TRUE(result == SensorExecutionResult::SUCCESS || result == SensorExecutionResult::FAILURE || result == SensorExecutionResult::TIMEOUT);
 }

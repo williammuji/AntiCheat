@@ -82,12 +82,29 @@ void CheatMonitorEngine::InitializeProcessBaseline()
         std::lock_guard<std::mutex> lock(m_baselineMutex);
         m_moduleBaselineHashes = std::move(moduleBaselineHashes);
         m_iatBaselineHashes = std::move(iatBaselineHashes);
+
+        // Populate legitimate module paths
+        std::unordered_set<std::wstring> legitimateModulePaths;
+        HMODULE hModsLocal[1024];
+        DWORD cbNeededLocal;
+        if (EnumProcessModules(GetCurrentProcess(), hModsLocal, sizeof(hModsLocal), &cbNeededLocal))
+        {
+            for (unsigned int i = 0; i < (cbNeededLocal / sizeof(HMODULE)); i++)
+            {
+                wchar_t szModName[MAX_PATH];
+                if (GetModuleFileNameExW(GetCurrentProcess(), hModsLocal[i], szModName, sizeof(szModName) / sizeof(wchar_t)))
+                {
+                    legitimateModulePaths.insert(SystemUtils::SystemNormalizePathLowercase(szModName));
+                }
+            }
+        }
+        m_legitimateModulePaths = std::move(legitimateModulePaths);
     }
 
     if (!m_hwCollector) m_hwCollector = std::make_unique<anti_cheat::HardwareInfoCollector>();
     m_hwCollector->EnsureCollected();
 
-    AddEvidence(anti_cheat::SYSTEM_INITIALIZED, "Process baseline established.");
+    AddEvidence(anti_cheat::SYSTEM_INITIALIZED, "Process baseline established. (" + std::to_string(m_legitimateModulePaths.size()) + " modules)");
     m_processBaselineEstablished = true;
 }
 

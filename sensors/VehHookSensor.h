@@ -10,7 +10,7 @@ class VehHookSensor : public ISensor
 public:
     const char *GetName() const override { return "VehHookSensor"; }
     SensorWeight GetWeight() const override { return SensorWeight::LIGHT; } // 0-10ms: VEH检测
-    SensorExecutionResult Execute(SensorRuntimeContext &context) override;
+    virtual SensorExecutionResult Execute(SensorRuntimeContext &context) override;
 
 private:
     friend class VehHookSensorTestAccess;
