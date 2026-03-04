@@ -63,6 +63,7 @@ void CheatMonitor::Shutdown()
             m_pimpl->m_monitorThread.join();
         }
     }
+    m_pimpl.reset();
 }
 
 void CheatMonitor::OnServerConfigUpdated()

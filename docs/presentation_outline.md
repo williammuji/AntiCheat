@@ -2,24 +2,73 @@
 marp: true
 theme: default
 paginate: true
-header: 'AntiCheat'
-footer: 'AntiCheat'
 ---
 
-# AntiCheat
-## 端游反外挂
+<style>
+section {
+  display: flex !important;
+  flex-direction: column !important;
+  justify-content: flex-start !important;
+  align-items: stretch !important;
+  padding-top: 40px !important;
+  padding-left: 50px !important;
+  padding-right: 50px !important;
+}
+h1 {
+  margin-top: 0 !important;
+  margin-bottom: 20px !important;
+  text-align: left !important;
+}
+section.center-content h1 {
+  position: absolute !important;
+  top: 40px !important;
+  left: 50px !important;
+  right: 50px !important;
+}
+img {
+  display: block;
+  margin: 10px auto !important;
+}
+code {
+  font-size: 0.65em !important;
+}
+pre {
+  margin-top: 5px !important;
+  margin-bottom: 5px !important;
+}
+p, li {
+  margin-top: 2px !important;
+  margin-bottom: 2px !important;
+}
+section.title-page {
+  justify-content: center !important;
+  align-items: center !important;
+  text-align: center !important;
+  padding-top: 0 !important;
+}
+section.title-page h1 {
+  text-align: center !important;
+  margin-bottom: 40px !important;
+}
+section.center-content {
+  justify-content: center !important;
+}
+</style>
 
-**讲师**：williammuji
-**关键词**：C++、Windows API 攻防、系统句柄监控、性能调优
+<!-- _class: title-page -->
+
+# AntiCheat
+
+## williammuji
 
 ---
 
 # 概述
 
-* **整体架构**：插件化Sensor。
-* **检测实现**：14种核心检测 Sensor 的底层 C++ 原理与 API。
-* **工程落地**：扫描高消耗与游戏帧率（FPS）之间的平衡取舍。
-* **后台联动**：Protobuf 上报、HMAC 防篡改、Snapshot 离线审判、Telemetry 可观测性。
+* **模块化设计**：传感器独立检测。
+* **检测实现**：14 种核心检测 Sensor 原理。
+* **分时调度**：扫描高消耗与游戏帧率（FPS）之间的平衡取舍。
+* **后台联动**：Protobuf 上报、HMAC 防篡改、Snapshot 审核。
 
 ---
 
@@ -45,67 +94,79 @@ graph TD
 
 ```mermaid
 sequenceDiagram
-    participant Game as 游戏主逻辑
-    participant Engine as CheatMonitorEngine
-    participant Guard as EnvironmentGuard
-    participant Config as CheatConfigManager
-
-    Game->>Engine: Initialize()
-    Engine->>Config: Initialize(config_path)
-    Engine->>Engine: InitializeSystem()
-    Engine->>Guard: InitializeSensors()
-    Note over Guard: 创建 14+ 插件化 Sensor
-    Guard->>Engine: 分类填充 Lightweight/Heavyweight 列表
-    Engine->>Engine: StartMonitoringThread()
-    Note right of Engine: 启动 MonitorLoop 守护线程
+    participant P as Client Process
+    participant M as CheatMonitor
+    participant E as Engine
+    participant S as Sensors
+    P->>M: GetInstance().Initialize()
+    M->>E: InitializeSystem()
+    E->>E: LoadNtApis & RegisterNotification
+    E->>E: HardenProcess()
+    loop For each Sensor
+        E->>S: Create & Registry
+    end
+    E->>E: StartThread()
+    Note right of E: 启动 MonitorLoop
 ```
 
 ---
 
-# MonitorLoop：调度与心跳机制
+# MonitorLoop：调度与心跳机制（1/2）
 
 - 主循环以 `condition_variable::wait_until` 阻塞，到期自动醒来。
-- 完整运作时，周期性上传 `EvidenceReport`（这本身就是**心跳**）。
-- **若客户端被恶意强杀**：服务端持续收不到心跳包 → 触发异常告警。
+- 若客户端被恶意强杀，服务端持续收不到心跳包 → 触发异常告警。
 
 ```cpp
 while (m_isSystemActive.load()) {
-    // 取五个定时器中最早到期的时间点，整合到一个 wait
     auto earliest = std::min({
-        next_light_scan, next_heavy_scan,
-        next_report_upload,       // 心跳 = 周期性证据上报
-        next_sensor_stats_upload,
-        next_snapshot_upload
+        next_light_scan, next_heavy_scan, next_report_upload,
+        next_sensor_stats_upload, next_snapshot_upload, next_heartbeat_upload
     });
-    m_cv.wait_until(lk, earliest,
-        [&]() { return !m_isSystemActive.load(); });
+    m_cv.wait_until(lk, earliest, [&]() { return !m_isSystemActive.load(); });
+```
 
-    // 仅在玩家登录且已获取服务器配置后才开始扫描
+---
+
+# MonitorLoop：调度与心跳机制（2/2）
+
+- 仅在玩家登录且已获取服务器配置后才开始扫描。
+
+```cpp
+    if (!m_isSystemActive.load()) break;
     if (!m_isSessionActive || !m_hasServerConfig) continue;
-    ...
+
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= next_light_scan) {
+        ExecuteLightweightSensors();
+        next_light_scan = now + GetLightScanInterval();
+    }
+    // ... 其他定时任务逻辑
 }
 ```
 
 ---
 
+<!-- _class: center-content -->
+
 # 扫描调度：分时切片与任务分发
 
 ```mermaid
-graph LR
-    Wait[WaitUntil Next Event] --> Dispatch{事件类型}
-    Dispatch -->|Light| LS[遍历 m_lightweightSensors]
-    Dispatch -->|Heavy| HS[遍历 m_heavyweightSensors]
-
-    subgraph HeavyWeight Scan
-        HS --> Execute[Execute Sensor]
-        Execute --> TimeCheck{时间超限?}
-        TimeCheck -->|Yes| Suspend[保存游标 Cursor / 返回 TIMEOUT]
-        TimeCheck -->|No| Finish[本轮完成 / 重置游标]
+graph TD
+    subgraph Scheduling [分时调度策略]
+        T1[Lightweight: 30s]
+        T2[Heavyweight: 10min]
     end
-
-    subgraph Data Pipeline
-        LS & HS --> Evidence[Evidence Queue]
-        Evidence --> Upload[HmacSign & Serialized Upload]
+    subgraph Execution [执行控制]
+        Start[开始扫描] --> Loop{还有 Sensor?}
+        Loop -->|Yes| Budget{预算耗尽?}
+        Budget -->|No| Run[Sensor::Execute]
+        Budget -->|Yes| Save[保存游标] --> End[让出 CPU]
+        Run --> Loop
+        Loop -->|No| Finish[完成当前轮次]
+    end
+    subgraph Pipeline [Data Pipeline]
+        LS & HS --> Ev[EvidenceQ]
+        Ev --> Up[Sign & Upload]
     end
 ```
 
@@ -114,7 +175,7 @@ graph LR
 # SensorRuntimeContext：共享状态与分片游标
 
 - `context` 在每轮扫描中在所有 Sensor 之间共享缓存，避免重复系统调用。
-- 游标字段跨轮持久化，支持超时后在下一轮接续扫描。
+- 游标字段支持超时后在下一轮接续扫描。
 
 ```cpp
 // 跨扫描持久化游标（各 Sensor 独立）
@@ -134,7 +195,7 @@ std::unordered_map<std::wstring,
 
 ---
 
-# ISensor 接口 与 执行框架
+# ISensor 接口与执行框架
 
 ```cpp
 class ISensor {
@@ -156,7 +217,7 @@ void SubmitTargetedScanRequest(const std::string& requestId,
 
 ---
 
-# 轻量 Sensor 1：AdvancedAntiDebugSensor
+# Light Sensor 1：AdvancedAntiDebugSensor
 
 - 轻量级，每次轻扫均执行。
 - 多层调试器检测：
@@ -174,30 +235,34 @@ void SubmitTargetedScanRequest(const std::string& requestId,
 
 ---
 
-# 轻量 Sensor 2：SystemCodeIntegritySensor
+# Light Sensor 2：SystemCodeIntegritySensor（1/2）
 
-- 查询系统代码完整性配置（开发者机器常见，正式游戏环境不该出现）。
-- 也负责**反作弊自身完整性**检查。
+- **查询系统代码完整性配置**（测试签名模式/内核调试）。
 
 ```cpp
 SYSTEM_CODE_INTEGRITY_INFORMATION sci = {sizeof(sci), 0};
 NtQuerySystemInformation(SystemCodeIntegrityInformation, &sci, ...);
 
-// Bit 0x02：测试签名模式开启 → 内核驱动可绕过签名验证
 if (sci.CodeIntegrityOptions & 0x02)
     AddEvidence(ENVIRONMENT_SUSPICIOUS_DRIVER, "Test Signing Mode Enabled");
-
-// Bit 0x01：内核调试模式
 if (sci.CodeIntegrityOptions & 0x01 && CheckKernelDebuggerPresent())
     AddEvidence(ENVIRONMENT_DEBUGGER_DETECTED, "Kernel Debugging Enabled");
+```
 
-// 自我完整性：检查 IsAddressInLegitimateModule 函数前16字节是否被 Patch
+---
+
+# Light Sensor 2：SystemCodeIntegritySensor（2/2）
+
+- **反作弊自身完整性检查**：对比函数快照。
+
+```cpp
+// 检查 IsAddressInLegitimateModule 等核心函数是否被 Patch
 context.CheckSelfIntegrity(); // 对比 InitializeSelfIntegrityBaseline() 时保存的快照
 ```
 
 ---
 
-# 轻量 Sensor 3：VehHookSensor（1/2）
+# Light Sensor 3：VehHookSensor（1/2）
 
 - **场景**：外挂注册高优先级 VEH 拦截程序执行流，优先级高于普通 SEH。
 - **难点**：`LdrpVectorHandlerList` 是 `ntdll` 的内部全局变量，无导出符号。
@@ -206,14 +271,14 @@ context.CheckSelfIntegrity(); // 对比 InitializeSelfIntegrityBaseline() 时保
 // 方法：以 ntdll 基址为起点做版本化特征偏移计算
 uintptr_t ntdllBase = (uintptr_t)GetModuleHandleW(L"ntdll.dll");
 
-// AccessVehStructSafe 封装不同 Windows 版本的偏移差异
+// AccessVehStructSafe 封装 different Windows 版本的偏移差异
 VehAccessResult result = AccessVehStructSafe(ntdllBase, m_windowsVersion);
 LIST_ENTRY* pHead = result.pHeadList;
 ```
 
 ---
 
-# 轻量 Sensor 3：VehHookSensor（2/2）
+# Light Sensor 3：VehHookSensor（2/2）
 
 ```cpp
 for (LIST_ENTRY* p = pHead->Flink; p != pHead; p = p->Flink) {
@@ -231,7 +296,7 @@ for (LIST_ENTRY* p = pHead->Flink; p != pHead; p = p->Flink) {
 
 ---
 
-# 轻量 Sensor 4：IatHookSensor
+# Light Sensor 4：IatHookSensor
 
 - 基线：进程启动时遍历导入表，记录每个 DLL 的所有函数指针序列的 FNV1a Hash。
 - 校验：每轮对比当前 IAT 与基线（仅检查主模块），快速发现指针劫持。
@@ -245,9 +310,10 @@ if (currentHash != baseline[dllName])
 
 ---
 
-# 轻量 Sensor 5：InlineHookSensor
+# Light Sensor 5：InlineHookSensor
 
 - 检查系统关键 API（`ntdll` / `kernel32`）入口是否被改写为跳转指令。
+- `LdrRegisterDllNotification` 实现实时 DLL 加载回调，无需等待下一轮扫描。
 
 ```cpp
 hde32s hs;
@@ -261,22 +327,18 @@ if (hs.opcode == 0xE9 || hs.opcode == 0xEB) {
 }
 ```
 
-- 补充：引擎还通过 **`LdrRegisterDllNotification`** 实现实时 DLL 加载回调，无需等待下一轮扫描。
-
 ---
 
-# 轻量 Sensor 6：ProcessHollowingSensor
+# Light Sensor 6：ProcessHollowingSensor
 
-- 检测进程镂空（Process Hollowing）：宿主进程内存被替换为恶意代码。
+- 检查宿主进程入口点与磁盘文件是否一致。
 
 ```cpp
-// 关键：对比内存与磁盘中的 PE Header
 bool entryMismatch = pMemNt->OptionalHeader.AddressOfEntryPoint
                   != pDiskNt->OptionalHeader.AddressOfEntryPoint;
 bool sizeMismatch  = pMemNt->OptionalHeader.SizeOfImage
                   != pDiskNt->OptionalHeader.SizeOfImage;
 
-// 二次确认：入口页内存类型是否正常（合法映像应为 MEM_IMAGE）
 VirtualQuery(entryAddress, &entryMbi, sizeof(entryMbi));
 bool entryPageAnomaly = (entryMbi.Type != MEM_IMAGE)
     || (entryMbi.Protect & PAGE_EXECUTE_READWRITE);
@@ -287,24 +349,27 @@ if ((entryMismatch && sizeMismatch) || (entryMismatch && entryPageAnomaly))
 
 ---
 
-# 轻量 Sensor 7：VTableHookSensor
+# Light Sensor 7：VTableHookSensor（1/2）
 
-- **场景**：劫持渲染接口虚函数表（如 D3D9/DXGI）以在游戏画面上实现透视叠加（ESP）。
-- **检测逻辑**：对比游戏运行时的对象虚表指针与已知合法模块的基线。
+- **场景**：劫持渲染接口虚表以实现透视叠加（ESP）。
+- **流程**：获取渲染对象（如 D3D9Device）并比对虚表。
 
 ```cpp
-// 1. 获取渲染对象指针 (例如通过虚钩子劫持其创建过程)
 IDirect3DDevice9* pDevice = GetCurrentD3DDevice();
-
-// 2. 访问虚函数表并依次比对
 PVOID* vtable = *(PVOID**)pDevice;
 for (int i = 0; i < kD3D9_VTable_Count; i++) {
     PVOID funcAddr = vtable[i];
+```
 
-    // 溯源：检查该函数地址是否落入非 D3D9.dll/DXGI.dll 的未知区域
+---
+
+# Light Sensor 7：VTableHookSensor（2/2）
+
+- **校验**：检查函数地址是否落入非 D3D9.dll/DXGI.dll 的未知区域。
+
+```cpp
     std::wstring modulePath;
     if (!context.IsAddressInLegitimateModule(funcAddr, modulePath)) {
-        // 发现被非法劫持
         AddEvidence(INTEGRITY_API_HOOK, "D3D9 VTable[" + i + "] Hooked by " + modulePath);
     }
 }
@@ -313,17 +378,18 @@ for (int i = 0; i < kD3D9_VTable_Count; i++) {
 ---
 
 # 重量级传感器 (Heavyweight Sensors)
+<!-- _class: lead -->
 
 ### 核心特性
 - **高开销、深颗粒度**：涉及全内存扫描、系统句柄表枚举、多模块代码 Hash。
 - **调度机制**：长周期执行，严格遵守 `budget_ms` 时间切片。
-- **状态持久化**：使用 `SensorRuntimeContext` 中的游标实现跨轮扫描。
+- **状态持久化**：使用 `SensorRuntimeContext` 中的游标实现分片扫描。
 
 ---
 
-# 重量 Sensor 1：ProcessAndWindowMonitorSensor
+# Heavy Sensor 1：ProcessAndWindowMonitorSensor
 
-- 扫描所有可见窗口标题和进程名，与黑名单匹配。
+- 扫描所有可见窗口标题 and 进程名，与黑名单匹配。
 
 ```cpp
 // 分片处理 windows + processes，超时立即挂起保存游标
@@ -337,12 +403,11 @@ while (cursor < totalItems) {
 }
 ```
 
-
 ---
 
-# 重量 Sensor 2：ProcessHandleSensor（1/3）
+# Heavy Sensor 2：ProcessHandleSensor（1/4）
 
-- **场景**：外部读写分离外挂以独立进程运行，通过 `OpenProcess` 拿到高权限句柄。
+- 外部读写分离外挂以独立进程运行，通过 `OpenProcess` 拿到高权限句柄。
 - 调用未文档化 API 一次性拿到系统全量句柄表，然后逐项过滤。
 
 ```cpp
@@ -365,12 +430,11 @@ bool HasSuspiciousAccessMask(ULONG granted) {
 
 ---
 
-# 重量 Sensor 2：ProcessHandleSensor（2/3）
+# Heavy Sensor 2：ProcessHandleSensor（2/4）
 
-- 光有权限位不够。需要精确确认"这个句柄是否真的指向我们自己的进程"。
+- 核心逻辑：将外部进程的句柄复制到本进程，查其目标 PID。
 
 ```cpp
-// 将外部进程的句柄复制到本进程，再查其目标 PID
 HANDLE hDup;
 HANDLE hSourceProc = OpenProcess(PROCESS_DUP_HANDLE, FALSE, ownerPid);
 DuplicateHandle(hSourceProc, remoteHandleValue,
@@ -378,9 +442,16 @@ DuplicateHandle(hSourceProc, remoteHandleValue,
                 PROCESS_QUERY_INFORMATION, FALSE, 0);
 
 DWORD targetPid = GetProcessId(hDup);
+```
+
+---
+
+# Heavy Sensor 2：ProcessHandleSensor（3/4）
+
+- 确认指向本进程后，获取对方进程路径并做签名验证。
+
+```cpp
 if (targetPid == ownPid) {
-    // 确认该外部进程持有我们进程的高权限句柄
-    // 下一步：获取对方进程路径，做签名验证
     std::wstring path = Utils::GetProcessFullName(hOwnerProcess);
     Utils::SignatureStatus sig = Utils::VerifyFileSignature(path);
     if (sig != TRUSTED)
@@ -390,7 +461,7 @@ if (targetPid == ownPid) {
 
 ---
 
-# 重量 Sensor 2：ProcessHandleSensor（3/3）
+# Heavy Sensor 2：ProcessHandleSensor（4/4）
 
 - 系统句柄数可达数万，签名校验（`WinVerifyTrust`）单次耗时百毫秒级。
 
@@ -414,127 +485,138 @@ processSigCache[path] = {signatureStatus, now};
 
 ---
 
-# 重量 Sensor 3：MemorySecuritySensor（1/3）
+# Heavy Sensor 3：MemorySecuritySensor（1/5）
 
 - **场景**：Fileless 注入——Shellcode 直接写入游戏进程的私有内存执行，没有对应 DLL 文件。
 
 ```cpp
-// CachedMemoryRegions 由 context 维护，避免每个 Sensor 重复调 VirtualQuery
+// 遍历 context 中的提交状态内存区域
 for (const auto& mbi : context.CachedMemoryRegions) {
     if (mbi.State != MEM_COMMIT) continue;
 
-    const bool isExec = mbi.Protect &
-        (PAGE_EXECUTE | PAGE_EXECUTE_READ
-         | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY);
+    const bool isExec = mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY);
     if (!isExec) continue;
 
-    // 先做模块归属检查
+    // 检查是否属于合法模块
     HMODULE hMod;
-    bool inModule = GetModuleHandleExW(
-        GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|..., addr, &hMod);
-
-    // 不属于任何模块 → 进入深度检测
-    if (!inModule)  DetectPrivateExecutableMemory / DetectHiddenModule / DetectMappedExecutableMemory
+    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|..., addr, &hMod)) {
+        // 不属于任何模块 → 深度检测隐藏模块/映射执行内存
+        DetectPrivateExecutableMemory / DetectHiddenModule / DetectMappedExecutableMemory
+    }
 }
 ```
 
 ---
 
-# 重量 Sensor 3：MemorySecuritySensor（2/3）
+# Heavy Sensor 3：MemorySecuritySensor（2/5）
 
-- **核心矛盾**：.NET JIT / 显卡 Shader 编译器 / 覆盖层软件（Steam/Discord）都会分配私有可执行内存。
+- 策略 1 & 2：跳过合法的 JIT 特征与系统低地址的小块内存。
 
 ```cpp
-const bool isRWX   = mbi.Protect & PAGE_EXECUTE_READWRITE
-                   || mbi.Protect & PAGE_EXECUTE_WRITECOPY;
+const bool isRWX = mbi.Protect & (PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY);
 const bool isRXOnly = (mbi.Protect & PAGE_EXECUTE_READ) && !isRWX;
 
-// 策略 1：RX-only 全部跳过（JIT 合法特征），只追 RWX
 if (isRXOnly) continue;
-
-// 策略 2：低地址(<2MB) 小块(<64KB) RWX → 系统 trampoline，跳过
 if (base < 0x200000 && regionSize < 64*1024) continue;
+```
 
-// 策略 3：初始分配属性本就含执行权限 → 合法 JIT，跳过
-if (mbi.AllocationProtect &
-    (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE)) continue;
+---
 
-// 策略 4：二次确认才上报（是否有线程以此为起点？模块签名是否异常？）
+# Heavy Sensor 3：MemorySecuritySensor（3/5）
+
+- 策略 3 & 4：排除初始合法的执行内存，对异常区域进行二次确认。
+
+```cpp
+if (mbi.AllocationProtect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE)) continue;
+
+// 二次确认：是否有线程以此为起点？模块签名是否异常？
 if (!HasSecondaryConfirmation(context, mbi)) continue;
 ```
 
 ---
 
-# 重量 Sensor 3：MemorySecuritySensor（3/3）
+# Heavy Sensor 3：MemorySecuritySensor（4/5）
 
-- 手动映射（Manual Map）外挂会保留 PE 结构但擦除文件名，需暴力扫内存识别。
+- **Manual Map 检测**：外挂会保留 PE 结构但擦除文件名，读取区域前 1024 字节尝试解析 MZ + NT 头。
 
 ```cpp
-// 读取区域前 1024 字节尝试解析 MZ + NT 头
 std::vector<BYTE> buf(1024);
 ReadProcessMemory(GetCurrentProcess(), baseAddr, buf.data(), 1024, &read);
 
 PIMAGE_DOS_HEADER pDos = (PIMAGE_DOS_HEADER)buf.data();
-bool hasMZ = (pDos->e_magic == IMAGE_DOS_SIGNATURE);  // 0x5A4D 'MZ'
+bool hasMZ = (pDos->e_magic == IMAGE_DOS_SIGNATURE);
+```
 
-// 容忍 DOS Header 被抹除：按 4 字节步长扫 NT Signature (0x00004550 'PE')
+---
+
+# Heavy Sensor 3：MemorySecuritySensor（5/5）
+
+- **特征扫描**：按 4 字节步长扫 NT Signature (0x00004550 'PE')，识别隐藏模块。
+
+```cpp
 for (size_t i = 0; i < read - sizeof(IMAGE_NT_HEADERS); i += 4) {
     auto* pNt = (PIMAGE_NT_HEADERS)(buf.data() + i);
     if (pNt->Signature == IMAGE_NT_SIGNATURE
         && pNt->FileHeader.Machine == IMAGE_FILE_MACHINE_AMD64) {
-        // 找到隐藏 PE → 上报 MODULE_UNTRUSTED_DYNAMIC_LOAD
+        AddEvidence(MODULE_UNTRUSTED_DYNAMIC_LOAD, "隐藏 PE 识别");
     }
 }
 ```
 
 ---
 
-# 重量 Sensor 4：ModuleActivitySensor
+# Heavy Sensor 4：ModuleActivitySensor（1/2）
 
-- **基线审计**：启动时对已加载 DLL 进行签名快照，后续严密监控动态注入。
-- **降噪机制**：对系统白名单路径（System32/WinSxS）且有正规签名的 DLL 实施豁免。
+- **基线审计**：获取当前进程全部模块快照并与基线对比。
 
 ```cpp
-// 1. 获取当前进程全部模块快照 (EnumProcessModules)
 std::vector<HMODULE> currentModules = SystemUtils::GetProcessModules(ownProcess);
-
 for (auto hMod : currentModules) {
-    if (context.IsModuleKnown(hMod)) continue;  // 命中基线缓存则跳过
+    if (context.IsModuleKnown(hMod)) continue;
 
     wchar_t path[MAX_PATH];
     GetModuleFileNameW(hMod, path, MAX_PATH);
+```
 
-    // 2. 深度验证：签名链 -> 吊销列表 -> 云端白名单
+---
+
+# Heavy Sensor 4：ModuleActivitySensor（2/2）
+
+- **深度验证**：对新模块进行签名链、吊销列表及后端白名单验证。
+
+```cpp
     auto verdict = Utils::ValidateModule(path, osVersion);
     if (!verdict.isTrusted) {
-        // 识别注入：上报 RUNTIME_MODULE_NEW_UNKNOWN
         AddEvidence(RUNTIME_MODULE_NEW_UNKNOWN, "注入模块: " + path);
     } else {
-        context.InsertKnownModule(hMod); // 加入动态基线
+        context.InsertKnownModule(hMod);
     }
 }
 ```
 
 ---
 
-# 重量 Sensor 5：DriverIntegritySensor
+# Heavy Sensor 5：DriverIntegritySensor（1/2）
 
-- **全量内核审计**：监控系统所有已加载驱动，防范手动映射的恶意驱动 (DKOM/Manual Map)。
+- **内核审计**：监控系统驱动，手动映射驱动 (DKOM/Manual Map)。
 
 ```cpp
-// 游标持久化扫描，防止 EnumDeviceDrivers 瞬间压力
 for (int i = context.GetDriverCursor(); i < totalCount; ++i) {
     if (IsTimeBudgetExceeded()) {
         context.SetDriverCursor(i); return TIMEOUT;
     }
-
     WCHAR szDriver[MAX_PATH];
     GetDeviceDriverFileNameW(drivers[i], szDriver, MAX_PATH);
+```
 
-    // 内核路径转换: \Device\HarddiskVolume... -> C:\...
+---
+
+# Heavy Sensor 5：DriverIntegritySensor（2/2）
+
+- **校验驱动签名完整性**：内核路径转换后进行验证。
+
+```cpp
     std::wstring winPath = SystemUtils::NormalizeKernelPath(szDriver);
-
-    // 校验驱动签名完整性
     if (!Utils::VerifyFileSignature(winPath).isTrusted) {
         AddEvidence(ENVIRONMENT_SUSPICIOUS_DRIVER, "可疑驱动: " + winPath);
     }
@@ -543,9 +625,9 @@ for (int i = context.GetDriverCursor(); i < totalCount; ++i) {
 
 ---
 
-# 重量 Sensor 6：ThreadActivitySensor
+# Heavy Sensor 6：ThreadActivitySensor
 
-- **幽灵线程追踪**：查询线程在内核中的真实地址，识别无文件关联的异常执行流。
+- **幽灵线程追踪**：查询线程在内存中的真实地址，识别无文件关联的异常执行流。
 
 ```cpp
 // 利用未导出类查询线程起始地址 (ThreadQuerySetWin32StartAddress)
@@ -567,24 +649,24 @@ if (threadCtx.Dr0 || threadCtx.Dr1 || threadCtx.Dr2 || threadCtx.Dr3) {
 
 ---
 
-# 重量 Sensor 7：ModuleIntegritySensor
+# Heavy Sensor 7：ModuleIntegritySensor（1/2）
 
-- **全量代码校验**：对反作弊自身及系统关键 DLL 进行代码段 Hash 巡检，严堵内存补丁。
+- **代码节校验**：定位 .text 节并比对 FNV1a 哈希，发现内存 Patch。
 
 ```cpp
-// 1. 定位 .text 节地址与大小
-PVOID codeBase; DWORD codeSize;
 SystemUtils::GetModuleCodeSectionInfo(hMod, codeBase, codeSize);
-
-// 2. FNV1a 哈希滚动校验：对比基线值
-auto currentHash = CryptoUtils::CalculateFnv1a(codeBase, codeSize);
-if (currentHash != m_moduleBaselineHashes[modPath]) {
-    // 发现内存 Patch：上报 INTEGRITY_MODULE_TAMPERED
+if (CryptoUtils::CalculateFnv1a(codeBase, codeSize) != m_moduleBaselineHashes[modPath]) {
     AddEvidence(INTEGRITY_MODULE_TAMPERED, "代码段篡改: " + modPath);
 }
+```
 
-// 3. 自我防御：校验 ISensor::Execute 等引擎核心入口前 16 字节
-// 旨在对抗旨在使检测函数直接 return 的“逻辑绕过型”Patch
+---
+
+# Heavy Sensor 7：ModuleIntegritySensor（2/2）
+
+- **自我防御**：校验引擎核心入口前 16 字节，对抗逻辑绕过。
+
+```cpp
 if (memcmp(currentPtr, m_selfBaseline, 16) != 0) {
     AddEvidence(INTEGRITY_SELF_TAMPERING, "反作弊引擎被 Patch");
 }
@@ -592,37 +674,40 @@ if (memcmp(currentPtr, m_selfBaseline, 16) != 0) {
 
 ---
 
-# 上报协议：HMAC 防篡改与 sequence_id 防重放
+# 上报协议：HMAC 防篡改（1/2）
 
 - 外挂可能尝试截包重放合法报文，或修改报文内容以规避服务端检测。
+
+- 核心字段：自增序号、会话 UUID 及客户端时间戳。
 
 ```cpp
 void CheatMonitorEngine::SendReport(const anti_cheat::Report& report) {
     anti_cheat::Report signed_report = report;
-
-    // 自增序号：服务端拒绝已见过的序号
     signed_report.set_sequence_id(++m_sequenceId);
-    // 每次游戏启动生成新 UUID，防跨会话重放
     signed_report.set_session_id(m_sessionId);
-    // 客户端时间戳，配合服务端时钟窗口校验
     signed_report.set_timestamp_ms(now_ms());
+```
 
-    // HMAC-SHA256：密钥由服务端通过 ClientConfig 下发
+---
+
+# 上报协议：HMAC 防篡改（2/2）
+
+- 计算签名并序列化上报。
+
+```cpp
     std::string hmac_key = CheatConfigManager::GetHmacKey();
     std::string sig = CryptoUtils::CalculateHMAC_SHA256(payload, hmac_key);
     signed_report.set_signature(sig);
-
-    // 发送前序列化
     signed_report.SerializeToString(&upload_payload);
-    // HttpSend(server_url, upload_payload);
+    # HttpSend(server_url, upload_payload);
 }
 ```
 
 ---
 
-# SnapshotReport：取证快照与云端离线审判
+# SnapshotReport：快照后端审核
 
-- 遇到不确定的可疑状态时，拍下"案发现场"交由服务端离线判定，避免客户端误封。
+- 遇到不确定的可疑状态时，拍下"案发现场"交由服务端判定。
 
 ```cpp
 // 采集所有线程快照（每个线程的起点地址、内存类型、关联模块路径）
@@ -631,56 +716,66 @@ std::vector<ThreadSnapshot> threads = CollectThreadSnapshots();
 std::vector<ModuleSnapshot> modules = CollectModuleSnapshots();
 ```
 
-**服务端可以做的事情**：
+**后端可以做的事情**：
 - 对比多个玩家的模块快照，发现大面积异常（相同代码节 hash 不一致）。
 - 关联同一玩家多次快照的 thread start_address，追踪幽灵线程生命周期。
 - 用历史正常快照作为基准，对当前快照做统计离群检测。
 
 ---
 
-# Telemetry：Sensor 执行指标可观测性
+# Telemetry：Sensor 执行指标（1/2）
 
-- 为每个 Sensor 单独采集执行统计，定期上报服务端用于调参和告警。
+- 为每个 Sensor 单独采集执行统计，定期上报服务端用于调参 and 告警。
+
+- 记录成功、失败、超时次数及平均耗时。
 
 ```cpp
-// 每个 Sensor 执行后记录到 m_sensorExecutionStats[name]
 struct SensorExecutionStats {
-    uint32 success_count;             // 成功次数
-    uint32 failure_count;             // 失败次数
-    uint32 timeout_count;             // 超时次数（未完整扫描）
-    uint32 avg_success_time_ms;       // 平均耗时
-    uint32 max_success_time_ms;       // 最大耗时（排查卡顿用）
-    map<int32, uint32> failure_reasons; // 每种失败原因的计数
-    // 工作量计数（配合调参）
-    uint64 workload_last_snapshot_size; // 本轮扫描快照大小（句柄数/模块数）
-    uint64 workload_last_attempts;      // 本轮实际处理数量
-    uint64 workload_last_hits;          // 本轮命中可疑目标数量
-}
+    uint32 success_count, failure_count, timeout_count;
+    uint32 avg_success_time_ms, max_success_time_ms;
+    map<int32, uint32> failure_reasons;
 ```
-
-- **实际用途**：通过 `timeout_count / success_count` 比例判断某 Sensor 是否普遍卡顿，进而调整 `heavy_scan_budget_ms` 或 `max_handle_scan_count` 等配置。
 
 ---
 
-# 单次按需扫描 (Targeted Scan)
+# Telemetry：Sensor 执行指标（2/2）
 
-- **场景**：服务端风控系统发现异常（或玩家被举报），需立即发起定向深度复查。
-- **实现**：服务端下发 `TargetedSensorCommand`，客户端调度器优先插队执行并立即上报。
+- 记录工作量（句柄/模块数）及命中情况。
+- 通过 `timeout_count / success_count` 比例判断某 Sensor 是否普遍卡顿，进而调整 `heavy_scan_budget_ms` 或 `max_handle_scan_count` 等配置。
 
 ```cpp
-// 接收服务端指令压入队列
+    uint64 workload_last_snapshot_size;
+    uint64 workload_last_attempts;
+    uint64 workload_last_hits;
+}
+```
+
+---
+
+# 单次扫描 (Targeted Scan)（1/2）
+
+- **接收指令**：服务端下发 `TargetedSensorCommand`，压入优先队列。
+
+```cpp
 void CheatMonitorEngine::SubmitTargetedScanRequest(
     const std::string &requestId, const std::string &sensorName) {
     std::lock_guard<std::mutex> lock(m_targetedScanMutex);
     m_targetedScanQueue.push_back({requestId, sensorName});
 }
+```
 
-// 调度器 (MonitorLoop) 会优先提取并处理该队列，并同步执行相应的传感器
+---
+
+# 单次扫描 (Targeted Scan)（2/2）
+
+- **插队执行**：MonitorLoop 优先处理并立即上报结果。
+
+```cpp
 TargetedScanRequest req = m_targetedScanQueue.front();
 ISensor* sensor = m_sensorRegistry[req.sensorName];
 SensorExecutionResult result = ExecuteAndMonitorSensor(sensor, ...);
 
-// 执行结束后马上构建并发送 TargetedSensorReport，完成一次云端联动的按需检测
+// 同步构建并发送扫描报告
 UploadTargetedSensorReport(req.requestId, req.sensorName, result, ...);
 ```
 
@@ -709,48 +804,55 @@ void CheatMonitorEngine::HardenProcessAndThreads() {
 
 ---
 
-# 硬件特征采集 (Hardware Collection)
+# 硬件特征采集 (Hardware Collection)（1/2）
 
-- **场景**：除账号封禁外，对恶劣外挂工作室实施机器级别的物理封禁 (HWID Ban)。
-- **做法**：游戏初始化早期采集多种硬件指纹。
+- **指纹获取**：采集硬盘、网卡、CPU 等硬件唯一 ID。
 
 ```cpp
-// 通过底层 API 或 WMI 获取设备序列号和网卡信息
 GetVolumeInformationW(L"C:\\", ... &volumeSerialNumber ...);
 GetAdaptersInfo(pAdapterInfo, &ulOutBufLen);
+__cpuid(cpui, 0); // CPUID 指令提取处理器核心特征
+```
 
-// 通过 CPUID 指令提取处理器核心特征
-__cpuid(cpui, 0);
+---
 
-// 在登录时统一包装为 HardwareReport 并上报服务端
+# 硬件特征采集 (Hardware Collection)（2/2）
+
+- **打包上报**：配合登录流程实现物理封禁。
+
+```cpp
 void CheatMonitorEngine::UploadHardwareReport() {
     auto hardware_report = report.mutable_hardware();
     hardware_report->set_disk_serial(m_hwCollector->GetDiskSerial());
     hardware_report->set_computer_name(m_hwCollector->GetComputerName());
     for (const auto& mac : m_hwCollector->GetMacAddresses())
         hardware_report->add_mac_addresses(mac);
-    // ...
 }
 ```
 
 ---
 
-# 策略热更新 (Config Hot Update)
+# 策略热更新 (Config Hot Update)（1/2）
 
-- **场景**：防御与外挂是一个动态博弈，需紧急屏蔽外挂特征、下发豁免白名单或调整性能门槛，而不能等待游戏大版本更新。
-- **做法**：全量控制参数通过 protobuf `ClientConfig` 数据结构动态覆盖生效。
+- **做法**：全量控制参数通过 protobuf `ClientConfig` 动态覆盖。
 
 ```cpp
 void CheatConfigManager::UpdateConfigFromServer(const std::string& server_data) {
     auto new_config_data = std::make_shared<ConfigData>();
-
     anti_cheat::ClientConfig server_config;
     if (server_config.ParseFromString(server_data)) {
-        // 利用 Protobuf 原生机制合并并覆盖默认值
         new_config_data->config->MergeFrom(server_config);
     }
+```
 
-    // 原子指针切换，保证业务层读无锁低耗
+---
+
+# 策略热更新 (Config Hot Update)（2/2）
+
+- **生效**：原子指针切换，保证业务层读无锁低耗。
+
+
+```cpp
     std::lock_guard<std::mutex> lock(m_mutex);
     m_configData = std::move(new_config_data);
 
@@ -761,26 +863,24 @@ void CheatConfigManager::UpdateConfigFromServer(const std::string& server_data) 
 
 ---
 
-# 数字化证据与取证审计
+# 流程
 
 ```mermaid
 graph LR
     subgraph Client [游戏客户端]
-        S[Sensors] --> Q[Evidence Queue]
-        Q --> P[Protobuf + HMAC]
-        P --> U[HTTPS Upload]
+        S[Sensors] --> Q[EvidenceQ]
+        Q --> P[Protobuf+HMAC]
+        P --> U[Upload]
     end
-
     subgraph Server [反作弊后端]
-        U --> V[Verify Signature]
-        V --> Logic{审计逻辑}
-        Logic -->|可疑| Snapshot[请求 Snapshot]
-        Logic -->|确定违规| Ban[HWID Ban / 账号封禁]
-        Logic -->|通用策略| Update[下发 ClientConfig 热更新]
+        U --> V[Verify]
+        V --> Logic{审计}
+        Logic -->|可疑| Snap[Request Snap]
+        Logic -->|违规| Ban[Ban]
+        Logic -->|策略| Upd[HotUpdate]
     end
-
-    Update -.-> Client
-    Snapshot -.-> Client
+    Upd -.-> Client
+    Snap -.-> Client
 ```
 
 ---
@@ -788,12 +888,8 @@ graph LR
 # 总结
 
 - **无法一劳永逸**
-  - 没有绝对安全的客户端，防线的作用是不断拉高黑产的开发门槛与维护成本。
+  - 没有绝对安全的客户端，防线的作用是不断拉高黑产的开发门槛 and 维护成本。
 - **性能是安全的前提**
   - 多用分时切片、大内存对象池与 LRU Cache。
 - **决策在后端**
   - 客户端取证，后端决策。搭配收集上下文进行长线数据分析。
-
----
-
-# Q & A
