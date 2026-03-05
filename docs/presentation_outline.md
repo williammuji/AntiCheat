@@ -1,4 +1,3 @@
----
 marp: true
 theme: default
 paginate: true
@@ -20,10 +19,8 @@ h1 {
   text-align: left !important;
 }
 section.center-content h1 {
-  position: absolute !important;
-  top: 40px !important;
-  left: 50px !important;
-  right: 50px !important;
+  margin-bottom: 20px !important;
+  text-align: left !important;
 }
 img {
   display: block;
@@ -51,7 +48,12 @@ section.title-page h1 {
   margin-bottom: 40px !important;
 }
 section.center-content {
-  justify-content: center !important;
+  justify-content: flex-start !important;
+  padding-top: 60px !important;
+}
+section.center-content h1 {
+  margin-bottom: 30px !important;
+  text-align: left !important;
 }
 </style>
 
@@ -70,21 +72,25 @@ section.center-content {
 * **分时调度**：扫描高消耗与游戏帧率（FPS）之间的平衡取舍。
 * **后台联动**：Protobuf 上报、HMAC 防篡改、Snapshot 审核。
 
+
 ---
 
 # 整体系统架构
 
 ```mermaid
 graph TD
-    A[游戏进程 CheatMonitor::Initialize] --> B(启动独立监控线程 MonitorLoop)
-    B --> C{condition_variable::wait_until}
-    C -->|轻量周期| S1[ExecuteLightweightSensors]
-    C -->|重量周期| S2[ExecuteHeavyweightSensors]
-    C -->|上报周期| R1[UploadEvidenceReport]
-    C -->|快照周期| R2[UploadSnapshotReport]
-    C -->|遥测周期| R3[UploadSensorExecutionStatsReport]
-    S1 & S2 -->|命中| E[AddEvidence]
-    R1 & R2 & R3 --> Sign[HMAC签名 + sequence_id]
+    A[游戏进程 CheatMonitor] --> B(启动监控线程 MonitorLoop)
+    B --> C{wait_until}
+    C --> S1[ExecuteLightweightSensors]
+    C --> S2[ExecuteHeavyweightSensors]
+    C --> R1[UploadEvidenceReport]
+    C --> R2[UploadSnapshotReport]
+    C --> R3[UploadSensorExecutionStatsReport]
+    S1 --> E[AddEvidence]
+    S2 --> E[AddEvidence]
+    R1 --> Sign[HMAC签名]
+    R2 --> Sign[HMAC签名]
+    R3 --> Sign[HMAC签名]
     Sign --> Server[服务端审计]
 ```
 
@@ -94,19 +100,19 @@ graph TD
 
 ```mermaid
 sequenceDiagram
-    participant P as Client Process
-    participant M as CheatMonitor
+    participant P as Process
+    participant M as Monitor
     participant E as Engine
     participant S as Sensors
-    P->>M: GetInstance().Initialize()
-    M->>E: InitializeSystem()
-    E->>E: LoadNtApis & RegisterNotification
-    E->>E: HardenProcess()
+    P->>M: Initialize
+    M->>E: InitializeSystem
+    E->>E: LoadNtApis
+    E->>E: HardenProcess
     loop For each Sensor
-        E->>S: Create & Registry
+        E->>S: Create Sensor
     end
-    E->>E: StartThread()
-    Note right of E: 启动 MonitorLoop
+    E->>E: StartThread
+    Note right of E: Start MonitorLoop
 ```
 
 ---
@@ -152,21 +158,21 @@ while (m_isSystemActive.load()) {
 
 ```mermaid
 graph TD
-    subgraph Scheduling [分时调度策略]
-        T1[Lightweight: 30s]
-        T2[Heavyweight: 10min]
+    subgraph Scheduling
+        T1[Lightweight 30s]
+        T2[Heavyweight 10min]
     end
-    subgraph Execution [执行控制]
+    subgraph Execution
         Start[开始扫描] --> Loop{还有 Sensor?}
-        Loop -->|Yes| Budget{预算耗尽?}
-        Budget -->|No| Run[Sensor::Execute]
+        Loop --> Run[Sensor Execute]
+        Run --> Budget{预算耗尽?}
+        Budget -->|No| Run
         Budget -->|Yes| Save[保存游标] --> End[让出 CPU]
-        Run --> Loop
         Loop -->|No| Finish[完成当前轮次]
     end
-    subgraph Pipeline [Data Pipeline]
-        LS & HS --> Ev[EvidenceQ]
-        Ev --> Up[Sign & Upload]
+    subgraph Pipeline
+        Run --> Ev[EvidenceQ]
+        Ev --> Up[Sign and Upload]
     end
 ```
 
@@ -271,7 +277,7 @@ context.CheckSelfIntegrity(); // 对比 InitializeSelfIntegrityBaseline() 时保
 // 方法：以 ntdll 基址为起点做版本化特征偏移计算
 uintptr_t ntdllBase = (uintptr_t)GetModuleHandleW(L"ntdll.dll");
 
-// AccessVehStructSafe 封装 different Windows 版本的偏移差异
+// AccessVehStructSafe 封装不同 Windows 版本的偏移差异
 VehAccessResult result = AccessVehStructSafe(ntdllBase, m_windowsVersion);
 LIST_ENTRY* pHead = result.pHeadList;
 ```
@@ -310,46 +316,7 @@ if (currentHash != baseline[dllName])
 
 ---
 
-# Light Sensor 5：InlineHookSensor
-
-- 检查系统关键 API（`ntdll` / `kernel32`）入口是否被改写为跳转指令。
-- `LdrRegisterDllNotification` 实现实时 DLL 加载回调，无需等待下一轮扫描。
-
-```cpp
-hde32s hs;
-hde32_disasm(pFunc, &hs);   // 使用反汇编引擎
-
-// 外挂常见特征：E9 (JMP rel32) 或 EB (JMP rel8)
-if (hs.opcode == 0xE9 || hs.opcode == 0xEB) {
-    PVOID target = CalculateTarget(pFunc, hs);
-    if (!IsAddressInLegitimateModule(target))
-        AddEvidence(INTEGRITY_SYSTEM_API_HOOKED, "Inline Hook: " + funcName);
-}
-```
-
----
-
-# Light Sensor 6：ProcessHollowingSensor
-
-- 检查宿主进程入口点与磁盘文件是否一致。
-
-```cpp
-bool entryMismatch = pMemNt->OptionalHeader.AddressOfEntryPoint
-                  != pDiskNt->OptionalHeader.AddressOfEntryPoint;
-bool sizeMismatch  = pMemNt->OptionalHeader.SizeOfImage
-                  != pDiskNt->OptionalHeader.SizeOfImage;
-
-VirtualQuery(entryAddress, &entryMbi, sizeof(entryMbi));
-bool entryPageAnomaly = (entryMbi.Type != MEM_IMAGE)
-    || (entryMbi.Protect & PAGE_EXECUTE_READWRITE);
-
-if ((entryMismatch && sizeMismatch) || (entryMismatch && entryPageAnomaly))
-    AddEvidence(INTEGRITY_PROCESS_HOLLOWED, ...);
-```
-
----
-
-# Light Sensor 7：VTableHookSensor（1/2）
+# Light Sensor 5：VTableHookSensor（1/2）
 
 - **场景**：劫持渲染接口虚表以实现透视叠加（ESP）。
 - **流程**：获取渲染对象（如 D3D9Device）并比对虚表。
@@ -363,7 +330,7 @@ for (int i = 0; i < kD3D9_VTable_Count; i++) {
 
 ---
 
-# Light Sensor 7：VTableHookSensor（2/2）
+# Light Sensor 5：VTableHookSensor（2/2）
 
 - **校验**：检查函数地址是否落入非 D3D9.dll/DXGI.dll 的未知区域。
 
@@ -387,105 +354,7 @@ for (int i = 0; i < kD3D9_VTable_Count; i++) {
 
 ---
 
-# Heavy Sensor 1：ProcessAndWindowMonitorSensor
-
-- 扫描所有可见窗口标题 and 进程名，与黑名单匹配。
-
-```cpp
-// 分片处理 windows + processes，超时立即挂起保存游标
-while (cursor < totalItems) {
-    CheckWindow(...) / CheckProcess(...);
-    cursor++;
-    if (elapsed > budget_ms) {
-        context.SetWindowCursorOffset(cursor);
-        return TIMEOUT;   // 下轮从 cursor 继续
-    }
-}
-```
-
----
-
-# Heavy Sensor 2：ProcessHandleSensor（1/4）
-
-- 外部读写分离外挂以独立进程运行，通过 `OpenProcess` 拿到高权限句柄。
-- 调用未文档化 API 一次性拿到系统全量句柄表，然后逐项过滤。
-
-```cpp
-// 优先使用扩展结构（Win7+），失败则回退旧版
-status = NtQuerySystemInformation(
-    SystemExtendedHandleInformation,  // 包含 UniqueProcessId 字段
-    buffer, bufferSize, nullptr);
-
-if (status == STATUS_INFO_LENGTH_MISMATCH) {
-    buffer = Resize(buffer, bufferSize * 2);  // 缓冲区不足时倍增
-    // 扩容有上限（GetMaxBufferSizeMb），超限直接 FAILURE
-}
-
-// 快速过滤：只关注有内存读写权限的句柄
-bool HasSuspiciousAccessMask(ULONG granted) {
-    return (granted & (PROCESS_VM_READ | PROCESS_VM_WRITE
-                                       | PROCESS_VM_OPERATION)) != 0;
-}
-```
-
----
-
-# Heavy Sensor 2：ProcessHandleSensor（2/4）
-
-- 核心逻辑：将外部进程的句柄复制到本进程，查其目标 PID。
-
-```cpp
-HANDLE hDup;
-HANDLE hSourceProc = OpenProcess(PROCESS_DUP_HANDLE, FALSE, ownerPid);
-DuplicateHandle(hSourceProc, remoteHandleValue,
-                GetCurrentProcess(), &hDup,
-                PROCESS_QUERY_INFORMATION, FALSE, 0);
-
-DWORD targetPid = GetProcessId(hDup);
-```
-
----
-
-# Heavy Sensor 2：ProcessHandleSensor（3/4）
-
-- 确认指向本进程后，获取对方进程路径并做签名验证。
-
-```cpp
-if (targetPid == ownPid) {
-    std::wstring path = Utils::GetProcessFullName(hOwnerProcess);
-    Utils::SignatureStatus sig = Utils::VerifyFileSignature(path);
-    if (sig != TRUSTED)
-        AddEvidence(INTEGRITY_SUSPICIOUS_HANDLE, path + " PID=" + ownerPid);
-}
-```
-
----
-
-# Heavy Sensor 2：ProcessHandleSensor（4/4）
-
-- 系统句柄数可达数万，签名校验（`WinVerifyTrust`）单次耗时百毫秒级。
-
-```cpp
-// 游标分片：从上次中断位置继续
-ULONG_PTR cursorStart = context.GetHandleCursorOffset() % total;
-
-for (ULONG_PTR step = 0; step < total; ++step) {
-    if (step % 200 == 0 && elapsed > budget_ms) {
-        context.SetHandleCursorOffset(cursorStart + step);
-        return TIMEOUT;   // 让出 CPU，下一轮接续
-    }
-}
-
-// PID 节流：同一可疑 PID 确认后，冷却 N 分钟再查
-pidTtlMap[ownerPid] = now + minutes(GetPidThrottleMinutes());
-
-// 签名结果 LRU Cache：同路径进程不重复调用 WinVerifyTrust
-processSigCache[path] = {signatureStatus, now};
-```
-
----
-
-# Heavy Sensor 3：MemorySecuritySensor（1/5）
+# Heavy Sensor 1：MemorySecuritySensor（1/5）
 
 - **场景**：Fileless 注入——Shellcode 直接写入游戏进程的私有内存执行，没有对应 DLL 文件。
 
@@ -508,7 +377,7 @@ for (const auto& mbi : context.CachedMemoryRegions) {
 
 ---
 
-# Heavy Sensor 3：MemorySecuritySensor（2/5）
+# Heavy Sensor 1：MemorySecuritySensor（2/5）
 
 - 策略 1 & 2：跳过合法的 JIT 特征与系统低地址的小块内存。
 
@@ -522,7 +391,7 @@ if (base < 0x200000 && regionSize < 64*1024) continue;
 
 ---
 
-# Heavy Sensor 3：MemorySecuritySensor（3/5）
+# Heavy Sensor 1：MemorySecuritySensor（3/5）
 
 - 策略 3 & 4：排除初始合法的执行内存，对异常区域进行二次确认。
 
@@ -535,7 +404,7 @@ if (!HasSecondaryConfirmation(context, mbi)) continue;
 
 ---
 
-# Heavy Sensor 3：MemorySecuritySensor（4/5）
+# Heavy Sensor 1：MemorySecuritySensor（4/5）
 
 - **Manual Map 检测**：外挂会保留 PE 结构但擦除文件名，读取区域前 1024 字节尝试解析 MZ + NT 头。
 
@@ -549,7 +418,7 @@ bool hasMZ = (pDos->e_magic == IMAGE_DOS_SIGNATURE);
 
 ---
 
-# Heavy Sensor 3：MemorySecuritySensor（5/5）
+# Heavy Sensor 1：MemorySecuritySensor（5/5）
 
 - **特征扫描**：按 4 字节步长扫 NT Signature (0x00004550 'PE')，识别隐藏模块。
 
@@ -565,7 +434,7 @@ for (size_t i = 0; i < read - sizeof(IMAGE_NT_HEADERS); i += 4) {
 
 ---
 
-# Heavy Sensor 4：ModuleActivitySensor（1/2）
+# Heavy Sensor 2：ModuleActivitySensor（1/2）
 
 - **基线审计**：获取当前进程全部模块快照并与基线对比。
 
@@ -580,7 +449,7 @@ for (auto hMod : currentModules) {
 
 ---
 
-# Heavy Sensor 4：ModuleActivitySensor（2/2）
+# Heavy Sensor 2：ModuleActivitySensor（2/2）
 
 - **深度验证**：对新模块进行签名链、吊销列表及后端白名单验证。
 
@@ -592,6 +461,45 @@ for (auto hMod : currentModules) {
         context.InsertKnownModule(hMod);
     }
 }
+```
+
+---
+
+# Heavy Sensor 3：InlineHookSensor
+
+- 遍历系统关键模块（`ntdll` / `kernel32` / `kernelbase` / `user32` / `gdi32` / `ws2_32` 以及自身模块）的导出表。
+- 对每个导出函数入口做反汇编，检测是否被改写为跳转指令，并结合统一白名单和游标 + `budget_ms` 进行分片扫描。
+
+```cpp
+hde32s hs;
+hde32_disasm(pFunc, &hs);   // 使用反汇编引擎
+
+// 外挂常见特征：E9 (JMP rel32) 或 EB (JMP rel8)
+if (hs.opcode == 0xE9 || hs.opcode == 0xEB) {
+    PVOID target = CalculateTarget(pFunc, hs);
+    if (!IsAddressInLegitimateModule(target))
+        AddEvidence(INTEGRITY_SYSTEM_API_HOOKED, "Inline Hook: " + funcName);
+}
+```
+
+---
+
+# Heavy Sensor 4：ProcessHollowingSensor
+
+- 检查宿主进程入口点与磁盘文件是否一致。
+
+```cpp
+bool entryMismatch = pMemNt->OptionalHeader.AddressOfEntryPoint
+                  != pDiskNt->OptionalHeader.AddressOfEntryPoint;
+bool sizeMismatch  = pMemNt->OptionalHeader.SizeOfImage
+                  != pDiskNt->OptionalHeader.SizeOfImage;
+
+VirtualQuery(entryAddress, &entryMbi, sizeof(entryMbi));
+bool entryPageAnomaly = (entryMbi.Type != MEM_IMAGE)
+    || (entryMbi.Protect & PAGE_EXECUTE_READWRITE);
+
+if ((entryMismatch && sizeMismatch) || (entryMismatch && entryPageAnomaly))
+    AddEvidence(INTEGRITY_PROCESS_HOLLOWED, ...);
 ```
 
 ---
@@ -649,7 +557,106 @@ if (threadCtx.Dr0 || threadCtx.Dr1 || threadCtx.Dr2 || threadCtx.Dr3) {
 
 ---
 
-# Heavy Sensor 7：ModuleIntegritySensor（1/2）
+# Critical Sensor 1：ProcessAndWindowMonitorSensor
+
+- 扫描所有可见窗口标题和进程名，与黑名单匹配。
+
+```cpp
+// 分片处理 windows + processes，超时立即挂起保存游标
+while (cursor < totalItems) {
+    CheckWindow(...) / CheckProcess(...);
+    cursor++;
+    if (elapsed > budget_ms) {
+        context.SetWindowCursorOffset(cursor);
+        return TIMEOUT;   // 下轮从 cursor 继续
+    }
+}
+```
+
+
+---
+
+# Critical Sensor 2：ProcessHandleSensor（1/4）
+
+- 外部读写分离外挂以独立进程运行，通过 `OpenProcess` 拿到高权限句柄。
+- 调用未文档化 API 一次性拿到系统全量句柄表，然后逐项过滤。
+
+```cpp
+// 优先使用扩展结构（Win7+），失败则回退旧版
+status = NtQuerySystemInformation(
+    SystemExtendedHandleInformation,  // 包含 UniqueProcessId 字段
+    buffer, bufferSize, nullptr);
+
+if (status == STATUS_INFO_LENGTH_MISMATCH) {
+    buffer = Resize(buffer, bufferSize * 2);  // 缓冲区不足时倍增
+    // 扩容有上限（GetMaxBufferSizeMb），超限直接 FAILURE
+}
+
+// 快速过滤：只关注有内存读写权限的句柄
+bool HasSuspiciousAccessMask(ULONG granted) {
+    return (granted & (PROCESS_VM_READ | PROCESS_VM_WRITE
+                                       | PROCESS_VM_OPERATION)) != 0;
+}
+```
+
+---
+
+# Critical Sensor 2：ProcessHandleSensor（2/4）
+
+- 核心逻辑：将外部进程的句柄复制到本进程，查其目标 PID。
+
+```cpp
+HANDLE hDup;
+HANDLE hSourceProc = OpenProcess(PROCESS_DUP_HANDLE, FALSE, ownerPid);
+DuplicateHandle(hSourceProc, remoteHandleValue,
+                GetCurrentProcess(), &hDup,
+                PROCESS_QUERY_INFORMATION, FALSE, 0);
+
+DWORD targetPid = GetProcessId(hDup);
+```
+
+---
+
+# Critical Sensor 2：ProcessHandleSensor（3/4）
+
+- 确认指向本进程后，获取对方进程路径并做签名验证。
+
+```cpp
+if (targetPid == ownPid) {
+    std::wstring path = Utils::GetProcessFullName(hOwnerProcess);
+    Utils::SignatureStatus sig = Utils::VerifyFileSignature(path);
+    if (sig != TRUSTED)
+        AddEvidence(INTEGRITY_SUSPICIOUS_HANDLE, path + " PID=" + ownerPid);
+}
+```
+
+---
+
+# Critical Sensor 2：ProcessHandleSensor（4/4）
+
+- 系统句柄数可达数万，签名校验（`WinVerifyTrust`）单次耗时百毫秒级。
+
+```cpp
+// 游标分片：从上次中断位置继续
+ULONG_PTR cursorStart = context.GetHandleCursorOffset() % total;
+
+for (ULONG_PTR step = 0; step < total; ++step) {
+    if (step % 200 == 0 && elapsed > budget_ms) {
+        context.SetHandleCursorOffset(cursorStart + step);
+        return TIMEOUT;   // 让出 CPU，下一轮接续
+    }
+}
+
+// PID 节流：同一可疑 PID 确认后，冷却 N 分钟再查
+pidTtlMap[ownerPid] = now + minutes(GetPidThrottleMinutes());
+
+// 签名结果 LRU Cache：同路径进程不重复调用 WinVerifyTrust
+processSigCache[path] = {signatureStatus, now};
+```
+
+---
+
+# Critical Sensor 3：ModuleIntegritySensor（1/2）
 
 - **代码节校验**：定位 .text 节并比对 FNV1a 哈希，发现内存 Patch。
 
@@ -662,7 +669,7 @@ if (CryptoUtils::CalculateFnv1a(codeBase, codeSize) != m_moduleBaselineHashes[mo
 
 ---
 
-# Heavy Sensor 7：ModuleIntegritySensor（2/2）
+# Critical Sensor 3：ModuleIntegritySensor（2/2）
 
 - **自我防御**：校验引擎核心入口前 16 字节，对抗逻辑绕过。
 
@@ -699,9 +706,10 @@ void CheatMonitorEngine::SendReport(const anti_cheat::Report& report) {
     std::string sig = CryptoUtils::CalculateHMAC_SHA256(payload, hmac_key);
     signed_report.set_signature(sig);
     signed_report.SerializeToString(&upload_payload);
-    # HttpSend(server_url, upload_payload);
+    // HttpSend(server_url, upload_payload);
 }
 ```
+
 
 ---
 
@@ -725,7 +733,10 @@ std::vector<ModuleSnapshot> modules = CollectModuleSnapshots();
 
 # Telemetry：Sensor 执行指标（1/2）
 
-- 为每个 Sensor 单独采集执行统计，定期上报服务端用于调参 and 告警。
+- 为每个 Sensor 单独采集执行统计，定期上报服务端用于调参和告警。
+
+```cpp
+# Telemetry：Sensor 执行指标（1/2）
 
 - 记录成功、失败、超时次数及平均耗时。
 
@@ -749,6 +760,7 @@ struct SensorExecutionStats {
     uint64 workload_last_hits;
 }
 ```
+
 
 ---
 
@@ -867,20 +879,20 @@ void CheatConfigManager::UpdateConfigFromServer(const std::string& server_data) 
 
 ```mermaid
 graph LR
-    subgraph Client [游戏客户端]
-        S[Sensors] --> Q[EvidenceQ]
-        Q --> P[Protobuf+HMAC]
+    subgraph Client
+        SC[Sensors] --> Q[Evidence Q]
+        Q --> P[Protobuf HMAC]
         P --> U[Upload]
     end
-    subgraph Server [反作弊后端]
-        U --> V[Verify]
-        V --> Logic{审计}
-        Logic -->|可疑| Snap[Request Snap]
-        Logic -->|违规| Ban[Ban]
-        Logic -->|策略| Upd[HotUpdate]
+    subgraph Server
+        V[Verify] --> Logic{Audit}
+        Logic --> Snap[Request Snap]
+        Logic --> Ban[Ban]
+        Logic --> Upd[HotUpdate]
     end
-    Upd -.-> Client
-    Snap -.-> Client
+    U --> V
+    Upd -.-> SC
+    Snap -.-> SC
 ```
 
 ---
@@ -888,7 +900,7 @@ graph LR
 # 总结
 
 - **无法一劳永逸**
-  - 没有绝对安全的客户端，防线的作用是不断拉高黑产的开发门槛 and 维护成本。
+  - 没有绝对安全的客户端，防线的作用是不断拉高黑产的开发门槛与维护成本。
 - **性能是安全的前提**
   - 多用分时切片、大内存对象池与 LRU Cache。
 - **决策在后端**
