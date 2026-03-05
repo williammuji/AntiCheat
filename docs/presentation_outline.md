@@ -1,70 +1,8 @@
-marp: true
-theme: default
-paginate: true
----
-
-<style>
-section {
-  display: flex !important;
-  flex-direction: column !important;
-  justify-content: flex-start !important;
-  align-items: stretch !important;
-  padding-top: 40px !important;
-  padding-left: 50px !important;
-  padding-right: 50px !important;
-}
-h1 {
-  margin-top: 0 !important;
-  margin-bottom: 20px !important;
-  text-align: left !important;
-}
-section.center-content h1 {
-  margin-bottom: 20px !important;
-  text-align: left !important;
-}
-img {
-  display: block;
-  margin: 10px auto !important;
-}
-code {
-  font-size: 0.65em !important;
-}
-pre {
-  margin-top: 5px !important;
-  margin-bottom: 5px !important;
-}
-p, li {
-  margin-top: 2px !important;
-  margin-bottom: 2px !important;
-}
-section.title-page {
-  justify-content: center !important;
-  align-items: center !important;
-  text-align: center !important;
-  padding-top: 0 !important;
-}
-section.title-page h1 {
-  text-align: center !important;
-  margin-bottom: 40px !important;
-}
-section.center-content {
-  justify-content: flex-start !important;
-  padding-top: 60px !important;
-}
-section.center-content h1 {
-  margin-bottom: 30px !important;
-  text-align: left !important;
-}
-</style>
-
-<!-- _class: title-page -->
-
 # AntiCheat
 
 ## williammuji
 
----
-
+<div style="page-break-after: always;"></div>
 # 概述
 
 * **模块化设计**：传感器独立检测。
@@ -73,8 +11,7 @@ section.center-content h1 {
 * **后台联动**：Protobuf 上报、HMAC 防篡改、Snapshot 审核。
 
 
----
-
+<div style="page-break-after: always;"></div>
 # 整体系统架构
 
 ```mermaid
@@ -94,8 +31,7 @@ graph TD
     Sign --> Server[服务端审计]
 ```
 
----
-
+<div style="page-break-after: always;"></div>
 # 初始化生命周期
 
 ```mermaid
@@ -115,8 +51,7 @@ sequenceDiagram
     Note right of E: Start MonitorLoop
 ```
 
----
-
+<div style="page-break-after: always;"></div>
 # MonitorLoop：调度与心跳机制（1/2）
 
 - 主循环以 `condition_variable::wait_until` 阻塞，到期自动醒来。
@@ -131,8 +66,7 @@ while (m_isSystemActive.load()) {
     m_cv.wait_until(lk, earliest, [&]() { return !m_isSystemActive.load(); });
 ```
 
----
-
+<div style="page-break-after: always;"></div>
 # MonitorLoop：调度与心跳机制（2/2）
 
 - 仅在玩家登录且已获取服务器配置后才开始扫描。
@@ -150,10 +84,7 @@ while (m_isSystemActive.load()) {
 }
 ```
 
----
-
-<!-- _class: center-content -->
-
+<div style="page-break-after: always;"></div>
 # 扫描调度：分时切片与任务分发
 
 ```mermaid
@@ -176,8 +107,7 @@ graph TD
     end
 ```
 
----
-
+<div style="page-break-after: always;"></div>
 # SensorRuntimeContext：共享状态与分片游标
 
 - `context` 在每轮扫描中在所有 Sensor 之间共享缓存，避免重复系统调用。
@@ -199,8 +129,7 @@ std::unordered_map<std::wstring,
     std::pair<SignatureVerdict, time_point>> m_moduleSignatureCache;
 ```
 
----
-
+<div style="page-break-after: always;"></div>
 # ISensor 接口与执行框架
 
 ```cpp
@@ -221,8 +150,7 @@ void SubmitTargetedScanRequest(const std::string& requestId,
                                const std::string& sensorName);
 ```
 
----
-
+<div style="page-break-after: always;"></div>
 # Light Sensor 1：AdvancedAntiDebugSensor
 
 - 轻量级，每次轻扫均执行。
@@ -239,8 +167,7 @@ void SubmitTargetedScanRequest(const std::string& requestId,
 | 共享内存 | `KUSER_SHARED_DATA.KdDebuggerEnabled` |
 | 硬件断点 | 检查线程 Context 中 DR0-DR3 寄存器 |
 
----
-
+<div style="page-break-after: always;"></div>
 # Light Sensor 2：SystemCodeIntegritySensor（1/2）
 
 - **查询系统代码完整性配置**（测试签名模式/内核调试）。
@@ -255,8 +182,7 @@ if (sci.CodeIntegrityOptions & 0x01 && CheckKernelDebuggerPresent())
     AddEvidence(ENVIRONMENT_DEBUGGER_DETECTED, "Kernel Debugging Enabled");
 ```
 
----
-
+<div style="page-break-after: always;"></div>
 # Light Sensor 2：SystemCodeIntegritySensor（2/2）
 
 - **反作弊自身完整性检查**：对比函数快照。
@@ -266,8 +192,7 @@ if (sci.CodeIntegrityOptions & 0x01 && CheckKernelDebuggerPresent())
 context.CheckSelfIntegrity(); // 对比 InitializeSelfIntegrityBaseline() 时保存的快照
 ```
 
----
-
+<div style="page-break-after: always;"></div>
 # Light Sensor 3：VehHookSensor（1/2）
 
 - **场景**：外挂注册高优先级 VEH 拦截程序执行流，优先级高于普通 SEH。
@@ -282,8 +207,7 @@ VehAccessResult result = AccessVehStructSafe(ntdllBase, m_windowsVersion);
 LIST_ENTRY* pHead = result.pHeadList;
 ```
 
----
-
+<div style="page-break-after: always;"></div>
 # Light Sensor 3：VehHookSensor（2/2）
 
 ```cpp
@@ -300,8 +224,7 @@ for (LIST_ENTRY* p = pHead->Flink; p != pHead; p = p->Flink) {
 }
 ```
 
----
-
+<div style="page-break-after: always;"></div>
 # Light Sensor 4：IatHookSensor
 
 - 基线：进程启动时遍历导入表，记录每个 DLL 的所有函数指针序列的 FNV1a Hash。
@@ -314,8 +237,7 @@ if (currentHash != baseline[dllName])
     AddEvidence(INTEGRITY_API_HOOK, "IAT Hook detected: " + dllName);
 ```
 
----
-
+<div style="page-break-after: always;"></div>
 # Light Sensor 5：VTableHookSensor（1/2）
 
 - **场景**：劫持渲染接口虚表以实现透视叠加（ESP）。
@@ -328,8 +250,7 @@ for (int i = 0; i < kD3D9_VTable_Count; i++) {
     PVOID funcAddr = vtable[i];
 ```
 
----
-
+<div style="page-break-after: always;"></div>
 # Light Sensor 5：VTableHookSensor（2/2）
 
 - **校验**：检查函数地址是否落入非 D3D9.dll/DXGI.dll 的未知区域。
@@ -342,18 +263,15 @@ for (int i = 0; i < kD3D9_VTable_Count; i++) {
 }
 ```
 
----
-
+<div style="page-break-after: always;"></div>
 # 重量级传感器 (Heavyweight Sensors)
-<!-- _class: lead -->
 
 ### 核心特性
 - **高开销、深颗粒度**：涉及全内存扫描、系统句柄表枚举、多模块代码 Hash。
 - **调度机制**：长周期执行，严格遵守 `budget_ms` 时间切片。
 - **状态持久化**：使用 `SensorRuntimeContext` 中的游标实现分片扫描。
 
----
-
+<div style="page-break-after: always;"></div>
 # Heavy Sensor 1：MemorySecuritySensor（1/5）
 
 - **场景**：Fileless 注入——Shellcode 直接写入游戏进程的私有内存执行，没有对应 DLL 文件。
@@ -375,8 +293,7 @@ for (const auto& mbi : context.CachedMemoryRegions) {
 }
 ```
 
----
-
+<div style="page-break-after: always;"></div>
 # Heavy Sensor 1：MemorySecuritySensor（2/5）
 
 - 策略 1 & 2：跳过合法的 JIT 特征与系统低地址的小块内存。
@@ -389,8 +306,7 @@ if (isRXOnly) continue;
 if (base < 0x200000 && regionSize < 64*1024) continue;
 ```
 
----
-
+<div style="page-break-after: always;"></div>
 # Heavy Sensor 1：MemorySecuritySensor（3/5）
 
 - 策略 3 & 4：排除初始合法的执行内存，对异常区域进行二次确认。
@@ -402,8 +318,7 @@ if (mbi.AllocationProtect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_REA
 if (!HasSecondaryConfirmation(context, mbi)) continue;
 ```
 
----
-
+<div style="page-break-after: always;"></div>
 # Heavy Sensor 1：MemorySecuritySensor（4/5）
 
 - **Manual Map 检测**：外挂会保留 PE 结构但擦除文件名，读取区域前 1024 字节尝试解析 MZ + NT 头。
@@ -416,8 +331,7 @@ PIMAGE_DOS_HEADER pDos = (PIMAGE_DOS_HEADER)buf.data();
 bool hasMZ = (pDos->e_magic == IMAGE_DOS_SIGNATURE);
 ```
 
----
-
+<div style="page-break-after: always;"></div>
 # Heavy Sensor 1：MemorySecuritySensor（5/5）
 
 - **特征扫描**：按 4 字节步长扫 NT Signature (0x00004550 'PE')，识别隐藏模块。
@@ -432,8 +346,7 @@ for (size_t i = 0; i < read - sizeof(IMAGE_NT_HEADERS); i += 4) {
 }
 ```
 
----
-
+<div style="page-break-after: always;"></div>
 # Heavy Sensor 2：ModuleActivitySensor（1/2）
 
 - **基线审计**：获取当前进程全部模块快照并与基线对比。
@@ -447,8 +360,7 @@ for (auto hMod : currentModules) {
     GetModuleFileNameW(hMod, path, MAX_PATH);
 ```
 
----
-
+<div style="page-break-after: always;"></div>
 # Heavy Sensor 2：ModuleActivitySensor（2/2）
 
 - **深度验证**：对新模块进行签名链、吊销列表及后端白名单验证。
@@ -463,8 +375,7 @@ for (auto hMod : currentModules) {
 }
 ```
 
----
-
+<div style="page-break-after: always;"></div>
 # Heavy Sensor 3：InlineHookSensor
 
 - 遍历系统关键模块（`ntdll` / `kernel32` / `kernelbase` / `user32` / `gdi32` / `ws2_32` 以及自身模块）的导出表。
@@ -482,8 +393,7 @@ if (hs.opcode == 0xE9 || hs.opcode == 0xEB) {
 }
 ```
 
----
-
+<div style="page-break-after: always;"></div>
 # Heavy Sensor 4：ProcessHollowingSensor
 
 - 检查宿主进程入口点与磁盘文件是否一致。
@@ -502,8 +412,7 @@ if ((entryMismatch && sizeMismatch) || (entryMismatch && entryPageAnomaly))
     AddEvidence(INTEGRITY_PROCESS_HOLLOWED, ...);
 ```
 
----
-
+<div style="page-break-after: always;"></div>
 # Heavy Sensor 5：DriverIntegritySensor（1/2）
 
 - **内核审计**：监控系统驱动，手动映射驱动 (DKOM/Manual Map)。
@@ -517,8 +426,7 @@ for (int i = context.GetDriverCursor(); i < totalCount; ++i) {
     GetDeviceDriverFileNameW(drivers[i], szDriver, MAX_PATH);
 ```
 
----
-
+<div style="page-break-after: always;"></div>
 # Heavy Sensor 5：DriverIntegritySensor（2/2）
 
 - **校验驱动签名完整性**：内核路径转换后进行验证。
@@ -531,8 +439,7 @@ for (int i = context.GetDriverCursor(); i < totalCount; ++i) {
 }
 ```
 
----
-
+<div style="page-break-after: always;"></div>
 # Heavy Sensor 6：ThreadActivitySensor
 
 - **幽灵线程追踪**：查询线程在内存中的真实地址，识别无文件关联的异常执行流。
@@ -555,8 +462,7 @@ if (threadCtx.Dr0 || threadCtx.Dr1 || threadCtx.Dr2 || threadCtx.Dr3) {
 }
 ```
 
----
-
+<div style="page-break-after: always;"></div>
 # Critical Sensor 1：ProcessAndWindowMonitorSensor
 
 - 扫描所有可见窗口标题和进程名，与黑名单匹配。
@@ -574,8 +480,7 @@ while (cursor < totalItems) {
 ```
 
 
----
-
+<div style="page-break-after: always;"></div>
 # Critical Sensor 2：ProcessHandleSensor（1/4）
 
 - 外部读写分离外挂以独立进程运行，通过 `OpenProcess` 拿到高权限句柄。
@@ -599,8 +504,7 @@ bool HasSuspiciousAccessMask(ULONG granted) {
 }
 ```
 
----
-
+<div style="page-break-after: always;"></div>
 # Critical Sensor 2：ProcessHandleSensor（2/4）
 
 - 核心逻辑：将外部进程的句柄复制到本进程，查其目标 PID。
@@ -615,8 +519,7 @@ DuplicateHandle(hSourceProc, remoteHandleValue,
 DWORD targetPid = GetProcessId(hDup);
 ```
 
----
-
+<div style="page-break-after: always;"></div>
 # Critical Sensor 2：ProcessHandleSensor（3/4）
 
 - 确认指向本进程后，获取对方进程路径并做签名验证。
@@ -630,8 +533,7 @@ if (targetPid == ownPid) {
 }
 ```
 
----
-
+<div style="page-break-after: always;"></div>
 # Critical Sensor 2：ProcessHandleSensor（4/4）
 
 - 系统句柄数可达数万，签名校验（`WinVerifyTrust`）单次耗时百毫秒级。
@@ -654,8 +556,7 @@ pidTtlMap[ownerPid] = now + minutes(GetPidThrottleMinutes());
 processSigCache[path] = {signatureStatus, now};
 ```
 
----
-
+<div style="page-break-after: always;"></div>
 # Critical Sensor 3：ModuleIntegritySensor（1/2）
 
 - **代码节校验**：定位 .text 节并比对 FNV1a 哈希，发现内存 Patch。
@@ -667,8 +568,7 @@ if (CryptoUtils::CalculateFnv1a(codeBase, codeSize) != m_moduleBaselineHashes[mo
 }
 ```
 
----
-
+<div style="page-break-after: always;"></div>
 # Critical Sensor 3：ModuleIntegritySensor（2/2）
 
 - **自我防御**：校验引擎核心入口前 16 字节，对抗逻辑绕过。
@@ -679,8 +579,7 @@ if (memcmp(currentPtr, m_selfBaseline, 16) != 0) {
 }
 ```
 
----
-
+<div style="page-break-after: always;"></div>
 # 上报协议：HMAC 防篡改（1/2）
 
 - 外挂可能尝试截包重放合法报文，或修改报文内容以规避服务端检测。
@@ -695,8 +594,7 @@ void CheatMonitorEngine::SendReport(const anti_cheat::Report& report) {
     signed_report.set_timestamp_ms(now_ms());
 ```
 
----
-
+<div style="page-break-after: always;"></div>
 # 上报协议：HMAC 防篡改（2/2）
 
 - 计算签名并序列化上报。
@@ -711,8 +609,7 @@ void CheatMonitorEngine::SendReport(const anti_cheat::Report& report) {
 ```
 
 
----
-
+<div style="page-break-after: always;"></div>
 # SnapshotReport：快照后端审核
 
 - 遇到不确定的可疑状态时，拍下"案发现场"交由服务端判定。
@@ -729,8 +626,7 @@ std::vector<ModuleSnapshot> modules = CollectModuleSnapshots();
 - 关联同一玩家多次快照的 thread start_address，追踪幽灵线程生命周期。
 - 用历史正常快照作为基准，对当前快照做统计离群检测。
 
----
-
+<div style="page-break-after: always;"></div>
 # Telemetry：Sensor 执行指标（1/2）
 
 - 为每个 Sensor 单独采集执行统计，定期上报服务端用于调参和告警。
@@ -747,8 +643,7 @@ struct SensorExecutionStats {
     map<int32, uint32> failure_reasons;
 ```
 
----
-
+<div style="page-break-after: always;"></div>
 # Telemetry：Sensor 执行指标（2/2）
 
 - 记录工作量（句柄/模块数）及命中情况。
@@ -762,8 +657,7 @@ struct SensorExecutionStats {
 ```
 
 
----
-
+<div style="page-break-after: always;"></div>
 # 单次扫描 (Targeted Scan)（1/2）
 
 - **接收指令**：服务端下发 `TargetedSensorCommand`，压入优先队列。
@@ -776,8 +670,7 @@ void CheatMonitorEngine::SubmitTargetedScanRequest(
 }
 ```
 
----
-
+<div style="page-break-after: always;"></div>
 # 单次扫描 (Targeted Scan)（2/2）
 
 - **插队执行**：MonitorLoop 优先处理并立即上报结果。
@@ -791,8 +684,7 @@ SensorExecutionResult result = ExecuteAndMonitorSensor(sensor, ...);
 UploadTargetedSensorReport(req.requestId, req.sensorName, result, ...);
 ```
 
----
-
+<div style="page-break-after: always;"></div>
 # 进程加固与环境防御 (Process Hardening)
 
 - **场景**：防止外挂轻易修改反作弊代码本身，提升对抗门槛（防注入、防挂载）。
@@ -814,8 +706,7 @@ void CheatMonitorEngine::HardenProcessAndThreads() {
 }
 ```
 
----
-
+<div style="page-break-after: always;"></div>
 # 硬件特征采集 (Hardware Collection)（1/2）
 
 - **指纹获取**：采集硬盘、网卡、CPU 等硬件唯一 ID。
@@ -826,8 +717,7 @@ GetAdaptersInfo(pAdapterInfo, &ulOutBufLen);
 __cpuid(cpui, 0); // CPUID 指令提取处理器核心特征
 ```
 
----
-
+<div style="page-break-after: always;"></div>
 # 硬件特征采集 (Hardware Collection)（2/2）
 
 - **打包上报**：配合登录流程实现物理封禁。
@@ -842,8 +732,7 @@ void CheatMonitorEngine::UploadHardwareReport() {
 }
 ```
 
----
-
+<div style="page-break-after: always;"></div>
 # 策略热更新 (Config Hot Update)（1/2）
 
 - **做法**：全量控制参数通过 protobuf `ClientConfig` 动态覆盖。
@@ -857,8 +746,7 @@ void CheatConfigManager::UpdateConfigFromServer(const std::string& server_data) 
     }
 ```
 
----
-
+<div style="page-break-after: always;"></div>
 # 策略热更新 (Config Hot Update)（2/2）
 
 - **生效**：原子指针切换，保证业务层读无锁低耗。
@@ -873,8 +761,7 @@ void CheatConfigManager::UpdateConfigFromServer(const std::string& server_data) 
 }
 ```
 
----
-
+<div style="page-break-after: always;"></div>
 # 流程
 
 ```mermaid
@@ -895,8 +782,7 @@ graph LR
     Snap -.-> SC
 ```
 
----
-
+<div style="page-break-after: always;"></div>
 # 总结
 
 - **无法一劳永逸**
