@@ -6,7 +6,7 @@ Anti-cheat system for MMORPG games with multi-layered detection and sensor-based
 
 | Weight | Execution Time | Sensors | Purpose |
 |--------|----------------|---------|---------|
-| **LIGHT** | 0-10ms | AdvancedAntiDebugSensor, SystemCodeIntegritySensor, IatHookSensor, VehHookSensor | Quick system integrity checks and API hook detection |
+| **LIGHT** | 0-10ms | AdvancedAntiDebugSensor, SystemCodeIntegritySensor, IatHookSensor, VehHookSensor, VTableHookSensor | Quick system integrity checks and API hook detection |
 | **HEAVY** | 100-1000ms | ThreadActivitySensor, ModuleActivitySensor, MemorySecuritySensor, DriverIntegritySensor, InlineHookSensor, ProcessHollowingSensor | Deep system analysis with time-budgeted scanning |
 | **CRITICAL** | 1000-10000ms | ProcessHandleSensor, ModuleIntegritySensor, ProcessAndWindowMonitorSensor | Intensive segmented scanning with cursor-based approach |
 
@@ -76,10 +76,9 @@ Anti-cheat system for MMORPG games with multi-layered detection and sensor-based
 - **Self/Third-Party Tampering**: Reports integrity violations for both anti-cheat and other loaded modules
 
 ### ProcessAndWindowMonitorSensor
-- **Process Enumeration**: Monitors running processes for suspicious activity
-- **Window Title Analysis**: Scans for cheat-related window titles
-- **Process Tree Analysis**: Tracks parent-child process relationships
-- **Suspicious Launch Detection**: Identifies cheat tool startup patterns
+- **Process Enumeration**: Monitors running processes and matches against harmful process-name configuration
+- **Window Title Analysis**: Scans visible window titles for cheat-related keywords with configurable whitelists
+- **Combined View**: Uses a single cursor over windows and processes with a time-budgeted scan to avoid frame hitches
 
 ## Build
 

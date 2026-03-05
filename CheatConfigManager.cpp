@@ -1,4 +1,4 @@
-#include "CheatConfigManager.h"
+﻿#include "CheatConfigManager.h"
 #include "CheatMonitor.h"  // 为了访问 Utils::StringToWide 和通知 CheatMonitor
 #include <stdexcept>
 #include <algorithm>  // for std::replace
@@ -790,7 +790,7 @@ void CheatConfigManager::SetDefaultValues(ConfigData& configData)
     configData.config->set_enable_snapshot_upload(true);          // 默认启用快照上报
 
     // 新增：心跳配置
-    configData.config->set_heartbeat_interval_seconds(60);        // 默认60秒心跳
+    configData.config->set_heartbeat_interval_seconds(60);  // 默认60秒心跳
 
     // 默认不启用签名（hmac_key为空）
     configData.config->set_hmac_key("");
@@ -806,12 +806,6 @@ void CheatConfigManager::SetDefaultValues(ConfigData& configData)
     fmod_module->add_code_hashes("sha1:placeholder_fmodex_hash_sha1");  // Windows XP兼容
     fmod_module->set_description("FMOD音频引擎");
     fmod_module->set_enabled(true);
-
-    auto* proto_module = configData.config->add_trusted_third_party_modules();
-    proto_module->set_module_name("libprotobufd.dll");
-    proto_module->set_module_size(0);
-    proto_module->set_description("Protobuf Runtime");
-    proto_module->set_enabled(true);
 
     // 添加 aksoundenginedll_d.dll 配置
     auto* ak_module = configData.config->add_trusted_third_party_modules();

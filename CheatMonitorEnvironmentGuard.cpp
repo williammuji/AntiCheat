@@ -34,18 +34,20 @@ void CheatMonitorEngine::InitializeSystem()
 
     if (m_lightweightSensors.empty())
     {
+        // LIGHT 级传感器：始终在轻量周期执行
         m_lightweightSensors.push_back(std::make_unique<AdvancedAntiDebugSensor>());
         m_lightweightSensors.push_back(std::make_unique<SystemCodeIntegritySensor>());
         m_lightweightSensors.push_back(std::make_unique<IatHookSensor>());
         m_lightweightSensors.push_back(std::make_unique<VehHookSensor>());
         m_lightweightSensors.push_back(std::make_unique<VTableHookSensor>());
-        m_lightweightSensors.push_back(std::make_unique<InlineHookSensor>());
-        m_lightweightSensors.push_back(std::make_unique<ProcessHollowingSensor>());
 
+        // HEAVY / CRITICAL 级传感器：在重型周期执行，统一走 heavy 扫描预算与分片机制
         m_heavyweightSensors.push_back(std::make_unique<ThreadActivitySensor>());
         m_heavyweightSensors.push_back(std::make_unique<ModuleActivitySensor>());
         m_heavyweightSensors.push_back(std::make_unique<MemorySecuritySensor>());
         m_heavyweightSensors.push_back(std::make_unique<DriverIntegritySensor>());
+        m_heavyweightSensors.push_back(std::make_unique<InlineHookSensor>());
+        m_heavyweightSensors.push_back(std::make_unique<ProcessHollowingSensor>());
         m_heavyweightSensors.push_back(std::make_unique<ProcessHandleSensor>());
         m_heavyweightSensors.push_back(std::make_unique<ModuleIntegritySensor>());
         m_heavyweightSensors.push_back(std::make_unique<ProcessAndWindowMonitorSensor>());
