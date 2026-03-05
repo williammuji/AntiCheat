@@ -23,6 +23,12 @@ def main():
     with open(source_md, 'r', encoding='utf-8') as f:
         content = f.read()
 
+    # Strip frontmatter from source if exists
+    if content.startswith('---'):
+        parts = re.split(r'^---$', content, maxsplit=2, flags=re.MULTILINE)
+        if len(parts) >= 3:
+            content = parts[2].strip()
+
     # Create temporary directory for processing
     tmp_dir = tempfile.mkdtemp(prefix="anticheat_pres_")
     tmp_md_path = os.path.join(tmp_dir, "build.md")
@@ -46,8 +52,8 @@ def main():
         svg_rel_path = f"chart_{i}.svg"
         content = content.replace(f"```mermaid\n{m_content}\n```", f"![chart]({svg_rel_path})")
 
-    # Split into slides
-    slides_raw = re.split(r'<div style="page-break-after: always;"></div>', content)
+    # Split into slides using Marp standard separator
+    slides_raw = re.split(r'^---$', content, flags=re.MULTILINE)
     slides = [s.strip() for s in slides_raw if s.strip()]
 
     processed_slides = []
