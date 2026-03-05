@@ -87,9 +87,11 @@ TEST(SensorMemorySecurityTest, ExecuteHonorsTimeoutThreshold)
     MemorySecuritySensor sensor;
     auto result = sensor.Execute(context);
 
-    // 理想情况下，检查 500k 个内存区域在 1ms 预算下应该触发 TIMEOUT。
-    // 但在某些 CI/硬件环境中过于“乐观”的计时可能仍然返回 SUCCESS。
-    // 这里只验证：执行能够在极小预算下正常完成，不要求严格必然 TIMEOUT，避免与平台相关的时间抖动导致测试 flakiness。
-    EXPECT_TRUE(result == SensorExecutionResult::TIMEOUT || result == SensorExecutionResult::FAILURE ||
-                result == SensorExecutionResult::SUCCESS);
+    // Ideally, checking 500k regions within a 1ms budget should trigger TIMEOUT.
+    // However, on some CI/hardware environments, timing might be too optimistic and return SUCCESS.
+    // Here we just verify that execution completes normally under tight budget.
+    bool isExpected = (result == SensorExecutionResult::TIMEOUT ||
+                       result == SensorExecutionResult::FAILURE ||
+                       result == SensorExecutionResult::SUCCESS);
+    EXPECT_TRUE(isExpected);
 }
