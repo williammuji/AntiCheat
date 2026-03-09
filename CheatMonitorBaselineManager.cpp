@@ -16,29 +16,59 @@ void CheatMonitorEngine::InitializeProcessBaseline()
 {
     std::unordered_map<std::wstring, std::vector<uint8_t>> moduleBaselineHashes;
     std::unordered_map<std::string, std::vector<uint8_t>> iatBaselineHashes;
+    std::set<HMODULE> tempKnownModules;
+    std::unordered_set<std::wstring> legitimateModulePaths;
 
+    // 1. 建立已知模块列表和路径白名单
     std::vector<HMODULE> hMods(1024);
-    DWORD cbNeeded = 0;
+    DWORD cbNeeded;
     if (EnumProcessModules(GetCurrentProcess(), hMods.data(), hMods.size() * sizeof(HMODULE), &cbNeeded))
     {
+        if (hMods.size() * sizeof(HMODULE) < cbNeeded)
+        {
+            hMods.resize(cbNeeded / sizeof(HMODULE));
+            EnumProcessModules(GetCurrentProcess(), hMods.data(), hMods.size() * sizeof(HMODULE), &cbNeeded);
+        }
+
+        SystemUtils::WindowsVersion winVer = SystemUtils::GetWindowsVersion();
         size_t count = cbNeeded / sizeof(HMODULE);
+
         for (size_t i = 0; i < count; i++)
         {
-            HMODULE hModule = hMods[i];
-            wchar_t modulePath_w[MAX_PATH];
-            if (GetModuleFileNameW(hModule, modulePath_w, MAX_PATH) == 0) continue;
-            std::wstring modulePath(modulePath_w);
-
-            PVOID codeBase = nullptr;
-            DWORD codeSize = 0;
-            if (SystemUtils::GetModuleCodeSectionInfo(hModule, codeBase, codeSize))
+            wchar_t szModName[MAX_PATH];
+            if (GetModuleFileNameW(hMods[i], szModName, MAX_PATH))
             {
-                moduleBaselineHashes[modulePath] =
-                        SystemUtils::CalculateFnv1aHash(static_cast<BYTE *>(codeBase), codeSize);
+                std::wstring path = SystemUtils::SystemNormalizePathLowercase(szModName);
+
+                // 增强基线建立：验证模块签名
+                // 仅信任拥有有效数字签名的模块
+                Utils::SignatureStatus sigStatus = Utils::VerifyFileSignature(path, winVer);
+
+                if (sigStatus == Utils::SignatureStatus::TRUSTED)
+                {
+                    tempKnownModules.insert(hMods[i]);
+                    legitimateModulePaths.insert(path);
+
+                    // 计算代码段 Hash 用于完整性校验
+                    PVOID codeBase = nullptr;
+                    DWORD codeSize = 0;
+                    if (SystemUtils::GetModuleCodeSectionInfo(hMods[i], codeBase, codeSize))
+                    {
+                        moduleBaselineHashes[path] =
+                                SystemUtils::CalculateFnv1aHash(static_cast<BYTE *>(codeBase), codeSize);
+                    }
+                }
+                else
+                {
+                    LOG_WARNING_F(AntiCheatLogger::LogCategory::SYSTEM,
+                                  "基线初始化: 排除可疑模块 (签名验证未通过): %s, 状态: %d",
+                                  Utils::WideToString(path).c_str(), (int)sigStatus);
+                }
             }
         }
     }
 
+    // 2. 建立 IAT 基线 (仅对主模块)
     const HMODULE hSelf = GetModuleHandle(NULL);
     if (hSelf)
     {
@@ -78,26 +108,16 @@ void CheatMonitorEngine::InitializeProcessBaseline()
         }
     }
 
+    // 3. 一次性更新所有状态
     {
         std::lock_guard<std::mutex> lock(m_baselineMutex);
         m_moduleBaselineHashes = std::move(moduleBaselineHashes);
         m_iatBaselineHashes = std::move(iatBaselineHashes);
+        m_knownModules = std::move(tempKnownModules);
+    }
 
-        // Populate legitimate module paths
-        std::unordered_set<std::wstring> legitimateModulePaths;
-        HMODULE hModsLocal[1024];
-        DWORD cbNeededLocal;
-        if (EnumProcessModules(GetCurrentProcess(), hModsLocal, sizeof(hModsLocal), &cbNeededLocal))
-        {
-            for (unsigned int i = 0; i < (cbNeededLocal / sizeof(HMODULE)); i++)
-            {
-                wchar_t szModName[MAX_PATH];
-                if (GetModuleFileNameExW(GetCurrentProcess(), hModsLocal[i], szModName, sizeof(szModName) / sizeof(wchar_t)))
-                {
-                    legitimateModulePaths.insert(SystemUtils::SystemNormalizePathLowercase(szModName));
-                }
-            }
-        }
+    {
+        std::lock_guard<std::mutex> lock(m_modulePathsMutex);
         m_legitimateModulePaths = std::move(legitimateModulePaths);
     }
 
