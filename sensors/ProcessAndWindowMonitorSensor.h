@@ -8,7 +8,7 @@ class ProcessAndWindowMonitorSensor : public ISensor
 {
 public:
     const char *GetName() const override { return "ProcessAndWindowMonitorSensor"; }
-    SensorWeight GetWeight() const override { return SensorWeight::CRITICAL; } // 枚举所有进程/窗口，非常耗时
+    SensorWeight GetWeight() const override { return SensorWeight::CRITICAL; } // Enumerate all processes/windows, extremely time-consuming
     virtual SensorExecutionResult Execute(SensorRuntimeContext &context) override;
 
 private:

@@ -11,7 +11,7 @@ SensorExecutionResult ProcessHollowingSensor::Execute(SensorRuntimeContext &cont
 {
     m_lastFailureReason = anti_cheat::UNKNOWN_FAILURE;
 
-    // 1. 获取主模块句柄 (Base Address)
+    // 1. Get main module handle (Base Address)
     HMODULE hModule = GetModuleHandleW(NULL);
     if (!hModule)
     {
@@ -19,8 +19,8 @@ SensorExecutionResult ProcessHollowingSensor::Execute(SensorRuntimeContext &cont
          return SensorExecutionResult::FAILURE;
     }
 
-    // 2. 读取内存中的PE头
-    // 注意：这里直接读取本进程内存，无需ReadProcessMemory
+    // 2. Read PE headers in memory
+    // Note: Read directly from own process memory, no ReadProcessMemory needed
     PIMAGE_DOS_HEADER pDosHeader = (PIMAGE_DOS_HEADER)hModule;
     if (!SystemUtils::IsReadableMemory(pDosHeader, sizeof(IMAGE_DOS_HEADER)))
     {
@@ -47,7 +47,7 @@ SensorExecutionResult ProcessHollowingSensor::Execute(SensorRuntimeContext &cont
          return SensorExecutionResult::SUCCESS;
     }
 
-    // 3. 获取模块路径并读取磁盘文件头
+    // 3. Get module path and read disk file headers
     wchar_t modulePath[MAX_PATH];
     if (GetModuleFileNameW(hModule, modulePath, MAX_PATH) == 0)
     {
@@ -58,18 +58,18 @@ SensorExecutionResult ProcessHollowingSensor::Execute(SensorRuntimeContext &cont
     HANDLE hFile = CreateFileW(modulePath, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
     if (hFile == INVALID_HANDLE_VALUE)
     {
-         // 文件及其独占由于某些原因无法读取，暂时忽略
+         // File or its exclusive access is unavailable for some reason, ignore for now
          return SensorExecutionResult::FAILURE;
     }
 
     DWORD fileSize = GetFileSize(hFile, NULL);
-    if (fileSize < 4096) // 文件太小，不可能是有效的PE文件
+    if (fileSize < 4096) // File too small, cannot be a valid PE file
     {
          CloseHandle(hFile);
          return SensorExecutionResult::FAILURE;
     }
 
-    // 读取文件头 (4KB足够包含DOS+NT+SectionHeaders)
+    // Read file header (4KB is enough for DOS+NT+SectionHeaders)
     std::vector<BYTE> fileHeaderBuffer(4096);
     DWORD bytesRead = 0;
     if (!ReadFile(hFile, fileHeaderBuffer.data(), 4096, &bytesRead, NULL))
@@ -80,17 +80,17 @@ SensorExecutionResult ProcessHollowingSensor::Execute(SensorRuntimeContext &cont
     }
     CloseHandle(hFile);
 
-    // 4. 解析磁盘PE头
+    // 4. Parse disk PE header
     PIMAGE_DOS_HEADER pFileDosHeader = (PIMAGE_DOS_HEADER)fileHeaderBuffer.data();
     if (pFileDosHeader->e_magic != IMAGE_DOS_SIGNATURE)
     {
-        // 磁盘文件头无效？可能是加壳或加密
+        // Disk file header invalid? Maybe packed or encrypted
          return SensorExecutionResult::FAILURE;
     }
 
     PIMAGE_NT_HEADERS pFileNtHeaders = (PIMAGE_NT_HEADERS)(fileHeaderBuffer.data() + pFileDosHeader->e_lfanew);
 
-    // 确保NT头在读取范围内
+    // Ensure NT header is within read range
     if ((BYTE*)pFileNtHeaders > fileHeaderBuffer.data() + bytesRead - sizeof(IMAGE_NT_HEADERS))
     {
          return SensorExecutionResult::FAILURE;
@@ -103,12 +103,12 @@ SensorExecutionResult ProcessHollowingSensor::Execute(SensorRuntimeContext &cont
         return SensorExecutionResult::SUCCESS;
     }
 
-    // 5. 关键字段比对：EntryPoint 和 SizeOfImage
+    // 5. Critical field comparison: EntryPoint and SizeOfImage
     const bool entryMismatch =
             pNtHeaders->OptionalHeader.AddressOfEntryPoint != pFileNtHeaders->OptionalHeader.AddressOfEntryPoint;
     const bool sizeMismatch = pNtHeaders->OptionalHeader.SizeOfImage != pFileNtHeaders->OptionalHeader.SizeOfImage;
 
-    // 6. 二次确认：入口页权限异常/类型异常，或同时出现多个主特征
+    // 6. Double confirmation: Entry page permissions/type anomaly, or multiple primary signals
     bool entryPageAnomaly = false;
     BYTE *entryAddress = reinterpret_cast<BYTE *>(hModule) + pNtHeaders->OptionalHeader.AddressOfEntryPoint;
     MEMORY_BASIC_INFORMATION entryMbi = {};

@@ -21,14 +21,14 @@ SensorExecutionResult InlineHookSensor::Execute(SensorRuntimeContext &context)
 
     m_lastFailureReason = anti_cheat::UNKNOWN_FAILURE;
 
-    // 基础系统模块列表 + 配置中的系统模块白名单
+    // Base system module list + system module whitelist from config
     static const wchar_t* kDefaultSystemModules[] = {
         L"ntdll.dll",
         L"kernel32.dll",
         L"kernelbase.dll",
         L"user32.dll",
-        L"gdi32.dll", // 游戏常用渲染API
-        L"ws2_32.dll" // 网络API
+        L"gdi32.dll", // Common game rendering API
+        L"ws2_32.dll" // Network API
     };
 
     std::set<std::wstring> moduleNames;
@@ -43,7 +43,7 @@ SensorExecutionResult InlineHookSensor::Execute(SensorRuntimeContext &context)
     }
 
     std::vector<std::wstring> targetModules(moduleNames.begin(), moduleNames.end());
-    // 添加主模块检查 (NULL)
+    // Add main module check (NULL)
     targetModules.push_back(L"__SELF__");
 
     size_t startModIdx = context.GetInlineHookModuleCursorOffset();
@@ -69,16 +69,16 @@ SensorExecutionResult InlineHookSensor::Execute(SensorRuntimeContext &context)
             {
                 context.SetInlineHookModuleCursorOffset(i);
                 LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR,
-                           "InlineHookSensor 扫描超时: 模块=%ls (索引: %zu/%zu)",
+                           "InlineHookSensor scan timeout: Module=%ls (Index: %zu/%zu)",
                            modName.c_str(), i, targetModules.size());
                 return SensorExecutionResult::TIMEOUT;
             }
         }
-        // 成功处理完一个模块，重置内部导出项游标
+        // Successfully processed a module, reset export cursor
         context.SetExportCursorOffset(0);
     }
 
-    // 全部扫描完成，重置游标
+    // All scanning completed, reset cursors
     context.SetInlineHookModuleCursorOffset(0);
     context.SetExportCursorOffset(0);
     return SensorExecutionResult::SUCCESS;
@@ -149,7 +149,7 @@ SensorExecutionResult InlineHookSensor::CheckModuleExports(HMODULE hMod, SensorR
 
     for (DWORD i = (DWORD)startExportIdx; i < pExport->NumberOfNames; i++)
     {
-        // 性能控制：每处理100个导出项检查一次时间
+        // Performance control: Check time every 100 export items
         if (i % 100 == 0)
         {
             auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -173,7 +173,7 @@ SensorExecutionResult InlineHookSensor::CheckModuleExports(HMODULE hMod, SensorR
 
         DWORD funcRVA = pAddressOfFunctions[ordinal];
 
-        // 忽略 Forwarder RVA
+        // Ignore Forwarder RVA
         if (funcRVA >= exportDirRVA && funcRVA < exportDirRVA + exportDirSize)
         {
             continue;

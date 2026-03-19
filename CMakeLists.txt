@@ -8,6 +8,10 @@ include(CTest)
 set(CMAKE_CXX_STANDARD 14)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+if (MSVC)
+    add_compile_options(/utf-8 /wd4141 /FS)
+endif()
+
 option(ANTICHEAT_ENABLE_ASAN "Enable AddressSanitizer" ON)
 if(ANTICHEAT_ENABLE_ASAN)
     if(MSVC)
@@ -83,9 +87,6 @@ target_include_directories(CheatMonitorLib PUBLIC
 )
 
 # 统一 XP toolset 目标宏（运行时能力由 SystemUtils 做动态降级/分支）
-if (MSVC)
-    target_compile_options(CheatMonitorLib PRIVATE /utf-8 /wd4141 /FS)
-endif()
 
 if (WIN32)
     target_compile_definitions(CheatMonitorLib PUBLIC

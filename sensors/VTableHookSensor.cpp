@@ -140,7 +140,7 @@ void VTableHookSensor::CheckVTable(SensorRuntimeContext& context, PVOID vtableBa
                 }
             }
 
-            // 地址不在任何合法模块中，极可是 Hook
+            // Address not in any legitimate module, likely a hook
             std::ostringstream oss;
             oss << "VTable Hook Detected: " << name << " [Index " << i << "] -> 0x"
                 << std::hex << (uintptr_t)funcAddr << " (Address not in any module)";
