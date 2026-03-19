@@ -33,7 +33,16 @@ void CheatMonitorEngine::MonitorLoop()
 
         {
             std::unique_lock<std::mutex> lk(m_cvMutex);
-            m_cv.wait_until(lk, earliest, [&]() { return !m_isSystemActive.load(); });
+            m_cv.wait_until(lk, earliest, [&]() { 
+                return !m_isSystemActive.load() || 
+                       m_wakeRequested.load() ||
+                       (!m_targetedScanQueue.empty());
+            });
+            
+            if (m_wakeRequested.load())
+            {
+                m_wakeRequested.exchange(false);
+            }
         }
 
         if (!m_isSystemActive.load()) break;
@@ -294,13 +303,17 @@ void CheatMonitorEngine::RunTargetedSensorScan(const TargetedScanRequest &reques
         std::vector<anti_cheat::Evidence> evidences;
         {
             std::lock_guard<std::mutex> lock(m_sessionMutex);
-            for (size_t i = evidence_begin; i < m_evidences.size(); ++i)
+            size_t current_len = m_evidences.size();
+            if (current_len > evidence_begin)
             {
-                evidences.push_back(m_evidences[i]);
+                for (size_t i = evidence_begin; i < current_len; ++i)
+                {
+                    evidences.push_back(m_evidences[i]);
+                }
+                m_evidences.erase(m_evidences.begin() + evidence_begin, m_evidences.end());
             }
         }
-        UploadTargetedSensorReport(request.requestId, request.sensorName, result, failureReason, durationMs, notes,
-                                   evidences);
+        UploadTargetedSensorReport(request.requestId, request.sensorName, result, failureReason, durationMs, notes, evidences);
     }
 
     {

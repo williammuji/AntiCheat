@@ -28,6 +28,44 @@ typedef NTSTATUS(NTAPI *P_LdrRegisterDllNotification)(ULONG Flags, PLDR_DLL_NOTI
                                                       PVOID Context, PVOID *Cookie);
 typedef NTSTATUS(NTAPI *P_LdrUnregisterDllNotification)(PVOID Cookie);
 
+namespace
+{
+bool QueryRawOsVersion(OSVERSIONINFOEXW &osInfo)
+{
+    memset(&osInfo, 0, sizeof(osInfo));
+    osInfo.dwOSVersionInfoSize = sizeof(osInfo);
+
+    typedef NTSTATUS (WINAPI *RtlGetVersion_t)(LPOSVERSIONINFOEXW);
+    HMODULE hNtdll = GetModuleHandleW(L"ntdll.dll");
+    RtlGetVersion_t pRtlGetVersion = hNtdll ? reinterpret_cast<RtlGetVersion_t>(GetProcAddress(hNtdll, "RtlGetVersion")) : nullptr;
+
+    if (pRtlGetVersion)
+    {
+        return NT_SUCCESS(pRtlGetVersion(&osInfo));
+    }
+    return GetVersionExW(reinterpret_cast<LPOSVERSIONINFOW>(&osInfo));
+}
+
+bool IsAtLeastWindowsXp(const OSVERSIONINFOEXW &osInfo)
+{
+    if (osInfo.dwMajorVersion > 5) return true;
+    return osInfo.dwMajorVersion == 5 && osInfo.dwMinorVersion >= 1;
+}
+
+bool IsAtLeastWindows7Sp1(const OSVERSIONINFOEXW &osInfo)
+{
+    if (osInfo.dwMajorVersion > 6) return true;
+    if (osInfo.dwMajorVersion < 6) return false;
+    if (osInfo.dwMinorVersion > 1) return true;
+    return osInfo.dwMinorVersion == 1 && osInfo.wServicePackMajor >= 1;
+}
+
+bool IsAtLeastWindows10(const OSVERSIONINFOEXW &osInfo)
+{
+    return osInfo.dwMajorVersion >= 10;
+}
+}
+
 void CheatMonitorEngine::InitializeSystem()
 {
     SystemUtils::EnsureNtApisLoaded();
@@ -54,6 +92,12 @@ void CheatMonitorEngine::InitializeSystem()
 
         for (const auto &sensor : m_lightweightSensors) m_sensorRegistry[sensor->GetName()] = sensor.get();
         for (const auto &sensor : m_heavyweightSensors) m_sensorRegistry[sensor->GetName()] = sensor.get();
+    }
+
+    if (!IsCurrentOsSupported())
+    {
+        LOG_WARNING(AntiCheatLogger::LogCategory::SYSTEM, "当前OS未达到配置要求, 跳过高风险初始化");
+        return;
     }
 
     RegisterDllNotification();
@@ -90,25 +134,23 @@ void CheatMonitorEngine::OnConfigUpdated()
 
 bool CheatMonitorEngine::IsCurrentOsSupported() const
 {
+    OSVERSIONINFOEXW osInfo = {};
+    if (!QueryRawOsVersion(osInfo))
+    {
+        return false;
+    }
+
     anti_cheat::OsVersion requiredOsVersion = CheatConfigManager::GetInstance().GetMinOsVersion();
     switch (requiredOsVersion)
     {
         case anti_cheat::OS_ANY:
             return true;
         case anti_cheat::OS_WIN_XP:
-            return m_windowsVersion == SystemUtils::WindowsVersion::Win_XP ||
-                   m_windowsVersion == SystemUtils::WindowsVersion::Win_Vista_Win7 ||
-                   m_windowsVersion == SystemUtils::WindowsVersion::Win_8_Win81 ||
-                   m_windowsVersion == SystemUtils::WindowsVersion::Win_10 ||
-                   m_windowsVersion == SystemUtils::WindowsVersion::Win_11;
+            return IsAtLeastWindowsXp(osInfo);
         case anti_cheat::OS_WIN7_SP1:
-            return m_windowsVersion == SystemUtils::WindowsVersion::Win_Vista_Win7 ||
-                   m_windowsVersion == SystemUtils::WindowsVersion::Win_8_Win81 ||
-                   m_windowsVersion == SystemUtils::WindowsVersion::Win_10 ||
-                   m_windowsVersion == SystemUtils::WindowsVersion::Win_11;
+            return IsAtLeastWindows7Sp1(osInfo);
         case anti_cheat::OS_WIN10:
-            return m_windowsVersion == SystemUtils::WindowsVersion::Win_10 ||
-                   m_windowsVersion == SystemUtils::WindowsVersion::Win_11;
+            return IsAtLeastWindows10(osInfo);
         default:
             return false;
     }

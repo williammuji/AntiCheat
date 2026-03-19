@@ -116,15 +116,17 @@ void CheatMonitorEngine::InitializeProcessBaseline()
         m_knownModules = std::move(tempKnownModules);
     }
 
+    size_t numModules = 0;
     {
         std::lock_guard<std::mutex> lock(m_modulePathsMutex);
         m_legitimateModulePaths = std::move(legitimateModulePaths);
+        numModules = m_legitimateModulePaths.size();
     }
 
     if (!m_hwCollector) m_hwCollector = std::make_unique<anti_cheat::HardwareInfoCollector>();
     m_hwCollector->EnsureCollected();
 
-    AddEvidence(anti_cheat::SYSTEM_INITIALIZED, "Process baseline established. (" + std::to_string(m_legitimateModulePaths.size()) + " modules)");
+    AddEvidence(anti_cheat::SYSTEM_INITIALIZED, "Process baseline established. (" + std::to_string(numModules) + " modules)");
     m_processBaselineEstablished = true;
 }
 
@@ -423,6 +425,7 @@ std::vector<anti_cheat::ModuleSnapshot> CheatMonitorEngine::CollectModuleSnapsho
         wchar_t modulePath[MAX_PATH];
         if (GetModuleFileNameW(hMods[i], modulePath, MAX_PATH) > 0)
         {
+            std::wstring wModulePath = modulePath;
             snapshot.set_module_path(Utils::WideToString(modulePath));
             snapshot.set_base_address(reinterpret_cast<uint64_t>(hMods[i]));
             MODULEINFO modInfo;
@@ -433,21 +436,46 @@ std::vector<anti_cheat::ModuleSnapshot> CheatMonitorEngine::CollectModuleSnapsho
             DWORD peTimestamp = SafeReadPETimestamp(hMods[i]);
             if (peTimestamp != 0) snapshot.set_timestamp(peTimestamp);
 
-            Utils::SignatureStatus sigStatus = Utils::VerifyFileSignature(modulePath, m_windowsVersion);
-            snapshot.set_has_signature(sigStatus == Utils::SignatureStatus::TRUSTED);
-            if (snapshot.has_signature())
+            bool needCalc = true;
             {
-                std::string thumbprint = GetCertificateThumbprint(modulePath);
-                snapshot.set_cert_thumbprint(thumbprint);
+                std::lock_guard<std::mutex> lock(m_moduleSnapshotCacheMutex);
+                auto it = m_moduleSnapshotCache.find(wModulePath);
+                if (it != m_moduleSnapshotCache.end() && it->second.timestamp == peTimestamp && peTimestamp != 0)
+                {
+                    snapshot.set_has_signature(it->second.has_signature);
+                    if (it->second.has_signature) snapshot.set_cert_thumbprint(it->second.cert_thumbprint);
+                    snapshot.set_code_section_hash(it->second.code_section_hash);
+                    needCalc = false;
+                }
             }
 
-            PVOID codeBase = nullptr;
-            DWORD codeSize = 0;
-            if (SystemUtils::GetModuleCodeSectionInfo(hMods[i], codeBase, codeSize))
+            if (needCalc)
             {
-                std::string hash = CalculateSHA256String(static_cast<BYTE *>(codeBase), codeSize);
-                snapshot.set_code_section_hash(hash);
+                Utils::SignatureStatus sigStatus = Utils::VerifyFileSignature(modulePath, m_windowsVersion);
+                snapshot.set_has_signature(sigStatus == Utils::SignatureStatus::TRUSTED);
+                std::string thumbprint = "";
+                if (snapshot.has_signature())
+                {
+                    thumbprint = GetCertificateThumbprint(modulePath);
+                    snapshot.set_cert_thumbprint(thumbprint);
+                }
+
+                std::string hash = "";
+                PVOID codeBase = nullptr;
+                DWORD codeSize = 0;
+                if (SystemUtils::GetModuleCodeSectionInfo(hMods[i], codeBase, codeSize))
+                {
+                    hash = CalculateSHA256String(static_cast<BYTE *>(codeBase), codeSize);
+                    snapshot.set_code_section_hash(hash);
+                }
+
+                if (peTimestamp != 0)
+                {
+                    std::lock_guard<std::mutex> lock(m_moduleSnapshotCacheMutex);
+                    m_moduleSnapshotCache[wModulePath] = {peTimestamp, snapshot.has_signature(), thumbprint, hash};
+                }
             }
+
             snapshots.push_back(snapshot);
         }
     }

@@ -37,6 +37,7 @@ struct CheatMonitorEngine
     std::thread m_monitorThread;
     std::condition_variable m_cv;
     std::mutex m_cvMutex;
+    std::atomic<bool> m_wakeRequested{false};
 
     std::mutex m_modulePathsMutex;
     std::unordered_set<std::wstring> m_legitimateModulePaths;
@@ -51,6 +52,9 @@ struct CheatMonitorEngine
 
     std::mutex m_sensorStatsMutex;
     std::unordered_map<std::string, anti_cheat::SensorExecutionStats> m_sensorExecutionStats;
+
+    std::mutex m_reportQueueMutex;
+    std::deque<anti_cheat::Report> m_pendingReports;
 
     std::atomic<uint32_t> m_lightScanCount{0};
     std::atomic<uint32_t> m_heavyScanCount{0};
@@ -82,6 +86,15 @@ struct CheatMonitorEngine
     std::unordered_map<std::wstring, std::pair<Utils::SignatureStatus, std::chrono::steady_clock::time_point>>
             m_processSigCache;
     std::unordered_map<std::wstring, std::chrono::steady_clock::time_point> m_processSigThrottleUntil;
+
+    struct ModuleSnapshotCacheEntry {
+        DWORD timestamp = 0;
+        bool has_signature = false;
+        std::string cert_thumbprint;
+        std::string code_section_hash;
+    };
+    std::mutex m_moduleSnapshotCacheMutex;
+    std::unordered_map<std::wstring, ModuleSnapshotCacheEntry> m_moduleSnapshotCache;
 
     enum ProcessVerdict
     {
@@ -173,6 +186,7 @@ struct CheatMonitorEngine
     void UploadEvidenceReport();
     void UploadTelemetryMetricsReport(const anti_cheat::TelemetryMetrics &metrics);
     void UploadSnapshotReport();
+    void FlushPendingReports();
     void SendReport(const anti_cheat::Report &report);
     void SendServerLog(const std::string &log_level, const std::string &log_category, const std::string &log_message);
     void RecordSensorExecutionStats(const char *name, int duration_ms, SensorExecutionResult result,

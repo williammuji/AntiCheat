@@ -6,6 +6,16 @@
 #include "utils/CryptoUtils.h"
 #include <atomic>
 
+namespace
+{
+void CaptureSessionIdentity(CheatMonitorEngine &engine, uint32_t &userId, std::string &userName)
+{
+    std::lock_guard<std::mutex> lock(engine.m_sessionMutex);
+    userId = engine.m_currentUserId;
+    userName = engine.m_currentUserName;
+}
+}
+
 void CheatMonitorEngine::AddEvidence(anti_cheat::CheatCategory category, const std::string &description)
 {
     std::lock_guard<std::mutex> lock(m_sessionMutex);
@@ -92,15 +102,17 @@ void CheatMonitorEngine::UploadHardwareReport()
         }
     }
 
-    auto fp = m_hwCollector->ConsumeFingerprint();
-    if (!fp)
+    const auto* fp_raw = m_hwCollector->GetFingerprint();
+    if (!fp_raw)
     {
         auto fallback = std::make_unique<anti_cheat::HardwareFingerprint>();
-        fallback->set_os_version("ERROR:ConsumeFingerprintNull");
-        fallback->add_mac_addresses("ERROR:ConsumeFingerprintNull");
+        fallback->set_os_version("ERROR:GetFingerprintNull");
+        fallback->add_mac_addresses("ERROR:GetFingerprintNull");
         sendWithFingerprint(std::move(fallback));
         return;
     }
+
+    auto fp = std::make_unique<anti_cheat::HardwareFingerprint>(*fp_raw);
 
     if (fp->disk_serial().empty() && fp->mac_addresses().empty() && fp->computer_name().empty() && fp->cpu_info().empty())
     {
@@ -181,6 +193,10 @@ void CheatMonitorEngine::UploadSnapshotReport()
 
     LOG_INFO_F(AntiCheatLogger::LogCategory::SYSTEM, "采集完成: %zu个线程, %zu个模块", threads.size(), modules.size());
 
+    uint32_t currentUserId = 0;
+    std::string currentUserName;
+    CaptureSessionIdentity(*this, currentUserId, currentUserName);
+
     anti_cheat::Report report;
     report.set_type(anti_cheat::REPORT_SNAPSHOT);
     auto snapshot_report = report.mutable_snapshot();
@@ -188,13 +204,6 @@ void CheatMonitorEngine::UploadSnapshotReport()
     snapshot_report->set_report_timestamp_ms(
             std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
                     .count());
-    uint32_t currentUserId = 0;
-    std::string currentUserName;
-    {
-        std::lock_guard<std::mutex> lock(m_sessionMutex);
-        currentUserId = m_currentUserId;
-        currentUserName = m_currentUserName;
-    }
     snapshot_report->set_user_id(currentUserId);
     snapshot_report->set_user_name(currentUserName);
     for (const auto &thread : threads) *snapshot_report->add_threads() = thread;
@@ -376,8 +385,63 @@ void CheatMonitorEngine::SendReport(const anti_cheat::Report &report)
     // TODO: HttpSend(server_url, upload_payload);
 }
 
+void CheatMonitorEngine::FlushPendingReports()
+{
+    std::deque<anti_cheat::Report> reportsToSend;
+    {
+        std::lock_guard<std::mutex> lock(m_reportQueueMutex);
+        if (m_pendingReports.empty())
+        {
+            return;
+        }
+        reportsToSend.swap(m_pendingReports);
+    }
+
+    while (!reportsToSend.empty())
+    {
+        anti_cheat::Report report = reportsToSend.front();
+        reportsToSend.pop_front();
+        
+        // --- 协议加固：增加序号、会话ID、时间戳与签名 ---
+        anti_cheat::Report signed_report = report;
+        signed_report.set_sequence_id(++m_sequenceId);
+        signed_report.set_session_id(m_sessionId);
+
+        auto now = std::chrono::system_clock::now();
+        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
+        signed_report.set_timestamp_ms(static_cast<uint64_t>(ms));
+
+        std::string hmac_key = CheatConfigManager::GetInstance().GetHmacKey();
+        if (!hmac_key.empty())
+        {
+            // 重新序列化以包含 sequence_id
+            std::string final_serialized;
+            if (signed_report.SerializeToString(&final_serialized))
+            {
+                std::vector<uint8_t> data(final_serialized.begin(), final_serialized.end());
+                std::string signature = CryptoUtils::CalculateHMAC_SHA256(data, hmac_key);
+                signed_report.set_signature(signature);
+            }
+        }
+
+        // 最终上报数据序列化
+        std::string upload_payload;
+        if (!signed_report.SerializeToString(&upload_payload))
+        {
+            LOG_ERROR(AntiCheatLogger::LogCategory::SYSTEM, "Failed to serialize signed report inside FlushPendingReports");
+            continue;
+        }
+
+        // TODO: HttpSend(server_url, upload_payload);
+    }
+}
+
 void CheatMonitorEngine::UploadHeartbeatReport()
 {
+    uint32_t currentUserId = 0;
+    std::string currentUserName;
+    CaptureSessionIdentity(*this, currentUserId, currentUserName);
+
     anti_cheat::Report report;
     report.set_type(anti_cheat::REPORT_HEARTBEAT);
     auto heartbeat_report = report.mutable_heartbeat();
@@ -386,11 +450,6 @@ void CheatMonitorEngine::UploadHeartbeatReport()
             std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
                     .count());
 
-    uint32_t currentUserId = 0;
-    {
-        std::lock_guard<std::mutex> lock(m_sessionMutex);
-        currentUserId = m_currentUserId;
-    }
     heartbeat_report->set_user_id(currentUserId);
     heartbeat_report->set_session_id(m_sessionId);
     heartbeat_report->set_light_scan_count(m_lightScanCount.exchange(0));

@@ -227,21 +227,18 @@ void ThreadActivitySensor::AnalyzeThreadIntegrity(SensorRuntimeContext &context,
 
     if (threadId != GetCurrentThreadId())
     {
-        if (SuspendThread(hThread) != (DWORD)-1)
-        {
-            CONTEXT ctx = {};
-            ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
-            BOOL getCtxSuccess = GetThreadContext(hThread, &ctx);
-            ResumeThread(hThread);
+        CONTEXT ctx = {};
+        ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+        /* Note: Calling GetThreadContext on a running thread might yield inaccurate results, but avoids deadlocks */
+        BOOL getCtxSuccess = GetThreadContext(hThread, &ctx);
 
-            if (getCtxSuccess)
+        if (getCtxSuccess)
+        {
+            if (HasHardwareBreakpoints(ctx))
             {
-                if (HasHardwareBreakpoints(ctx))
-                {
-                    std::ostringstream oss;
-                    oss << "检测到硬件断点 (TID: " << threadId << "): Dr0=" << (void*)ctx.Dr0 << " ...";
-                    context.AddEvidence(anti_cheat::ENVIRONMENT_DEBUGGER_DETECTED, oss.str());
-                }
+                std::ostringstream oss;
+                oss << "检测到硬件断点 (TID: " << threadId << "): Dr0=" << (void*)ctx.Dr0 << " ...";
+                context.AddEvidence(anti_cheat::ENVIRONMENT_DEBUGGER_DETECTED, oss.str());
             }
         }
     }

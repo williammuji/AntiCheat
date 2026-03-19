@@ -80,13 +80,10 @@ namespace SystemUtils
             }
         }
 
-        if (osInfo.dwMajorVersion == 5 && osInfo.dwMinorVersion == 1)
+        if (osInfo.dwMajorVersion == 5 && (osInfo.dwMinorVersion == 1 || osInfo.dwMinorVersion == 2))
             return WindowsVersion::Win_XP;
 
-        if (osInfo.dwMajorVersion == 6 && osInfo.dwMinorVersion == 0)
-            return WindowsVersion::Win_Vista_Win7;
-
-        if (osInfo.dwMajorVersion == 6 && osInfo.dwMinorVersion == 1)
+        if (osInfo.dwMajorVersion == 6 && (osInfo.dwMinorVersion == 0 || osInfo.dwMinorVersion == 1))
             return WindowsVersion::Win_Vista_Win7;
 
         if (osInfo.dwMajorVersion == 6 && (osInfo.dwMinorVersion == 2 || osInfo.dwMinorVersion == 3))
