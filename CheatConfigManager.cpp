@@ -1,4 +1,4 @@
-﻿#include "CheatConfigManager.h"
+#include "CheatConfigManager.h"
 #include "CheatMonitor.h"  // 为了访问 Utils::StringToWide 和通知 CheatMonitor
 #include <stdexcept>
 #include <algorithm>  // for std::replace
@@ -831,6 +831,8 @@ void CheatConfigManager::SetDefaultValues(ConfigData& configData)
     configData.config->add_whitelisted_integrity_dirs("\\program files\\norton internet security\\");
     configData.config->add_whitelisted_integrity_dirs("\\program files (x86)\\norton internet security\\");
     configData.config->add_whitelisted_integrity_dirs("\\windows\\syswow64\\macromed\\flash\\");
+    configData.config->add_whitelisted_integrity_dirs("\\microsoft.microsoftpcmanager");
+    configData.config->add_whitelisted_integrity_dirs("\\tencent\\qqpcmgr\\");
 
     configData.config->clear_whitelisted_integrity_files();
     configData.config->add_whitelisted_integrity_files("gameoverlayrenderer.dll");
@@ -861,6 +863,9 @@ void CheatConfigManager::SetDefaultValues(ConfigData& configData)
     configData.config->add_whitelisted_integrity_files("wow64.dll");
     configData.config->add_whitelisted_integrity_files("wow64win.dll");
     configData.config->add_whitelisted_integrity_files("wow64cpu.dll");
+    // 安全/清理类工具驱动 (用户上报白名单)
+    configData.config->add_whitelisted_integrity_files("ahflt.sys");
+    configData.config->add_whitelisted_integrity_files("qmudisk64_ev.sys");
 
     // 6. 传感器特有白名单 (系统级，示范数据；线上以服务端下发覆盖)
     configData.config->clear_whitelisted_system_modules();

@@ -262,6 +262,16 @@ namespace Utils
 
     ModuleValidationResult ValidateModule(const std::wstring &modulePath, SystemUtils::WindowsVersion winVer)
     {
+        // 1. 优先检查白名单（路径/文件名直接放行）
+        if (IsWhitelistedModule(modulePath))
+        {
+            ModuleValidationResult result;
+            result.isTrusted = true;
+            result.reason = "白名单模块 (路径/文件名命中)";
+            result.signatureStatus = SignatureStatus::TRUSTED;
+            return result;
+        }
+
         ModuleValidationResult result;
 
         std::wstring normalizedPath;
