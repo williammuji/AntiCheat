@@ -440,8 +440,7 @@ void CheatMonitorEngine::OnDllLoaded(const LDR_DLL_LOAD_NOTIFICATION_DATA &data)
     if (Utils::IsWhitelistedModule(modulePath)) return;
     std::string pathStr = Utils::WideToString(modulePath);
     LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR, "Runtime DLL Loaded: %s", pathStr.c_str());
-    // [User Request] Runtime DLL 加载由于误报较多，目前仅记录日志，暂不计为作弊凭证
-    // AddEvidence(anti_cheat::RUNTIME_MODULE_INJECTION, "Runtime DLL load detected: " + pathStr);
+    AddEvidence(anti_cheat::RUNTIME_MODULE_INJECTION, "Runtime DLL load detected: " + pathStr);
 }
 
 void CheatMonitorEngine::OnProcessCreated(DWORD pid, const std::wstring &name)

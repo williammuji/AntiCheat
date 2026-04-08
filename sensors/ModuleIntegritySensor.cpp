@@ -309,7 +309,9 @@ SensorExecutionResult ModuleIntegritySensor::ValidateModuleCodeIntegrity(const w
     }
     bool isSelfModule = (hModule == selfModule);
 
-    // 检查是否在白名单中（系统DLL或信任的第三方软件）
+    // 检查是否在显式白名单中（信任的第三方软件）
+    bool isExplicitlyWhitelisted = Utils::IsExplicitlyWhitelistedModule(modulePath);
+    // 检查是否在广义白名单中（用于抑制修改后的报警）
     bool isWhitelisted = Utils::IsWhitelistedModule(modulePath);
 
     auto it = baselineHashes.find(modulePath);
@@ -320,11 +322,11 @@ SensorExecutionResult ModuleIntegritySensor::ValidateModuleCodeIntegrity(const w
         // 安全对齐逻辑：新发现的模块必须通过可信验证（签名 + 路径）才能动态建立基线
         // 防止外挂在运行期间动态加载未签名的代码并被当作“合法现状”记录
         Utils::ModuleValidationResult validation;
-        if (isWhitelisted)
+        if (isExplicitlyWhitelisted)
         {
             validation.isTrusted = true;
-            validation.reason = "白名单模块（路径或文件名匹配）";
-            validation.signatureStatus = Utils::SignatureStatus::UNKNOWN;  // 假设未检查或不重要
+            validation.reason = "显式配置白名单（路径或文件名匹配）";
+            validation.signatureStatus = Utils::SignatureStatus::UNKNOWN;
         }
         else
         {

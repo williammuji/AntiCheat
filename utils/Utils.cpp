@@ -262,16 +262,6 @@ namespace Utils
 
     ModuleValidationResult ValidateModule(const std::wstring &modulePath, SystemUtils::WindowsVersion winVer)
     {
-        // 1. 优先检查白名单（路径/文件名直接放行）
-        if (IsWhitelistedModule(modulePath))
-        {
-            ModuleValidationResult result;
-            result.isTrusted = true;
-            result.reason = "白名单模块 (路径/文件名命中)";
-            result.signatureStatus = SignatureStatus::TRUSTED;
-            return result;
-        }
-
         ModuleValidationResult result;
 
         std::wstring normalizedPath;
@@ -358,13 +348,34 @@ namespace Utils
 
         std::transform(normalizedPath.begin(), normalizedPath.end(), normalizedPath.begin(), ::towlower);
 
-        // 3. System dir check
+        // 2. System dir check (Broad whitelist for noisy detection like Runtime DLL Load)
         if (SystemUtils::IsSystemDirectoryPath(normalizedPath))
         {
             return true;
         }
 
-        // 4. White listed configs
+        // 3. Manual/Explicit whitelist from config
+        return IsExplicitlyWhitelistedModule(modulePath);
+    }
+
+    bool IsExplicitlyWhitelistedModule(const std::wstring &modulePath)
+    {
+        // 1. Get long path if possible
+        wchar_t longPath[MAX_PATH] = {0};
+        DWORD len = GetLongPathNameW(modulePath.c_str(), longPath, MAX_PATH);
+        std::wstring normalizedPath;
+        if (len > 0 && len < MAX_PATH)
+        {
+            normalizedPath = longPath;
+        }
+        else
+        {
+            normalizedPath = modulePath;
+        }
+
+        std::transform(normalizedPath.begin(), normalizedPath.end(), normalizedPath.begin(), ::towlower);
+
+        // 2. White listed configs (Directories)
         auto whitelistedDirs = CheatConfigManager::GetInstance().GetWhitelistedIntegrityDirs();
         if (whitelistedDirs)
         {
@@ -377,6 +388,7 @@ namespace Utils
             }
         }
 
+        // 3. White listed configs (Files)
         auto whitelistedFiles = CheatConfigManager::GetInstance().GetWhitelistedIntegrityFiles();
         if (whitelistedFiles)
         {

@@ -831,8 +831,14 @@ void CheatConfigManager::SetDefaultValues(ConfigData& configData)
     configData.config->add_whitelisted_integrity_dirs("\\program files\\norton internet security\\");
     configData.config->add_whitelisted_integrity_dirs("\\program files (x86)\\norton internet security\\");
     configData.config->add_whitelisted_integrity_dirs("\\windows\\syswow64\\macromed\\flash\\");
+    configData.config->add_whitelisted_integrity_dirs("\\vs7debug\\");
+    configData.config->add_whitelisted_integrity_dirs("\\nvidia\\");
+    configData.config->add_whitelisted_integrity_dirs("\\bonjour\\");
+    configData.config->add_whitelisted_integrity_dirs("\\tencent\\");
+    configData.config->add_whitelisted_integrity_dirs("\\sogou\\");
     configData.config->add_whitelisted_integrity_dirs("\\microsoft.microsoftpcmanager");
-    configData.config->add_whitelisted_integrity_dirs("\\tencent\\qqpcmgr\\");
+    configData.config->add_whitelisted_integrity_dirs("\\data\\browser\\");
+    configData.config->add_whitelisted_integrity_dirs("\\gamerender\\");
 
     configData.config->clear_whitelisted_integrity_files();
     configData.config->add_whitelisted_integrity_files("gameoverlayrenderer.dll");
@@ -866,6 +872,25 @@ void CheatConfigManager::SetDefaultValues(ConfigData& configData)
     // 安全/清理类工具驱动 (用户上报白名单)
     configData.config->add_whitelisted_integrity_files("ahflt.sys");
     configData.config->add_whitelisted_integrity_files("qmudisk64_ev.sys");
+    // 调试组件
+    configData.config->add_whitelisted_integrity_files("pdm.dll");
+    configData.config->add_whitelisted_integrity_files("mdmui.dll");
+    configData.config->add_whitelisted_integrity_files("msdbg2.dll");
+    // 输入法组件
+    configData.config->add_whitelisted_integrity_files("hwsignature.dll");
+    configData.config->add_whitelisted_integrity_files("sgdeskcontrol.dll");
+    configData.config->add_whitelisted_integrity_files("biz_bundle.dll");
+    configData.config->add_whitelisted_integrity_files("game_center.dll");
+    // 显卡与驱动支持
+    configData.config->add_whitelisted_integrity_files("nvcamerawhitelisting32.dll");
+    // 4399游戏盒组件
+    configData.config->add_whitelisted_integrity_files("render.ocx");
+    // 微信/腾讯 WeType 组件
+    configData.config->add_whitelisted_integrity_files("crashrpt1500.dll");
+    configData.config->add_whitelisted_integrity_files("wetype_tip_core.dll");
+    // 游戏内置浏览器组件
+    configData.config->add_whitelisted_integrity_files("ztcefdll.dll");
+    configData.config->add_whitelisted_integrity_files("libcef.dll");
 
     // 6. 传感器特有白名单 (系统级，示范数据；线上以服务端下发覆盖)
     configData.config->clear_whitelisted_system_modules();

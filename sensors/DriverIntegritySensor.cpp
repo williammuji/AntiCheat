@@ -79,6 +79,15 @@ SensorExecutionResult DriverIntegritySensor::Execute(SensorRuntimeContext &conte
 
             if (!validation.isTrusted)
             {
+                // [User Request] 增加对显式配置的白名单检查，排除如电脑管家等已知的正常驱动误报
+                if (Utils::IsExplicitlyWhitelistedModule(driverPath))
+                {
+                    LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR,
+                               "DriverIntegritySensor: 忽略显式白名单中的非信任驱动: %s",
+                               Utils::WideToString(driverPath).c_str());
+                    continue;
+                }
+
                 std::string u8Path = Utils::WideToString(driverPath);
                 context.AddEvidence(anti_cheat::ENVIRONMENT_SUSPICIOUS_DRIVER,
                     "Suspicious driver (Reason: " + validation.reason + "): " + u8Path);

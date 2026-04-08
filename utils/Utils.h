@@ -40,4 +40,5 @@ namespace Utils
     SignatureStatus VerifyFileSignature(const std::wstring &filePath, SystemUtils::WindowsVersion winVer);
     ModuleValidationResult ValidateModule(const std::wstring &modulePath, SystemUtils::WindowsVersion winVer);
     bool IsWhitelistedModule(const std::wstring &modulePath);
+    bool IsExplicitlyWhitelistedModule(const std::wstring &modulePath);
 }
