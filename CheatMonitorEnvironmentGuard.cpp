@@ -134,23 +134,19 @@ void CheatMonitorEngine::OnConfigUpdated()
 
 bool CheatMonitorEngine::IsCurrentOsSupported() const
 {
-    OSVERSIONINFOEXW osInfo = {};
-    if (!QueryRawOsVersion(osInfo))
-    {
-        return false;
-    }
-
     anti_cheat::OsVersion requiredOsVersion = CheatConfigManager::GetInstance().GetMinOsVersion();
+
+    // Use m_windowsVersion member for version check (allows test override)
     switch (requiredOsVersion)
     {
         case anti_cheat::OS_ANY:
             return true;
         case anti_cheat::OS_WIN_XP:
-            return IsAtLeastWindowsXp(osInfo);
+            return m_windowsVersion >= SystemUtils::WindowsVersion::Win_XP;
         case anti_cheat::OS_WIN7_SP1:
-            return IsAtLeastWindows7Sp1(osInfo);
+            return m_windowsVersion >= SystemUtils::WindowsVersion::Win_Vista_Win7;
         case anti_cheat::OS_WIN10:
-            return IsAtLeastWindows10(osInfo);
+            return m_windowsVersion >= SystemUtils::WindowsVersion::Win_10;
         default:
             return false;
     }
