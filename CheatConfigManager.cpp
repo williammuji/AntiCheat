@@ -22,8 +22,11 @@ CheatConfigManager& CheatConfigManager::GetInstance()
 
 CheatConfigManager::CheatConfigManager() : m_configData(std::make_shared<ConfigData>())
 {
-    // 在构造函数中直接调用，以确保默认配置在启动时就绪
+    // 1. Initialize default configuration values
     SetDefaultValues(*m_configData);
+
+    // 2. Build wide string caches (whitelist dirs/files etc.) for matching
+    UpdateWideStringCaches(*m_configData);
 }
 
 // --- 私有辅助函数 ---

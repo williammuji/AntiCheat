@@ -148,6 +148,11 @@ struct CheatMonitorEngine
     void OnDllLoaded(const LDR_DLL_LOAD_NOTIFICATION_DATA &data);
     void OnProcessCreated(DWORD pid, const std::wstring &name);
 
+    // Pending DLL loads before server config arrives
+    std::mutex m_pendingDllLoadsMutex;
+    std::vector<std::pair<std::wstring, std::chrono::steady_clock::time_point>> m_pendingDllLoads;
+    void ProcessPendingDllLoads();
+
     enum class ExecutionStatus : int
     {
         SUCCESS = 0,
