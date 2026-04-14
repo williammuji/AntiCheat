@@ -836,6 +836,8 @@ void CheatConfigManager::SetDefaultValues(ConfigData& configData)
     configData.config->add_whitelisted_integrity_dirs("\\bonjour\\");
     configData.config->add_whitelisted_integrity_dirs("\\tencent\\");
     configData.config->add_whitelisted_integrity_dirs("\\sogou\\");
+    configData.config->add_whitelisted_integrity_dirs("\\sogouinput\\");
+    configData.config->add_whitelisted_integrity_dirs("\\sogoupinyin\\");
     configData.config->add_whitelisted_integrity_dirs("\\microsoft.microsoftpcmanager");
     configData.config->add_whitelisted_integrity_dirs("\\data\\browser\\");
     configData.config->add_whitelisted_integrity_dirs("\\gamerender\\");
@@ -923,12 +925,15 @@ void CheatConfigManager::SetDefaultValues(ConfigData& configData)
 
 void CheatConfigManager::UpdateWideStringCaches(ConfigData& configData)
 {
-    auto convert_to_vector = [](const auto& source, auto& dest) {
+    auto convert_to_vector = [](const auto& source, auto& dest, bool bLower) {
         dest.clear();
         dest.reserve(source.size());
         for (const auto& s : source)
         {
-            dest.push_back(Utils::StringToWide(s));
+            std::wstring ws = Utils::StringToWide(s);
+            if (bLower)
+                std::transform(ws.begin(), ws.end(), ws.begin(), ::towlower);
+            dest.push_back(ws);
         }
     };
 
@@ -936,18 +941,20 @@ void CheatConfigManager::UpdateWideStringCaches(ConfigData& configData)
         dest.clear();
         for (const auto& s : source)
         {
-            dest.insert(Utils::StringToWide(s));
+            std::wstring ws = Utils::StringToWide(s);
+            std::transform(ws.begin(), ws.end(), ws.begin(), ::towlower);
+            dest.insert(ws);
         }
     };
 
-    convert_to_vector(configData.config->harmful_process_names(), configData.harmfulProcessNames_w);
-    convert_to_vector(configData.config->harmful_keywords(), configData.harmfulKeywords_w);
+    convert_to_vector(configData.config->harmful_process_names(), configData.harmfulProcessNames_w, false);
+    convert_to_vector(configData.config->harmful_keywords(), configData.harmfulKeywords_w, false);
     convert_to_set(configData.config->whitelisted_veh_modules(), configData.whitelistedVEHModules_w);
     convert_to_set(configData.config->whitelisted_process_paths(), configData.whitelistedProcessPaths_w);
     convert_to_set(configData.config->whitelisted_window_keywords(), configData.whitelistedWindowKeywords_w);
     convert_to_set(configData.config->known_good_processes(), configData.knownGoodProcesses_w);
-    convert_to_vector(configData.config->whitelisted_integrity_dirs(), configData.whitelistedIntegrityDirs_w);
-    convert_to_vector(configData.config->whitelisted_integrity_files(), configData.whitelistedIntegrityFiles_w);
+    convert_to_vector(configData.config->whitelisted_integrity_dirs(), configData.whitelistedIntegrityDirs_w, true);
+    convert_to_vector(configData.config->whitelisted_integrity_files(), configData.whitelistedIntegrityFiles_w, true);
     convert_to_set(configData.config->whitelisted_system_modules(), configData.whitelistedSystemModules_w);
     convert_to_set(configData.config->whitelisted_integrity_ignore_list(), configData.whitelistedIntegrityIgnoreList_w);
 
