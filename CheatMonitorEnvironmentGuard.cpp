@@ -130,6 +130,9 @@ void CheatMonitorEngine::OnConfigUpdated()
     std::string hmacKey = CheatConfigManager::GetInstance().GetHmacKey();
     LOG_INFO_F(AntiCheatLogger::LogCategory::SECURITY, "协议安全配置更新: HMAC签名=%s",
                hmacKey.empty() ? "禁用" : "启用");
+
+    // Process pending DLL loads now that whitelist config is available
+    ProcessPendingDllLoads();
 }
 
 bool CheatMonitorEngine::IsCurrentOsSupported() const
@@ -433,10 +436,39 @@ void CheatMonitorEngine::OnDllLoaded(const LDR_DLL_LOAD_NOTIFICATION_DATA &data)
 {
     if (!data.FullDllName || !data.FullDllName->Buffer) return;
     std::wstring modulePath(data.FullDllName->Buffer, data.FullDllName->Length / sizeof(WCHAR));
+
+    // If server config not yet received, cache the DLL load for later processing
+    if (!m_hasServerConfig.load())
+    {
+        std::lock_guard<std::mutex> lock(m_pendingDllLoadsMutex);
+        m_pendingDllLoads.emplace_back(modulePath, std::chrono::steady_clock::now());
+        return;
+    }
+
+    // Config available, check whitelist and report immediately
     if (Utils::IsWhitelistedModule(modulePath)) return;
     std::string pathStr = Utils::WideToString(modulePath);
     LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR, "Runtime DLL Loaded: %s", pathStr.c_str());
     AddEvidence(anti_cheat::RUNTIME_MODULE_INJECTION, "Runtime DLL load detected: " + pathStr);
+}
+
+void CheatMonitorEngine::ProcessPendingDllLoads()
+{
+    std::vector<std::pair<std::wstring, std::chrono::steady_clock::time_point>> pending;
+    {
+        std::lock_guard<std::mutex> lock(m_pendingDllLoadsMutex);
+        pending = std::move(m_pendingDllLoads);
+        m_pendingDllLoads.clear();
+    }
+
+    for (const auto& entry : pending)
+    {
+        const std::wstring& modulePath = entry.first;
+        if (Utils::IsWhitelistedModule(modulePath)) continue;  // Filter by whitelist
+        std::string pathStr = Utils::WideToString(modulePath);
+        LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR, "Runtime DLL Loaded (delayed): %s", pathStr.c_str());
+        AddEvidence(anti_cheat::RUNTIME_MODULE_INJECTION, "Runtime DLL load detected: " + pathStr);
+    }
 }
 
 void CheatMonitorEngine::OnProcessCreated(DWORD pid, const std::wstring &name)
