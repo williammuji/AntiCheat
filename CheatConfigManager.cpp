@@ -836,6 +836,7 @@ void CheatConfigManager::SetDefaultValues(ConfigData& configData)
     configData.config->add_whitelisted_integrity_dirs("\\windows\\syswow64\\macromed\\flash\\");
     configData.config->add_whitelisted_integrity_dirs("\\vs7debug\\");
     configData.config->add_whitelisted_integrity_dirs("\\nvidia\\");
+    configData.config->add_whitelisted_integrity_dirs("\\nvidia corporation\\");
     configData.config->add_whitelisted_integrity_dirs("\\bonjour\\");
     configData.config->add_whitelisted_integrity_dirs("\\tencent\\");
     configData.config->add_whitelisted_integrity_dirs("\\sogou\\");
@@ -844,6 +845,26 @@ void CheatConfigManager::SetDefaultValues(ConfigData& configData)
     configData.config->add_whitelisted_integrity_dirs("\\microsoft.microsoftpcmanager");
     configData.config->add_whitelisted_integrity_dirs("\\data\\browser\\");
     configData.config->add_whitelisted_integrity_dirs("\\gamerender\\");
+    // Nahimic/AVolute audio enhancement (common on gaming laptops)
+    configData.config->add_whitelisted_integrity_dirs("\\a-volute\\");
+    configData.config->add_whitelisted_integrity_dirs("\\nahimic\\");
+    // FPHD player
+    configData.config->add_whitelisted_integrity_dirs("\\fphd\\");
+    // Internet Download Manager
+    configData.config->add_whitelisted_integrity_dirs("\\internet download manager\\");
+    // 掌心输入法
+    configData.config->add_whitelisted_integrity_dirs("\\palminput\\");
+    // 讯飞输入法
+    configData.config->add_whitelisted_integrity_dirs("\\iflytek\\");
+    // 搜狐影音
+    configData.config->add_whitelisted_integrity_dirs("\\搜狐影音\\");
+    // 华为电脑管家
+    configData.config->add_whitelisted_integrity_dirs("\\huawei\\");
+    configData.config->add_whitelisted_integrity_dirs("\\pcmanager\\");
+    // Microsoft OneDrive
+    configData.config->add_whitelisted_integrity_dirs("\\onedrive\\");
+    // 修复搜狗输入法路径匹配（实际路径可能是SougouInput）
+    configData.config->add_whitelisted_integrity_dirs("\\sougouinput\\");
 
     configData.config->clear_whitelisted_integrity_files();
     configData.config->add_whitelisted_integrity_files("gameoverlayrenderer.dll");
@@ -886,8 +907,14 @@ void CheatConfigManager::SetDefaultValues(ConfigData& configData)
     configData.config->add_whitelisted_integrity_files("sgdeskcontrol.dll");
     configData.config->add_whitelisted_integrity_files("biz_bundle.dll");
     configData.config->add_whitelisted_integrity_files("game_center.dll");
-    // 显卡与驱动支持
+    // 游戏自身lua.dll（征途等游戏）
+    configData.config->add_whitelisted_integrity_files("lua.dll");
+    // SSLVPN组件
+    configData.config->add_whitelisted_integrity_files("sslvpnredirector.dll");
+    // 显卡与驱动支持 (NVIDIA renamed Whitelisting→Allowlisting)
     configData.config->add_whitelisted_integrity_files("nvcamerawhitelisting32.dll");
+    configData.config->add_whitelisted_integrity_files("nvcameraallowlisting32.dll");
+    configData.config->add_whitelisted_integrity_files("nvcameraallowlisting64.dll");
     // 4399游戏盒组件
     configData.config->add_whitelisted_integrity_files("render.ocx");
     // 微信/腾讯 WeType 组件

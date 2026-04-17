@@ -102,24 +102,38 @@ SensorExecutionResult DriverIntegritySensor::Execute(SensorRuntimeContext &conte
 
         // 先以文件基名匹配 Windows 内核组件白名单：这些模块由内核 / SMSS 加载，
         // 路径归一化失败时不应被误判为可疑驱动。
+        // 若 GetDeviceDriverBaseNameW 失败，尝试从 GetDeviceDriverFileNameW 路径提取基名作为 fallback。
+        std::wstring driverBaseName;
         WCHAR szBaseName[MAX_PATH] = {0};
         if (GetDeviceDriverBaseNameW(drivers[i], szBaseName, MAX_PATH))
         {
-            std::wstring baseName = ToLowerCopy(szBaseName);
-            const auto &kernelWhitelist = GetKernelComponentBaseNames();
-            if (kernelWhitelist.find(baseName) != kernelWhitelist.end())
-            {
-                LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR,
-                           "DriverIntegritySensor: 跳过已知 Windows 内核组件: %s",
-                           Utils::WideToString(baseName).c_str());
-                continue;
-            }
+            driverBaseName = szBaseName;
         }
 
-        WCHAR szDriver[MAX_PATH];
+        WCHAR szDriver[MAX_PATH] = {0};
         if (GetDeviceDriverFileNameW(drivers[i], szDriver, MAX_PATH))
         {
+            // Fallback: 如果 GetDeviceDriverBaseNameW 失败，从路径提取基名
+            if (driverBaseName.empty())
+            {
+                driverBaseName = Utils::GetFileName(std::wstring(szDriver));
+            }
+
             std::wstring driverPath = SystemUtils::NormalizeKernelPathToWinPath(szDriver);
+
+            // 检查内核组件白名单
+            if (!driverBaseName.empty())
+            {
+                std::wstring baseNameLower = ToLowerCopy(driverBaseName);
+                const auto &kernelWhitelist = GetKernelComponentBaseNames();
+                if (kernelWhitelist.find(baseNameLower) != kernelWhitelist.end())
+                {
+                    LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR,
+                               "DriverIntegritySensor: 跳过已知 Windows 内核组件: %s",
+                               Utils::WideToString(baseNameLower).c_str());
+                    continue;
+                }
+            }
 
             // Use unified ValidateModule logic
             auto validation = Utils::ValidateModule(driverPath, winVer);
