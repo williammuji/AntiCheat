@@ -7,10 +7,41 @@
 #include "../CheatConfigManager.h"
 #include <string>
 #include <vector>
+#include <unordered_set>
+#include <algorithm>
 #include <psapi.h>
 
 #pragma comment(lib, "wintrust.lib")
 #pragma comment(lib, "psapi.lib")
+
+namespace
+{
+    // Windows 内核组件基名白名单：这些模块只有内核/会话管理器会加载，
+    // 即便路径归一化在极端环境（双系统 / Ghost 还原 / 非典型盘符）下解析不到真实文件，
+    // 导致 WinVerifyTrust 以 TRUST_E_NOSIGNATURE 失败，也不应该作为"可疑驱动"上报。
+    const std::unordered_set<std::wstring> &GetKernelComponentBaseNames()
+    {
+        static const std::unordered_set<std::wstring> kNames = {
+            // NT 内核及其变体
+            L"ntoskrnl.exe", L"ntkrnlpa.exe", L"ntkrnlmp.exe", L"ntkrpamp.exe",
+            // HAL 及其变体
+            L"hal.dll", L"halmacpi.dll", L"halacpi.dll", L"halaacpi.dll", L"halx86.dll",
+            // 启动/会话管理
+            L"smss.exe", L"csrss.exe", L"winload.exe", L"winload.efi", L"winresume.exe", L"winresume.efi",
+            // 其它核心子系统
+            L"ci.dll", L"clfs.sys", L"cng.sys", L"fltmgr.sys", L"ksecdd.sys",
+            L"msrpc.sys", L"ndis.sys", L"netio.sys", L"pshed.dll", L"tm.sys",
+            L"werkernel.sys", L"win32k.sys",
+        };
+        return kNames;
+    }
+
+    std::wstring ToLowerCopy(std::wstring s)
+    {
+        std::transform(s.begin(), s.end(), s.begin(), ::towlower);
+        return s;
+    }
+}
 
 SensorExecutionResult DriverIntegritySensor::Execute(SensorRuntimeContext &context)
 {
@@ -66,6 +97,22 @@ SensorExecutionResult DriverIntegritySensor::Execute(SensorRuntimeContext &conte
                 LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR,
                            "DriverIntegritySensor 扫描超时: 索引=%d/%d，已保存驱动地址游标", i, cDrivers);
                 return SensorExecutionResult::TIMEOUT;
+            }
+        }
+
+        // 先以文件基名匹配 Windows 内核组件白名单：这些模块由内核 / SMSS 加载，
+        // 路径归一化失败时不应被误判为可疑驱动。
+        WCHAR szBaseName[MAX_PATH] = {0};
+        if (GetDeviceDriverBaseNameW(drivers[i], szBaseName, MAX_PATH))
+        {
+            std::wstring baseName = ToLowerCopy(szBaseName);
+            const auto &kernelWhitelist = GetKernelComponentBaseNames();
+            if (kernelWhitelist.find(baseName) != kernelWhitelist.end())
+            {
+                LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR,
+                           "DriverIntegritySensor: 跳过已知 Windows 内核组件: %s",
+                           Utils::WideToString(baseName).c_str());
+                continue;
             }
         }
 

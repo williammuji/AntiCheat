@@ -242,22 +242,43 @@ SensorExecutionResult ModuleIntegritySensor::ValidateModuleCodeIntegrity(const w
                                      SensorRuntimeContext &context,
                                      const std::unordered_map<std::wstring, std::vector<uint8_t>> &baselineHashes)
 {
+    std::wstring modulePath(modulePath_w);
+
+    // 提前计算自身/白名单状态，供可写代码节检查与后续 Hash 比对复用，
+    // 确保两处检测使用一致的降噪策略（系统目录 DLL、显式白名单模块统一抑制）。
+    HMODULE selfModule = context.GetSelfModuleHandle();
+    if (!selfModule)
+    {
+        LOG_WARNING(AntiCheatLogger::LogCategory::SENSOR, "ModuleIntegritySensor: 无法获取自身模块句柄");
+        this->RecordFailure(anti_cheat::MODULE_INTEGRITY_GET_SELF_MODULE_FAILED);
+        return SensorExecutionResult::FAILURE;
+    }
+    const bool isSelfModule = (hModule == selfModule);
+    const bool isExplicitlyWhitelisted = Utils::IsExplicitlyWhitelistedModule(modulePath);
+    const bool isWhitelisted = Utils::IsWhitelistedModule(modulePath);
+
     // 1. Check for Writable Code Section (Anti-Patching / Hooking)
+    // 对于系统目录 DLL（如 SysWOW64\ntdll.dll）和显式白名单模块，用户态 Hook 非常常见
+    // （国内安全软件、EDR、Windows 热补丁、兼容性 shim 等），默认降噪避免误报。
     MEMORY_BASIC_INFORMATION mbi = {};
     if (VirtualQuery(codeBase, &mbi, sizeof(mbi)))
     {
          if (IsWritableCodeProtection(mbi.Protect))
          {
-             std::string u8Path = Utils::WideToString(modulePath_w);
-             // 忽略自身模块（某些加壳或混淆可能导致自身代码段可写）
-             if (hModule != context.GetSelfModuleHandle())
+             if (ShouldEmitTamperEvidence(isSelfModule, isWhitelisted))
              {
+                 std::string u8Path = Utils::WideToString(modulePath_w);
                  context.AddEvidence(anti_cheat::INTEGRITY_MEMORY_PATCH, "Writable code section detected: " + u8Path);
+             }
+             else
+             {
+                 LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR,
+                             "ModuleIntegritySensor: 白名单/系统模块代码节可写（抑制告警）: %s (Protect=0x%08X)",
+                             Utils::WideToString(modulePath).c_str(), mbi.Protect);
              }
          }
     }
 
-    std::wstring modulePath(modulePath_w);
     uint64_t currentHashState = context.GetModuleIntegrityPartialHash();
     size_t internalOffset = context.GetModuleInternalOffset();
 
@@ -298,21 +319,6 @@ SensorExecutionResult ModuleIntegritySensor::ValidateModuleCodeIntegrity(const w
     std::vector<uint8_t> currentHash = SystemUtils::HashToBytes(currentHashState);
     context.SetModuleInternalOffset(0);
     context.SetModuleIntegrityPartialHash(0);
-
-    // 检查是否为自身模块
-    HMODULE selfModule = context.GetSelfModuleHandle();
-    if (!selfModule)
-    {
-        LOG_WARNING(AntiCheatLogger::LogCategory::SENSOR, "ModuleIntegritySensor: 无法获取自身模块句柄");
-        this->RecordFailure(anti_cheat::MODULE_INTEGRITY_GET_SELF_MODULE_FAILED);
-        return SensorExecutionResult::FAILURE;
-    }
-    bool isSelfModule = (hModule == selfModule);
-
-    // 检查是否在显式白名单中（信任的第三方软件）
-    bool isExplicitlyWhitelisted = Utils::IsExplicitlyWhitelistedModule(modulePath);
-    // 检查是否在广义白名单中（用于抑制修改后的报警）
-    bool isWhitelisted = Utils::IsWhitelistedModule(modulePath);
 
     auto it = baselineHashes.find(modulePath);
 

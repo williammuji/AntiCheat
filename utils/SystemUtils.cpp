@@ -357,18 +357,67 @@ namespace SystemUtils
     std::wstring NormalizeKernelPathToWinPath(const std::wstring &input)
     {
         std::wstring out = input;
-        if (out.find(L"\\SystemRoot\\") == 0)
-        {
-            wchar_t winDir[MAX_PATH] = {0};
-            if (GetWindowsDirectoryW(winDir, MAX_PATH) > 0)
+
+        auto getWinDirWithSep = []() -> std::wstring {
+            wchar_t buf[MAX_PATH] = {0};
+            if (GetWindowsDirectoryW(buf, MAX_PATH) > 0)
             {
-                out.replace(0, 12, std::wstring(winDir) + L"\\");
+                std::wstring s(buf);
+                if (!s.empty() && s.back() != L'\\')
+                    s.push_back(L'\\');
+                return s;
+            }
+            return std::wstring();
+        };
+
+        auto startsWithCI = [](const std::wstring &s, const std::wstring &prefix) -> bool {
+            if (s.size() < prefix.size())
+                return false;
+            for (size_t i = 0; i < prefix.size(); ++i)
+            {
+                if (towlower(s[i]) != towlower(prefix[i]))
+                    return false;
+            }
+            return true;
+        };
+
+        // 1) "\SystemRoot\..." -> "<WinDir>\..." （大小写不敏感）
+        static const std::wstring kSysRoot = L"\\SystemRoot\\";
+        if (startsWithCI(out, kSysRoot))
+        {
+            std::wstring winDir = getWinDirWithSep();
+            if (!winDir.empty())
+            {
+                out = winDir + out.substr(kSysRoot.size());
             }
         }
-        else if (out.find(L"\\??\\") == 0)
+        // 2) "\??\<rest>" -> "<rest>" （NT 对象命名空间前缀，后面通常是 <drive>:\...）
+        else if (startsWithCI(out, L"\\??\\"))
         {
-            out.replace(0, 4, L"");
+            out.erase(0, 4);
         }
+        // 3) "\Windows\..."（无盘符的 rooted 路径，Win7 某些驱动会以此形式返回）
+        //    直接交给 GetFullPathNameW 会用 CWD 的盘符填充，若游戏装在非系统盘则会
+        //    把内核组件错误映射到游戏盘。这里改用 GetWindowsDirectoryW 的盘符前缀。
+        else if (startsWithCI(out, L"\\Windows\\"))
+        {
+            std::wstring winDir = getWinDirWithSep();
+            if (winDir.size() >= 2 && winDir[1] == L':')
+            {
+                out = winDir.substr(0, 2) + out; // "<drive>:" + "\\Windows\\..."
+            }
+        }
+        // 4) 裸文件名或相对路径（如 "System32\\ntoskrnl.exe" / "ntoskrnl.exe"）
+        //    同样不能依赖 CWD；显式用 <WinDir>\ 作为基准路径。
+        else if (!out.empty() && out[0] != L'\\' && !(out.size() >= 2 && out[1] == L':'))
+        {
+            std::wstring winDir = getWinDirWithSep();
+            if (!winDir.empty())
+            {
+                out = winDir + out;
+            }
+        }
+
         return SystemNormalizePathLowercase(out);
     }
 
@@ -635,35 +684,85 @@ namespace SystemUtils
 
     bool IsSystemDirectoryPath(const std::wstring &path)
     {
-        struct SysDirs
+        struct SysDirsCache
         {
-            std::wstring sys32, syswow64, winsxs, drivers;
+            std::vector<std::wstring> prefixes; // 全部小写、结尾带反斜杠
         };
 
-        static const SysDirs s_sysDirs = []() -> SysDirs {
-            SysDirs dirs;
-            wchar_t winDirBuf[MAX_PATH] = {0};
-            if (GetWindowsDirectoryW(winDirBuf, MAX_PATH) > 0)
-            {
-                std::wstring winDir = winDirBuf;
+        static const SysDirsCache s_cache = []() -> SysDirsCache {
+            SysDirsCache c;
+
+            auto pushUnique = [&](const std::wstring &p) {
+                if (p.empty())
+                    return;
+                for (const auto &existing : c.prefixes)
+                {
+                    if (existing == p)
+                        return;
+                }
+                c.prefixes.push_back(p);
+            };
+
+            auto addWinDir = [&](const std::wstring &winDirRaw) {
+                if (winDirRaw.empty())
+                    return;
+                std::wstring winDir = winDirRaw;
                 std::transform(winDir.begin(), winDir.end(), winDir.begin(), ::towlower);
-                if (!winDir.empty() && winDir.back() != L'\\')
+                if (winDir.back() != L'\\')
                     winDir.push_back(L'\\');
-                dirs.sys32 = winDir + L"system32\\";
-                dirs.syswow64 = winDir + L"syswow64\\";
-                dirs.winsxs = winDir + L"winsxs\\";
-                dirs.drivers = winDir + L"system32\\drivers\\";
-            }
-            return dirs;
+                pushUnique(winDir + L"system32\\");
+                pushUnique(winDir + L"syswow64\\");
+                pushUnique(winDir + L"winsxs\\");
+                pushUnique(winDir + L"system32\\drivers\\");
+            };
+
+            // 多来源收集 Windows 目录，覆盖 Terminal Services、Ghost 还原、
+            // 多 Windows 安装以及 %SystemRoot% / %WinDir% 被重定向等非典型环境。
+            wchar_t buf[MAX_PATH] = {0};
+            if (GetWindowsDirectoryW(buf, MAX_PATH) > 0)
+                addWinDir(buf);
+            if (GetSystemWindowsDirectoryW(buf, MAX_PATH) > 0)
+                addWinDir(buf);
+            DWORD n = GetEnvironmentVariableW(L"SystemRoot", buf, MAX_PATH);
+            if (n > 0 && n < MAX_PATH)
+                addWinDir(buf);
+            n = GetEnvironmentVariableW(L"WinDir", buf, MAX_PATH);
+            if (n > 0 && n < MAX_PATH)
+                addWinDir(buf);
+
+            return c;
         }();
 
         std::wstring lower = path;
         std::transform(lower.begin(), lower.end(), lower.begin(), ::towlower);
 
-        if (lower.rfind(s_sysDirs.sys32, 0) == 0) return true;
-        if (lower.rfind(s_sysDirs.syswow64, 0) == 0) return true;
-        if (lower.rfind(s_sysDirs.winsxs, 0) == 0) return true;
-        if (lower.rfind(s_sysDirs.drivers, 0) == 0) return true;
+        // 1) 主匹配：任意已知 Windows 目录前缀命中即视为系统目录
+        for (const auto &pfx : s_cache.prefixes)
+        {
+            if (lower.rfind(pfx, 0) == 0)
+                return true;
+        }
+
+        // 2) 盘符无关回退：部分 Win7 机器上驱动路径经归一化后盘符与
+        //    GetWindowsDirectoryW 返回的盘符不一致（双系统 / Ghost 还原 / 多分区）。
+        //    只接受绝对 "[A-Z]:\windows\{system32|syswow64|winsxs|system32\\drivers}\..." 这种严格前缀，
+        //    不会误放 "d:\foo\windows\system32\..." 这类非系统路径。
+        if (lower.size() >= 3 && lower[1] == L':' && lower[2] == L'\\' &&
+            ((lower[0] >= L'a' && lower[0] <= L'z')))
+        {
+            static const wchar_t *const kWinRelSuffixes[] = {
+                L":\\windows\\system32\\",
+                L":\\windows\\syswow64\\",
+                L":\\windows\\winsxs\\",
+                L":\\windows\\system32\\drivers\\",
+            };
+            for (const wchar_t *s : kWinRelSuffixes)
+            {
+                size_t sl = wcslen(s);
+                if (lower.size() >= sl + 1 && lower.compare(1, sl, s) == 0)
+                    return true;
+            }
+        }
 
         return false;
     }
