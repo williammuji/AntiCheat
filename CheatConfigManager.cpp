@@ -845,6 +845,7 @@ void CheatConfigManager::SetDefaultValues(ConfigData& configData)
     configData.config->add_whitelisted_integrity_dirs("\\microsoft.microsoftpcmanager");
     configData.config->add_whitelisted_integrity_dirs("\\data\\browser\\");
     configData.config->add_whitelisted_integrity_dirs("\\gamerender\\");
+
     // Nahimic/AVolute audio enhancement (common on gaming laptops)
     configData.config->add_whitelisted_integrity_dirs("\\a-volute\\");
     configData.config->add_whitelisted_integrity_dirs("\\nahimic\\");
@@ -865,6 +866,41 @@ void CheatConfigManager::SetDefaultValues(ConfigData& configData)
     configData.config->add_whitelisted_integrity_dirs("\\onedrive\\");
     // 修复搜狗输入法路径匹配（实际路径可能是SougouInput）
     configData.config->add_whitelisted_integrity_dirs("\\sougouinput\\");
+
+
+    configData.config->add_whitelisted_integrity_dirs("\\qqpcmgr\\");
+    // 常见恢复/文档/模拟器类工具驱动目录（近期测试日志误报样本）
+    configData.config->add_whitelisted_integrity_dirs("\\program files\\mobileappengine\\");
+    configData.config->add_whitelisted_integrity_dirs("\\program files (x86)\\mobileappengine\\");
+    configData.config->add_whitelisted_integrity_dirs("\\program files\\pdfconverter\\");
+    configData.config->add_whitelisted_integrity_dirs("\\program files (x86)\\pdfconverter\\");
+    configData.config->add_whitelisted_integrity_dirs("\\program files\\masterpdf\\");
+    configData.config->add_whitelisted_integrity_dirs("\\program files (x86)\\masterpdf\\");
+    configData.config->add_whitelisted_integrity_dirs("\\program files\\iosrecovery\\");
+    configData.config->add_whitelisted_integrity_dirs("\\program files (x86)\\iosrecovery\\");
+    configData.config->add_whitelisted_integrity_dirs("\\program files\\datarecovery\\");
+    configData.config->add_whitelisted_integrity_dirs("\\program files (x86)\\datarecovery\\");
+    // Runtime DLL load 常见误报目录
+    configData.config->add_whitelisted_integrity_dirs("\\appdata\\local\\microsoft\\onedrive\\");
+    configData.config->add_whitelisted_integrity_dirs("\\program files\\teamviewer\\");
+    configData.config->add_whitelisted_integrity_dirs("\\program files (x86)\\teamviewer\\");
+    configData.config->add_whitelisted_integrity_dirs("\\windows\\netease\\booster\\");
+    configData.config->add_whitelisted_integrity_dirs("\\program files\\ifly info tek\\");
+    configData.config->add_whitelisted_integrity_dirs("\\program files (x86)\\ifly info tek\\");
+    configData.config->add_whitelisted_integrity_dirs("\\program files\\iflytek\\");
+    configData.config->add_whitelisted_integrity_dirs("\\program files (x86)\\iflytek\\");
+    configData.config->add_whitelisted_integrity_dirs("\\program files\\讯飞输入法\\");
+    configData.config->add_whitelisted_integrity_dirs("\\program files (x86)\\讯飞输入法\\");
+    configData.config->add_whitelisted_integrity_dirs("\\program files\\led player6.0\\");
+    configData.config->add_whitelisted_integrity_dirs("\\program files (x86)\\led player6.0\\");
+    configData.config->add_whitelisted_integrity_dirs("\\program files\\national instruments\\shared\\mdns responder\\");
+    configData.config->add_whitelisted_integrity_dirs("\\program files (x86)\\national instruments\\shared\\mdns responder\\");
+    configData.config->add_whitelisted_integrity_dirs("\\program files\\internet download manager\\");
+    configData.config->add_whitelisted_integrity_dirs("\\program files (x86)\\internet download manager\\");
+    configData.config->add_whitelisted_integrity_dirs("\\program files\\shiqiang\\wnime\\");
+    configData.config->add_whitelisted_integrity_dirs("\\program files (x86)\\shiqiang\\wnime\\");
+    configData.config->add_whitelisted_integrity_dirs("\\appdata\\roaming\\搜狐影音\\");
+
 
     configData.config->clear_whitelisted_integrity_files();
     configData.config->add_whitelisted_integrity_files("gameoverlayrenderer.dll");
@@ -898,6 +934,17 @@ void CheatConfigManager::SetDefaultValues(ConfigData& configData)
     // 安全/清理类工具驱动 (用户上报白名单)
     configData.config->add_whitelisted_integrity_files("ahflt.sys");
     configData.config->add_whitelisted_integrity_files("qmudisk64_ev.sys");
+    configData.config->add_whitelisted_integrity_files("qqsysmonx64.sys");
+    configData.config->add_whitelisted_integrity_files("qqsysmonx64_ev.sys");
+    configData.config->add_whitelisted_integrity_files("hwemudrv.sys");
+    configData.config->add_whitelisted_integrity_files("condrv_x64.sys");
+    configData.config->add_whitelisted_integrity_files("masterpdfdrv_x64.sys");
+    configData.config->add_whitelisted_integrity_files("iosrdrv_x64.sys");
+    configData.config->add_whitelisted_integrity_files("sslvpnredirector.dll");
+    configData.config->add_whitelisted_integrity_files("tv_w32.dll");
+    configData.config->add_whitelisted_integrity_files("nimdnsnsp.dll");
+    configData.config->add_whitelisted_integrity_files("idmmkb.dll");
+    configData.config->add_whitelisted_integrity_files("shhkapi.dll");
     // 调试组件
     configData.config->add_whitelisted_integrity_files("pdm.dll");
     configData.config->add_whitelisted_integrity_files("mdmui.dll");
