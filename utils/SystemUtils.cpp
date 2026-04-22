@@ -27,6 +27,33 @@ namespace SystemUtils
     static bool g_hasWindowsVersionOverrideForTesting = false;
     static WindowsVersion g_windowsVersionOverrideForTesting = WindowsVersion::Win_Unknown;
 
+    static std::wstring StripWin32PathPrefix(const std::wstring &path)
+    {
+        if (path.size() >= 8)
+        {
+            std::wstring prefix = path.substr(0, 8);
+            std::transform(prefix.begin(), prefix.end(), prefix.begin(), ::towlower);
+            if (prefix == L"\\\\?\\unc\\")
+            {
+                return L"\\" + path.substr(7); // "\\?\UNC\server\share" -> "\\server\share"
+            }
+        }
+
+        if (path.size() >= 4)
+        {
+            std::wstring prefix = path.substr(0, 4);
+            std::transform(prefix.begin(), prefix.end(), prefix.begin(), ::towlower);
+            if (prefix == L"\\\\?\\"
+                || prefix == L"\\\\.\\"
+                || prefix == L"\\??\\")
+            {
+                return path.substr(4);
+            }
+        }
+
+        return path;
+    }
+
     void EnsureNtApisLoaded()
     {
         HMODULE hNtdll = GetModuleHandleW(L"ntdll.dll");
@@ -337,8 +364,10 @@ namespace SystemUtils
     // Win32 compatible path normalization (No std::filesystem)
     std::wstring SystemNormalizePathLowercase(const std::wstring &input)
     {
+        std::wstring normalizedInput = StripWin32PathPrefix(input);
+
         wchar_t fullPath[MAX_PATH] = {0};
-        DWORD len = GetFullPathNameW(input.c_str(), MAX_PATH, fullPath, NULL);
+        DWORD len = GetFullPathNameW(normalizedInput.c_str(), MAX_PATH, fullPath, NULL);
 
         std::wstring s;
         if (len > 0 && len < MAX_PATH)
@@ -347,9 +376,10 @@ namespace SystemUtils
         }
         else
         {
-            s = input; // Fallback
+            s = normalizedInput; // Fallback
         }
 
+        s = StripWin32PathPrefix(s);
         std::transform(s.begin(), s.end(), s.begin(), ::towlower);
         return s;
     }
@@ -733,7 +763,7 @@ namespace SystemUtils
             return c;
         }();
 
-        std::wstring lower = path;
+        std::wstring lower = StripWin32PathPrefix(path);
         std::transform(lower.begin(), lower.end(), lower.begin(), ::towlower);
 
         // 1) 主匹配：任意已知 Windows 目录前缀命中即视为系统目录
