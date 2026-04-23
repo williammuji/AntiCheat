@@ -34,6 +34,7 @@ if(ANTICHEAT_ENABLE_UNIT_TESTS)
             unit/CheatConfigManagerTest.cpp
             unit/HdeDisasmTest.cpp
             unit/EngineOsGateTest.cpp
+            unit/CheatMonitorWatchdogTest.cpp
             unit/SensorMemorySecurityTest.cpp
             unit/SensorProcessHandleTest.cpp
             unit/SensorVehHookTest.cpp

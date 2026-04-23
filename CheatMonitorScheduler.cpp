@@ -42,8 +42,7 @@ void CheatMonitorEngine::WakeMonitor()
     WakeScanThread();
 }
 
-bool CheatMonitorEngine::JoinThreadWithTimeout(std::thread &thread, uint32_t timeoutMs, const char *threadName,
-                                               bool detachOnTimeout)
+bool CheatMonitorEngine::JoinThreadWithTimeout(std::thread &thread, uint32_t timeoutMs, const char *threadName)
 {
     if (!thread.joinable()) return true;
 
@@ -58,25 +57,18 @@ bool CheatMonitorEngine::JoinThreadWithTimeout(std::thread &thread, uint32_t tim
 
     if (waitResult == WAIT_TIMEOUT)
     {
-        if (detachOnTimeout)
-        {
-            LOG_WARNING_F(AntiCheatLogger::LogCategory::SYSTEM,
-                          "%s did not exit within %u ms, detaching stale thread handle", threadName, timeoutMs);
-            thread.detach();
-            return false;
-        }
-        thread.join();
-        return true;
+        LOG_ERROR_F(AntiCheatLogger::LogCategory::SYSTEM,
+                    "%s did not exit within %u ms; refusing to detach a live thread that still owns engine state",
+                    threadName, timeoutMs);
+        return false;
     }
 
-    LOG_WARNING_F(AntiCheatLogger::LogCategory::SYSTEM, "WaitForSingleObject failed on %s (code=%lu), detaching thread",
-                  threadName, GetLastError());
-    thread.detach();
+    LOG_ERROR_F(AntiCheatLogger::LogCategory::SYSTEM, "WaitForSingleObject failed on %s (code=%lu)", threadName,
+                GetLastError());
     return false;
 #else
     (void)timeoutMs;
     (void)threadName;
-    (void)detachOnTimeout;
     thread.join();
     return true;
 #endif
@@ -93,21 +85,13 @@ void CheatMonitorEngine::StartControlThread()
     m_controlThread = std::thread(&CheatMonitorEngine::ControlLoop, this, generation);
 }
 
-void CheatMonitorEngine::StopControlThread(bool allowDetachOnTimeout)
+bool CheatMonitorEngine::StopControlThread()
 {
-    std::thread threadToStop;
-    {
-        std::lock_guard<std::mutex> lock(m_threadLifecycleMutex);
-        m_controlThreadShouldRun.store(false, std::memory_order_relaxed);
-        m_controlWakeRequested.store(true, std::memory_order_relaxed);
-        m_controlCv.notify_all();
-        if (m_controlThread.joinable()) threadToStop = std::move(m_controlThread);
-    }
-
-    if (threadToStop.joinable())
-    {
-        JoinThreadWithTimeout(threadToStop, kControlThreadJoinTimeoutMs, "ControlThread", allowDetachOnTimeout);
-    }
+    std::lock_guard<std::mutex> lock(m_threadLifecycleMutex);
+    m_controlThreadShouldRun.store(false, std::memory_order_relaxed);
+    m_controlWakeRequested.store(true, std::memory_order_relaxed);
+    m_controlCv.notify_all();
+    return JoinThreadWithTimeout(m_controlThread, kControlThreadJoinTimeoutMs, "ControlThread");
 }
 
 void CheatMonitorEngine::StartScanThread()
@@ -121,21 +105,13 @@ void CheatMonitorEngine::StartScanThread()
     m_scanThread = std::thread(&CheatMonitorEngine::ScanLoop, this, generation);
 }
 
-void CheatMonitorEngine::StopScanThread(bool allowDetachOnTimeout)
+bool CheatMonitorEngine::StopScanThread()
 {
-    std::thread threadToStop;
-    {
-        std::lock_guard<std::mutex> lock(m_threadLifecycleMutex);
-        m_scanThreadShouldRun.store(false, std::memory_order_relaxed);
-        m_scanWakeRequested.store(true, std::memory_order_relaxed);
-        m_scanCv.notify_all();
-        if (m_scanThread.joinable()) threadToStop = std::move(m_scanThread);
-    }
-
-    if (threadToStop.joinable())
-    {
-        JoinThreadWithTimeout(threadToStop, kScanThreadJoinTimeoutMs, "ScanThread", allowDetachOnTimeout);
-    }
+    std::lock_guard<std::mutex> lock(m_threadLifecycleMutex);
+    m_scanThreadShouldRun.store(false, std::memory_order_relaxed);
+    m_scanWakeRequested.store(true, std::memory_order_relaxed);
+    m_scanCv.notify_all();
+    return JoinThreadWithTimeout(m_scanThread, kScanThreadJoinTimeoutMs, "ScanThread");
 }
 
 uint32_t CheatMonitorEngine::GetScanWatchdogStallSeconds() const
@@ -201,23 +177,27 @@ void CheatMonitorEngine::RebuildScanThread(const char *reason)
     AddEvidence(anti_cheat::RUNTIME_ERROR, detail);
     m_scanThreadDegraded.store(true, std::memory_order_relaxed);
 
-    std::thread staleThread;
     {
         std::lock_guard<std::mutex> lock(m_threadLifecycleMutex);
         m_scanThreadShouldRun.store(false, std::memory_order_relaxed);
         m_scanWakeRequested.store(true, std::memory_order_relaxed);
         m_scanCv.notify_all();
-        if (m_scanThread.joinable()) staleThread = std::move(m_scanThread);
 
         const uint64_t newGeneration = m_scanGeneration.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (!JoinThreadWithTimeout(m_scanThread, kScanThreadJoinTimeoutMs, "ScanThread(stale)"))
+        {
+            std::string blockedDetail =
+                    "Scan thread rebuild aborted because the stale thread did not exit before timeout";
+            LOG_ERROR(AntiCheatLogger::LogCategory::SYSTEM, blockedDetail);
+            SendServerLog("ERROR", "SYSTEM", blockedDetail);
+            AddEvidence(anti_cheat::RUNTIME_ERROR, blockedDetail);
+            return;
+        }
+
+        if (!m_isSystemActive.load()) return;
         m_scanThreadShouldRun.store(true, std::memory_order_relaxed);
         m_scanWakeRequested.store(false, std::memory_order_relaxed);
         m_scanThread = std::thread(&CheatMonitorEngine::ScanLoop, this, newGeneration);
-    }
-
-    if (staleThread.joinable())
-    {
-        JoinThreadWithTimeout(staleThread, kScanThreadJoinTimeoutMs, "ScanThread(stale)", true);
     }
 }
 
@@ -233,23 +213,27 @@ void CheatMonitorEngine::RebuildControlThread(const char *reason)
     AddEvidence(anti_cheat::RUNTIME_ERROR, detail);
     m_controlThreadDegraded.store(true, std::memory_order_relaxed);
 
-    std::thread staleThread;
     {
         std::lock_guard<std::mutex> lock(m_threadLifecycleMutex);
         m_controlThreadShouldRun.store(false, std::memory_order_relaxed);
         m_controlWakeRequested.store(true, std::memory_order_relaxed);
         m_controlCv.notify_all();
-        if (m_controlThread.joinable()) staleThread = std::move(m_controlThread);
 
         const uint64_t newGeneration = m_controlGeneration.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (!JoinThreadWithTimeout(m_controlThread, kControlThreadJoinTimeoutMs, "ControlThread(stale)"))
+        {
+            std::string blockedDetail =
+                    "Control thread rebuild aborted because the stale thread did not exit before timeout";
+            LOG_ERROR(AntiCheatLogger::LogCategory::SYSTEM, blockedDetail);
+            SendServerLog("ERROR", "SYSTEM", blockedDetail);
+            AddEvidence(anti_cheat::RUNTIME_ERROR, blockedDetail);
+            return;
+        }
+
+        if (!m_isSystemActive.load()) return;
         m_controlThreadShouldRun.store(true, std::memory_order_relaxed);
         m_controlWakeRequested.store(false, std::memory_order_relaxed);
         m_controlThread = std::thread(&CheatMonitorEngine::ControlLoop, this, newGeneration);
-    }
-
-    if (staleThread.joinable())
-    {
-        JoinThreadWithTimeout(staleThread, kControlThreadJoinTimeoutMs, "ControlThread(stale)", true);
     }
 }
 
@@ -329,12 +313,10 @@ void CheatMonitorEngine::MarkControlThreadProgress(uint64_t generation)
     m_controlProgressCounter.fetch_add(1, std::memory_order_relaxed);
 }
 
-uint64_t CheatMonitorEngine::BuildSessionGuardValue(bool active)
+uint64_t CheatMonitorEngine::BuildSessionGuardValueLocked(uint32_t userId, const std::string &userName, bool active) const
 {
-    std::lock_guard<std::mutex> lock(m_sessionMutex);
-
-    uint64_t userHash = static_cast<uint64_t>(m_currentUserId) * 0x9e3779b185ebca87ull;
-    for (char c : m_currentUserName)
+    uint64_t userHash = static_cast<uint64_t>(userId) * 0x9e3779b185ebca87ull;
+    for (char c : userName)
     {
         userHash ^= static_cast<unsigned char>(c);
         userHash *= 1099511628211ull;
@@ -344,22 +326,52 @@ uint64_t CheatMonitorEngine::BuildSessionGuardValue(bool active)
     return m_sessionGuardSecret ^ userHash ^ activeSalt;
 }
 
+void CheatMonitorEngine::ApplyPlayerLogin(uint32_t userId, const std::string &userName)
+{
+    std::lock_guard<std::mutex> lock(m_sessionMutex);
+    m_currentUserId = userId;
+    m_currentUserName = userName;
+    m_expectedSessionActive.store(true, std::memory_order_relaxed);
+    m_isSessionActive.store(true, std::memory_order_relaxed);
+    m_sessionStateGuard.store(BuildSessionGuardValueLocked(userId, userName, true), std::memory_order_relaxed);
+}
+
+uint64_t CheatMonitorEngine::BuildSessionGuardValue(bool active)
+{
+    std::lock_guard<std::mutex> lock(m_sessionMutex);
+    return BuildSessionGuardValueLocked(m_currentUserId, m_currentUserName, active);
+}
+
 void CheatMonitorEngine::UpdateSessionGuard(bool active)
 {
-    m_sessionStateGuard.store(BuildSessionGuardValue(active), std::memory_order_relaxed);
+    std::lock_guard<std::mutex> lock(m_sessionMutex);
+    m_sessionStateGuard.store(BuildSessionGuardValueLocked(m_currentUserId, m_currentUserName, active),
+                              std::memory_order_relaxed);
 }
 
 bool CheatMonitorEngine::ValidateAndRepairSessionState()
 {
-    const bool expected = m_expectedSessionActive.load(std::memory_order_relaxed);
-    const bool observed = m_isSessionActive.load(std::memory_order_relaxed);
-    const uint64_t expectedGuard = BuildSessionGuardValue(expected);
-    const uint64_t observedGuard = m_sessionStateGuard.load(std::memory_order_relaxed);
+    bool expected = false;
+    bool observed = false;
+    uint64_t expectedGuard = 0;
+    uint64_t observedGuard = 0;
+    std::string detail;
 
-    if (observed == expected && observedGuard == expectedGuard) return true;
+    {
+        std::lock_guard<std::mutex> lock(m_sessionMutex);
+        expected = m_expectedSessionActive.load(std::memory_order_relaxed);
+        observed = m_isSessionActive.load(std::memory_order_relaxed);
+        expectedGuard = BuildSessionGuardValueLocked(m_currentUserId, m_currentUserName, expected);
+        observedGuard = m_sessionStateGuard.load(std::memory_order_relaxed);
 
-    m_isSessionActive.store(expected, std::memory_order_relaxed);
-    m_sessionStateGuard.store(expectedGuard, std::memory_order_relaxed);
+        if (observed == expected && observedGuard == expectedGuard) return true;
+
+        m_isSessionActive.store(expected, std::memory_order_relaxed);
+        m_sessionStateGuard.store(expectedGuard, std::memory_order_relaxed);
+        detail = "Session state tamper suspected: observed_active=" + std::to_string(observed ? 1 : 0) +
+                 ", expected_active=" + std::to_string(expected ? 1 : 0) +
+                 ", guard_match=" + std::to_string(observedGuard == expectedGuard ? 1 : 0);
+    }
 
     const uint64_t nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
                                    std::chrono::system_clock::now().time_since_epoch())
@@ -368,9 +380,6 @@ bool CheatMonitorEngine::ValidateAndRepairSessionState()
     if (lastAlert != 0 && nowMs - lastAlert < 5000) return false;
     m_lastSessionGuardAlertMs.store(nowMs, std::memory_order_relaxed);
 
-    std::string detail = "Session state tamper suspected: observed_active=" + std::to_string(observed ? 1 : 0) +
-                         ", expected_active=" + std::to_string(expected ? 1 : 0) +
-                         ", guard_match=" + std::to_string(observedGuard == expectedGuard ? 1 : 0);
     LOG_ERROR(AntiCheatLogger::LogCategory::SYSTEM, detail);
     SendServerLog("ERROR", "SYSTEM", detail);
     AddEvidence(anti_cheat::RUNTIME_ERROR, detail);
@@ -483,7 +492,7 @@ void CheatMonitorEngine::ControlLoop(uint64_t generation)
 
     if (generation == m_controlGeneration.load(std::memory_order_relaxed))
     {
-        StopScanThread(true);
+        StopScanThread();
     }
 }
 
@@ -578,6 +587,10 @@ void CheatMonitorEngine::ResetSessionState()
         std::lock_guard<std::mutex> lock(m_sessionMutex);
         m_currentUserId = 0;
         m_currentUserName.clear();
+        m_expectedSessionActive.store(false, std::memory_order_relaxed);
+        m_isSessionActive.store(false, std::memory_order_relaxed);
+        m_sessionStateGuard.store(BuildSessionGuardValueLocked(m_currentUserId, m_currentUserName, false),
+                                  std::memory_order_relaxed);
         m_uniqueEvidence.clear();
         m_evidences.clear();
         m_lastReported.clear();
@@ -601,8 +614,6 @@ void CheatMonitorEngine::ResetSessionState()
         m_targetedScanQueue.clear();
         m_consumedTargetedScanIds.clear();
     }
-    m_expectedSessionActive.store(false, std::memory_order_relaxed);
-    UpdateSessionGuard(false);
     LOG_INFO(AntiCheatLogger::LogCategory::SYSTEM, "Session state reset completed");
 }
 

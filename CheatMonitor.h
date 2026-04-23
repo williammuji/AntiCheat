@@ -35,6 +35,7 @@ class CheatMonitor final
     CheatMonitor &operator=(const CheatMonitor &) = delete;
 
     std::unique_ptr<Pimpl> m_pimpl;
+    bool m_shutdownQuarantined = false;
 };
 
 #define sCheatMonitor CheatMonitor::GetInstance()
