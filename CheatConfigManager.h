@@ -85,6 +85,10 @@ class CheatConfigManager
 
     // [新增] 心跳配置
     int32_t GetHeartbeatIntervalSeconds() const;       // 心跳上报间隔(秒)
+    int32_t GetScanWatchdogStallSeconds() const;       // Scan线程看门狗卡顿阈值(秒)
+    int32_t GetControlWatchdogStallSeconds() const;    // Control线程看门狗卡顿阈值(秒)
+    int32_t GetThreadRebuildLimitCount() const;        // 看门狗重建次数上限(窗口内)
+    int32_t GetThreadRebuildLimitWindowSeconds() const;// 看门狗重建窗口长度(秒)
 
     // [新增] 官方第三方库白名单配置
     struct TrustedThirdPartyModule
@@ -142,6 +146,7 @@ class CheatConfigManager
     std::shared_ptr<ConfigData> GetCurrentConfig() const;
 
     void SetDefaultValues(ConfigData& configData);
+    void SanitizeRuntimeConfig(ConfigData& configData);
     void UpdateWideStringCaches(ConfigData& configData);
     // 客户端不再进行配置签名校验
 

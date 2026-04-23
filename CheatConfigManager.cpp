@@ -13,6 +13,15 @@ std::wstring StringToWide(const std::string& str);
 std::string WideToString(const std::wstring& wstr);
 }  // namespace Utils
 
+namespace
+{
+template <typename T>
+T ClampValue(T value, T minValue, T maxValue)
+{
+    return std::max(minValue, std::min(maxValue, value));
+}
+}
+
 // --- 单例实现 ---
 CheatConfigManager& CheatConfigManager::GetInstance()
 {
@@ -57,6 +66,7 @@ void CheatConfigManager::UpdateConfigFromServer(const std::string& server_data)
         return;
     }
 
+    SanitizeRuntimeConfig(*new_config_data);
     UpdateWideStringCaches(*new_config_data);
 
     // 原子地交换指针
@@ -285,7 +295,27 @@ bool CheatConfigManager::IsSnapshotUploadEnabled() const
 
 int32_t CheatConfigManager::GetHeartbeatIntervalSeconds() const
 {
-    return GetCurrentConfig()->config->heartbeat_interval_seconds();
+    return ClampValue(GetCurrentConfig()->config->heartbeat_interval_seconds(), 1, 120);
+}
+
+int32_t CheatConfigManager::GetScanWatchdogStallSeconds() const
+{
+    return ClampValue(GetCurrentConfig()->config->scan_watchdog_stall_seconds(), 3, 30);
+}
+
+int32_t CheatConfigManager::GetControlWatchdogStallSeconds() const
+{
+    return ClampValue(GetCurrentConfig()->config->control_watchdog_stall_seconds(), 3, 30);
+}
+
+int32_t CheatConfigManager::GetThreadRebuildLimitCount() const
+{
+    return ClampValue(GetCurrentConfig()->config->thread_rebuild_limit_count(), 1, 30);
+}
+
+int32_t CheatConfigManager::GetThreadRebuildLimitWindowSeconds() const
+{
+    return ClampValue(GetCurrentConfig()->config->thread_rebuild_limit_window_seconds(), 5, 600);
 }
 
 std::string CheatConfigManager::GetHmacKey() const
@@ -794,6 +824,10 @@ void CheatConfigManager::SetDefaultValues(ConfigData& configData)
 
     // 新增：心跳配置
     configData.config->set_heartbeat_interval_seconds(60);  // 默认60秒心跳
+    configData.config->set_scan_watchdog_stall_seconds(5);  // 默认5秒无进展判定扫描线程卡死
+    configData.config->set_control_watchdog_stall_seconds(5); // 默认5秒无进展判定控制线程卡死
+    configData.config->set_thread_rebuild_limit_count(3);   // 默认窗口内最多重建3次
+    configData.config->set_thread_rebuild_limit_window_seconds(60); // 默认重建窗口60秒
 
     // 默认不启用签名（hmac_key为空）
     configData.config->set_hmac_key("");
@@ -998,6 +1032,22 @@ void CheatConfigManager::SetDefaultValues(ConfigData& configData)
     // 不再在客户端生成/校验配置签名：配置下发已在传输层加密与鉴权
 
     UpdateWideStringCaches(configData);
+}
+
+void CheatConfigManager::SanitizeRuntimeConfig(ConfigData& configData)
+{
+    auto* cfg = configData.config.get();
+    cfg->set_base_scan_interval_seconds(ClampValue(cfg->base_scan_interval_seconds(), 1, 3600));
+    cfg->set_heavy_scan_interval_minutes(ClampValue(cfg->heavy_scan_interval_minutes(), 1, 360));
+    cfg->set_report_upload_interval_minutes(ClampValue(cfg->report_upload_interval_minutes(), 1, 360));
+    cfg->set_sensor_stats_upload_interval_minutes(ClampValue(cfg->sensor_stats_upload_interval_minutes(), 1, 360));
+    cfg->set_snapshot_upload_interval_minutes(ClampValue(cfg->snapshot_upload_interval_minutes(), 1, 360));
+    cfg->set_heartbeat_interval_seconds(ClampValue(cfg->heartbeat_interval_seconds(), 1, 120));
+
+    cfg->set_scan_watchdog_stall_seconds(ClampValue(cfg->scan_watchdog_stall_seconds(), 3, 30));
+    cfg->set_control_watchdog_stall_seconds(ClampValue(cfg->control_watchdog_stall_seconds(), 3, 30));
+    cfg->set_thread_rebuild_limit_count(ClampValue(cfg->thread_rebuild_limit_count(), 1, 30));
+    cfg->set_thread_rebuild_limit_window_seconds(ClampValue(cfg->thread_rebuild_limit_window_seconds(), 5, 600));
 }
 
 void CheatConfigManager::UpdateWideStringCaches(ConfigData& configData)

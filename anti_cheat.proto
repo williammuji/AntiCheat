@@ -468,6 +468,12 @@ message ClientConfig {
   repeated string whitelisted_integrity_files = 38;
 
   optional string hmac_key = 40;  // 用于报文签名的 HMAC 密钥
+
+  // --- 线程看门狗与自愈 ---
+  optional int32 scan_watchdog_stall_seconds = 41;         // Scan线程连续无进展阈值(秒)
+  optional int32 control_watchdog_stall_seconds = 42;      // Control线程连续无进展阈值(秒)
+  optional int32 thread_rebuild_limit_count = 43;          // 重建窗口内允许的最大重建次数
+  optional int32 thread_rebuild_limit_window_seconds = 44; // 重建窗口长度(秒)
 }
 
 // 官方认可的第三方库配置

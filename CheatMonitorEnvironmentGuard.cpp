@@ -131,6 +131,14 @@ void CheatMonitorEngine::OnConfigUpdated()
     LOG_INFO_F(AntiCheatLogger::LogCategory::SECURITY, "协议安全配置更新: HMAC签名=%s",
                hmacKey.empty() ? "禁用" : "启用");
 
+    LOG_INFO_F(AntiCheatLogger::LogCategory::SYSTEM,
+               "Runtime watchguards updated: heartbeat=%ds, scan_watchdog=%ds, control_watchdog=%ds, rebuild_limit=%d/%ds",
+               CheatConfigManager::GetInstance().GetHeartbeatIntervalSeconds(),
+               CheatConfigManager::GetInstance().GetScanWatchdogStallSeconds(),
+               CheatConfigManager::GetInstance().GetControlWatchdogStallSeconds(),
+               CheatConfigManager::GetInstance().GetThreadRebuildLimitCount(),
+               CheatConfigManager::GetInstance().GetThreadRebuildLimitWindowSeconds());
+
     // Process pending DLL loads now that whitelist config is available
     ProcessPendingDllLoads();
 }

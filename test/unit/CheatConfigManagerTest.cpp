@@ -39,3 +39,25 @@ TEST(CheatConfigManagerTest, UpdateConfigFromServerOverridesFields)
     auto it = std::find(names->begin(), names->end(), L"custom_cheat");
     EXPECT_NE(it, names->end());
 }
+
+TEST(CheatConfigManagerTest, RuntimeSafetyBoundsAreClamped)
+{
+    anti_cheat::ClientConfig config;
+    config.set_heartbeat_interval_seconds(99999);
+    config.set_scan_watchdog_stall_seconds(0);
+    config.set_control_watchdog_stall_seconds(-20);
+    config.set_thread_rebuild_limit_count(1000);
+    config.set_thread_rebuild_limit_window_seconds(1);
+
+    std::string payload;
+    ASSERT_TRUE(config.SerializeToString(&payload));
+
+    CheatConfigManager &cfg = CheatConfigManager::GetInstance();
+    cfg.UpdateConfigFromServer(payload);
+
+    EXPECT_EQ(cfg.GetHeartbeatIntervalSeconds(), 120);
+    EXPECT_EQ(cfg.GetScanWatchdogStallSeconds(), 3);
+    EXPECT_EQ(cfg.GetControlWatchdogStallSeconds(), 3);
+    EXPECT_EQ(cfg.GetThreadRebuildLimitCount(), 30);
+    EXPECT_EQ(cfg.GetThreadRebuildLimitWindowSeconds(), 5);
+}

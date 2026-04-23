@@ -16,6 +16,7 @@
 #include <condition_variable>
 #include <mutex>
 #include <unordered_set>
+#include <unordered_map>
 #include <set>
 #include <map>
 #include <vector>
@@ -34,10 +35,27 @@ struct CheatMonitorEngine
     std::atomic<bool> m_hasServerConfig = false;
     std::atomic<bool> m_processBaselineEstablished = false;
 
-    std::thread m_monitorThread;
-    std::condition_variable m_cv;
-    std::mutex m_cvMutex;
-    std::atomic<bool> m_wakeRequested{false};
+    std::thread m_controlThread;
+    std::thread m_scanThread;
+    std::mutex m_threadLifecycleMutex;
+
+    std::condition_variable m_controlCv;
+    std::mutex m_controlCvMutex;
+    std::atomic<bool> m_controlWakeRequested{false};
+    std::atomic<bool> m_controlThreadShouldRun{false};
+    std::atomic<bool> m_controlThreadAlive{false};
+    std::atomic<uint64_t> m_controlProgressCounter{0};
+    std::atomic<uint64_t> m_controlGeneration{0};
+    std::atomic<bool> m_controlThreadDegraded{false};
+
+    std::condition_variable m_scanCv;
+    std::mutex m_scanCvMutex;
+    std::atomic<bool> m_scanWakeRequested{false};
+    std::atomic<bool> m_scanThreadShouldRun{false};
+    std::atomic<bool> m_scanThreadAlive{false};
+    std::atomic<uint64_t> m_scanProgressCounter{0};
+    std::atomic<uint64_t> m_scanGeneration{0};
+    std::atomic<bool> m_scanThreadDegraded{false};
 
     std::mutex m_modulePathsMutex;
     std::unordered_set<std::wstring> m_legitimateModulePaths;
@@ -45,6 +63,10 @@ struct CheatMonitorEngine
     std::mutex m_sessionMutex;
     uint32_t m_currentUserId = 0;
     std::string m_currentUserName;
+    std::atomic<bool> m_expectedSessionActive{false};
+    std::atomic<uint64_t> m_sessionStateGuard{0};
+    uint64_t m_sessionGuardSecret = 0;
+    std::atomic<uint64_t> m_lastSessionGuardAlertMs{0};
     std::set<std::pair<anti_cheat::CheatCategory, std::string>> m_uniqueEvidence;
     std::vector<anti_cheat::Evidence> m_evidences;
     bool m_evidenceOverflowed = false;
@@ -130,6 +152,8 @@ struct CheatMonitorEngine
         std::string requestId;
         std::string sensorName;
     };
+    std::mutex m_targetedScanIngressMutex;
+    std::deque<TargetedScanRequest> m_targetedScanIngressQueue;
     std::mutex m_targetedScanMutex;
     std::deque<TargetedScanRequest> m_targetedScanQueue;
     std::unordered_set<std::string> m_consumedTargetedScanIds;
@@ -161,11 +185,41 @@ struct CheatMonitorEngine
         EXCEPTION = 3
     };
 
+    static constexpr uint32_t kDefaultScanWatchdogStallSeconds = 5;
+    static constexpr uint32_t kDefaultControlWatchdogStallSeconds = 5;
+    static constexpr uint32_t kDefaultThreadRebuildLimitCount = 3;
+    static constexpr uint32_t kDefaultThreadRebuildLimitWindowSeconds = 60;
+    static constexpr uint32_t kScanThreadJoinTimeoutMs = 200;
+    static constexpr uint32_t kControlThreadJoinTimeoutMs = 200;
+
+    std::mutex m_watchdogRebuildMutex;
+    std::deque<std::chrono::steady_clock::time_point> m_scanRebuildHistory;
+    std::deque<std::chrono::steady_clock::time_point> m_controlRebuildHistory;
+
     void InitializeSystem();
     void InitializeProcessBaseline();
     void ResetSessionState();
     void OnConfigUpdated();
-    void MonitorLoop();
+    void ControlLoop(uint64_t generation);
+    void ScanLoop(uint64_t generation);
+    void StartControlThread();
+    void StopControlThread(bool allowDetachOnTimeout);
+    void StartScanThread();
+    void StopScanThread(bool allowDetachOnTimeout);
+    void RebuildScanThread(const char *reason);
+    void RebuildControlThread(const char *reason);
+    void EvaluateScanThreadWatchdog(uint64_t &lastProgressCounter, uint32_t &stalledSeconds);
+    void EvaluateControlThreadWatchdog(uint64_t &lastProgressCounter, uint32_t &stalledSeconds);
+    uint32_t GetScanWatchdogStallSeconds() const;
+    uint32_t GetControlWatchdogStallSeconds() const;
+    void MarkScanThreadProgress(uint64_t generation);
+    void MarkControlThreadProgress(uint64_t generation);
+    bool ConsumeThreadRebuildBudget(std::deque<std::chrono::steady_clock::time_point> &history, const char *threadName);
+    uint64_t BuildSessionGuardValue(bool active);
+    void UpdateSessionGuard(bool active);
+    bool ValidateAndRepairSessionState();
+    static bool JoinThreadWithTimeout(std::thread &thread, uint32_t timeoutMs, const char *threadName,
+                                      bool detachOnTimeout);
 
     const std::chrono::milliseconds GetLightScanInterval() const;
     const std::chrono::milliseconds GetHeavyScanInterval() const;
@@ -176,7 +230,10 @@ struct CheatMonitorEngine
                                                   anti_cheat::SensorFailureReason *outFailure = nullptr,
                                                   int *outDurationMs = nullptr);
     void AddRandomJitter();
+    void WakeControlThread();
+    void WakeScanThread();
     void WakeMonitor();
+    void ProcessInboundTargetedScans();
     void ProcessPendingTargetedScans();
     void RunTargetedSensorScan(const TargetedScanRequest &request);
     void SubmitTargetedScanRequest(const std::string &requestId, const std::string &sensorName);
