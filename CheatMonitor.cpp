@@ -29,7 +29,6 @@ CheatMonitor::~CheatMonitor() { Shutdown(); }
 
 bool CheatMonitor::Initialize()
 {
-    if (m_shutdownQuarantined) return false;
     if (!m_pimpl)
     {
         m_pimpl = std::make_unique<Pimpl>();
@@ -49,7 +48,14 @@ void CheatMonitor::OnPlayerLogin(uint32_t user_id, const std::string &user_name)
             m_pimpl->SendServerLog("ERROR", "SYSTEM", "Rejected forged OnPlayerLogin call from illegitimate module");
             return;
         }
-        m_pimpl->ApplyPlayerLogin(user_id, user_name);
+        {
+            std::lock_guard<std::mutex> lock(m_pimpl->m_sessionMutex);
+            m_pimpl->m_currentUserId = user_id;
+            m_pimpl->m_currentUserName = user_name;
+        }
+        m_pimpl->m_isSessionActive = true;
+        m_pimpl->m_expectedSessionActive.store(true, std::memory_order_relaxed);
+        m_pimpl->UpdateSessionGuard(true);
         m_pimpl->m_hasServerConfig = true;
         m_pimpl->WakeMonitor();
     }
@@ -65,6 +71,9 @@ void CheatMonitor::OnPlayerLogout()
             m_pimpl->SendServerLog("ERROR", "SYSTEM", "Rejected forged OnPlayerLogout call from illegitimate module");
             return;
         }
+        m_pimpl->m_expectedSessionActive.store(false, std::memory_order_relaxed);
+        m_pimpl->m_isSessionActive = false;
+        m_pimpl->UpdateSessionGuard(false);
         m_pimpl->ResetSessionState();
     }
 }
@@ -75,16 +84,8 @@ void CheatMonitor::Shutdown()
     {
         m_pimpl->m_isSystemActive = false;
         m_pimpl->WakeMonitor();
-        const bool controlStopped = m_pimpl->StopControlThread();
-        const bool scanStopped = m_pimpl->StopScanThread();
-        if (!controlStopped || !scanStopped)
-        {
-            LOG_ERROR(AntiCheatLogger::LogCategory::SYSTEM,
-                      "Shutdown quarantined engine instance because a live watchdog thread could not be joined safely");
-            (void)m_pimpl.release();
-            m_shutdownQuarantined = true;
-            return;
-        }
+        m_pimpl->StopControlThread(true);
+        m_pimpl->StopScanThread(true);
     }
     m_pimpl.reset();
 }

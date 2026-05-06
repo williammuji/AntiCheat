@@ -203,9 +203,9 @@ struct CheatMonitorEngine
     void ControlLoop(uint64_t generation);
     void ScanLoop(uint64_t generation);
     void StartControlThread();
-    bool StopControlThread();
+    void StopControlThread(bool allowDetachOnTimeout);
     void StartScanThread();
-    bool StopScanThread();
+    void StopScanThread(bool allowDetachOnTimeout);
     void RebuildScanThread(const char *reason);
     void RebuildControlThread(const char *reason);
     void EvaluateScanThreadWatchdog(uint64_t &lastProgressCounter, uint32_t &stalledSeconds);
@@ -215,12 +215,11 @@ struct CheatMonitorEngine
     void MarkScanThreadProgress(uint64_t generation);
     void MarkControlThreadProgress(uint64_t generation);
     bool ConsumeThreadRebuildBudget(std::deque<std::chrono::steady_clock::time_point> &history, const char *threadName);
-    void ApplyPlayerLogin(uint32_t userId, const std::string &userName);
-    uint64_t BuildSessionGuardValueLocked(uint32_t userId, const std::string &userName, bool active) const;
     uint64_t BuildSessionGuardValue(bool active);
     void UpdateSessionGuard(bool active);
     bool ValidateAndRepairSessionState();
-    static bool JoinThreadWithTimeout(std::thread &thread, uint32_t timeoutMs, const char *threadName);
+    static bool JoinThreadWithTimeout(std::thread &thread, uint32_t timeoutMs, const char *threadName,
+                                      bool detachOnTimeout);
 
     const std::chrono::milliseconds GetLightScanInterval() const;
     const std::chrono::milliseconds GetHeavyScanInterval() const;
