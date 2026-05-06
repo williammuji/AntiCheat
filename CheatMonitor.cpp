@@ -10,14 +10,6 @@ struct CheatMonitor::Pimpl : public CheatMonitorEngine
 {
 };
 
-namespace
-{
-bool ShouldEnforceControlApiCaller(const CheatMonitor::Pimpl *pimpl)
-{
-    return pimpl && pimpl->m_processBaselineEstablished.load(std::memory_order_relaxed);
-}
-}
-
 CheatMonitor &CheatMonitor::GetInstance()
 {
     static CheatMonitor instance;
@@ -33,7 +25,7 @@ bool CheatMonitor::Initialize()
     {
         m_pimpl = std::make_unique<Pimpl>();
         m_pimpl->m_isSystemActive = true;
-        m_pimpl->StartControlThread();
+        m_pimpl->m_monitorThread = std::thread(&CheatMonitorEngine::MonitorLoop, m_pimpl.get());
     }
     return true;
 }
@@ -42,20 +34,10 @@ void CheatMonitor::OnPlayerLogin(uint32_t user_id, const std::string &user_name)
 {
     if (m_pimpl)
     {
-        if (ShouldEnforceControlApiCaller(m_pimpl.get()) && !m_pimpl->IsAddressInLegitimateModule(_ReturnAddress()))
-        {
-            m_pimpl->AddEvidence(anti_cheat::RUNTIME_ERROR, "Rejected forged OnPlayerLogin call from illegitimate module");
-            m_pimpl->SendServerLog("ERROR", "SYSTEM", "Rejected forged OnPlayerLogin call from illegitimate module");
-            return;
-        }
-        {
-            std::lock_guard<std::mutex> lock(m_pimpl->m_sessionMutex);
-            m_pimpl->m_currentUserId = user_id;
-            m_pimpl->m_currentUserName = user_name;
-        }
+        std::lock_guard<std::mutex> lock(m_pimpl->m_sessionMutex);
+        m_pimpl->m_currentUserId = user_id;
+        m_pimpl->m_currentUserName = user_name;
         m_pimpl->m_isSessionActive = true;
-        m_pimpl->m_expectedSessionActive.store(true, std::memory_order_relaxed);
-        m_pimpl->UpdateSessionGuard(true);
         m_pimpl->m_hasServerConfig = true;
         m_pimpl->WakeMonitor();
     }
@@ -65,15 +47,7 @@ void CheatMonitor::OnPlayerLogout()
 {
     if (m_pimpl)
     {
-        if (ShouldEnforceControlApiCaller(m_pimpl.get()) && !m_pimpl->IsAddressInLegitimateModule(_ReturnAddress()))
-        {
-            m_pimpl->AddEvidence(anti_cheat::RUNTIME_ERROR, "Rejected forged OnPlayerLogout call from illegitimate module");
-            m_pimpl->SendServerLog("ERROR", "SYSTEM", "Rejected forged OnPlayerLogout call from illegitimate module");
-            return;
-        }
-        m_pimpl->m_expectedSessionActive.store(false, std::memory_order_relaxed);
         m_pimpl->m_isSessionActive = false;
-        m_pimpl->UpdateSessionGuard(false);
         m_pimpl->ResetSessionState();
     }
 }
@@ -84,8 +58,10 @@ void CheatMonitor::Shutdown()
     {
         m_pimpl->m_isSystemActive = false;
         m_pimpl->WakeMonitor();
-        m_pimpl->StopControlThread(true);
-        m_pimpl->StopScanThread(true);
+        if (m_pimpl->m_monitorThread.joinable())
+        {
+            m_pimpl->m_monitorThread.join();
+        }
     }
     m_pimpl.reset();
 }
@@ -94,13 +70,6 @@ void CheatMonitor::OnServerConfigUpdated()
 {
     if (m_pimpl)
     {
-        if (ShouldEnforceControlApiCaller(m_pimpl.get()) && !m_pimpl->IsAddressInLegitimateModule(_ReturnAddress()))
-        {
-            m_pimpl->AddEvidence(anti_cheat::RUNTIME_ERROR,
-                                 "Rejected forged OnServerConfigUpdated call from illegitimate module");
-            m_pimpl->SendServerLog("ERROR", "SYSTEM", "Rejected forged OnServerConfigUpdated call from illegitimate module");
-            return;
-        }
         m_pimpl->OnConfigUpdated();
         m_pimpl->m_hasServerConfig = true;
         m_pimpl->WakeMonitor();
@@ -114,34 +83,12 @@ void CheatMonitor::SetGameWindow(void *hwnd)
 
 void CheatMonitor::SubmitTargetedSensorRequest(const std::string &request_id, const std::string &sensor_name)
 {
-    if (m_pimpl)
-    {
-        if (ShouldEnforceControlApiCaller(m_pimpl.get()) && !m_pimpl->IsAddressInLegitimateModule(_ReturnAddress()))
-        {
-            m_pimpl->AddEvidence(anti_cheat::RUNTIME_ERROR,
-                                 "Rejected forged SubmitTargetedSensorRequest call from illegitimate module");
-            m_pimpl->SendServerLog("ERROR", "SYSTEM",
-                                   "Rejected forged SubmitTargetedSensorRequest call from illegitimate module");
-            return;
-        }
-        m_pimpl->SubmitTargetedScanRequest(request_id, sensor_name);
-    }
+    if (m_pimpl) m_pimpl->SubmitTargetedScanRequest(request_id, sensor_name);
 }
 
 void CheatMonitor::SubmitTargetedSensorRequest(const anti_cheat::TargetedSensorCommand &command)
 {
-    if (m_pimpl)
-    {
-        if (ShouldEnforceControlApiCaller(m_pimpl.get()) && !m_pimpl->IsAddressInLegitimateModule(_ReturnAddress()))
-        {
-            m_pimpl->AddEvidence(anti_cheat::RUNTIME_ERROR,
-                                 "Rejected forged SubmitTargetedSensorRequest(proto) call from illegitimate module");
-            m_pimpl->SendServerLog("ERROR", "SYSTEM",
-                                   "Rejected forged SubmitTargetedSensorRequest(proto) call from illegitimate module");
-            return;
-        }
-        m_pimpl->SubmitTargetedScanRequest(command.request_id(), command.sensor_name());
-    }
+    if (m_pimpl) m_pimpl->SubmitTargetedScanRequest(command.request_id(), command.sensor_name());
 }
 
 void CheatMonitor::UploadSnapshot()
@@ -174,9 +121,6 @@ CheatMonitorEngine::CheatMonitorEngine()
     }
     session[36] = 0;
     m_sessionId = session;
-    m_sessionGuardSecret = (static_cast<uint64_t>(m_rng()) << 32) ^ static_cast<uint64_t>(m_rng());
-    m_expectedSessionActive.store(false, std::memory_order_relaxed);
-    UpdateSessionGuard(false);
 }
 
 CheatMonitorEngine::~CheatMonitorEngine()
