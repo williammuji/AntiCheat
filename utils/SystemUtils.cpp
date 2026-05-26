@@ -243,27 +243,54 @@ namespace SystemUtils
         return strTo;
     }
 
-    static bool GetModuleCodeSectionInfoInternal(HMODULE hModule, PVOID *outBase, DWORD *outSize)
+    const char *ModuleCodeSectionInfoStatusToString(ModuleCodeSectionInfoStatus status)
     {
+        switch (status)
+        {
+            case ModuleCodeSectionInfoStatus::Success:
+                return "success";
+            case ModuleCodeSectionInfoStatus::InvalidArgument:
+                return "invalid_argument";
+            case ModuleCodeSectionInfoStatus::DosHeaderInvalid:
+                return "dos_header_invalid";
+            case ModuleCodeSectionInfoStatus::NtHeaderInvalid:
+                return "nt_header_invalid";
+            case ModuleCodeSectionInfoStatus::NoCodeSection:
+                return "no_code_section";
+            case ModuleCodeSectionInfoStatus::MemoryAccessException:
+                return "memory_access_exception";
+            default:
+                return "unknown";
+        }
+    }
+
+    static ModuleCodeSectionInfoResult GetModuleCodeSectionInfoInternal(HMODULE hModule, PVOID *outBase, DWORD *outSize)
+    {
+        ModuleCodeSectionInfoResult result;
         if (!hModule || !outBase || !outSize)
-            return false;
+            return result;
 
         const BYTE *baseAddress = reinterpret_cast<const BYTE *>(hModule);
 
         __try
         {
             const auto *pDosHeader = reinterpret_cast<const IMAGE_DOS_HEADER *>(baseAddress);
+            result.dosMagic = pDosHeader->e_magic;
             if (pDosHeader->e_magic != IMAGE_DOS_SIGNATURE)
             {
-                return false;
+                result.status = ModuleCodeSectionInfoStatus::DosHeaderInvalid;
+                return result;
             }
 
             const auto *pNtHeaders = reinterpret_cast<const IMAGE_NT_HEADERS *>(baseAddress + pDosHeader->e_lfanew);
+            result.ntSignature = pNtHeaders->Signature;
             if (pNtHeaders->Signature != IMAGE_NT_SIGNATURE)
             {
-                return false;
+                result.status = ModuleCodeSectionInfoStatus::NtHeaderInvalid;
+                return result;
             }
 
+            result.numberOfSections = pNtHeaders->FileHeader.NumberOfSections;
             PIMAGE_SECTION_HEADER pSectionHeader = IMAGE_FIRST_SECTION(pNtHeaders);
             int codeSectionCount = 0;
             for (int i = 0; i < pNtHeaders->FileHeader.NumberOfSections; i++, pSectionHeader++)
@@ -275,39 +302,46 @@ namespace SystemUtils
                     {
                         *outBase = (PVOID)(baseAddress + pSectionHeader->VirtualAddress);
                         *outSize = pSectionHeader->Misc.VirtualSize;
-                        return true;
+                        result.success = true;
+                        result.status = ModuleCodeSectionInfoStatus::Success;
+                        return result;
                     }
                 }
             }
 
-            return false;
+            result.status = ModuleCodeSectionInfoStatus::NoCodeSection;
+            return result;
         }
         __except (EXCEPTION_EXECUTE_HANDLER)
         {
             DWORD exceptionCode = GetExceptionCode();
             LOG_WARNING_F(AntiCheatLogger::LogCategory::SYSTEM,
                           "GetModuleCodeSectionInfo SEH Exception: hModule=0x%p, code=0x%08X", hModule, exceptionCode);
-            return false;
+            result.status = ModuleCodeSectionInfoStatus::MemoryAccessException;
+            result.exceptionCode = exceptionCode;
+            return result;
         }
     }
 
-    bool GetModuleCodeSectionInfo(HMODULE hModule, PVOID &outBase, DWORD &outSize)
+    ModuleCodeSectionInfoResult GetModuleCodeSectionInfoDetailed(HMODULE hModule, PVOID &outBase, DWORD &outSize)
     {
+        outBase = nullptr;
+        outSize = 0;
         if (!hModule)
-            return false;
+            return ModuleCodeSectionInfoResult{};
 
         wchar_t modulePath[MAX_PATH] = {0};
         GetModuleFileNameW(hModule, modulePath, MAX_PATH);
 
         PVOID tempBase = nullptr;
         DWORD tempSize = 0;
-        bool result = GetModuleCodeSectionInfoInternal(hModule, &tempBase, &tempSize);
+        ModuleCodeSectionInfoResult result = GetModuleCodeSectionInfoInternal(hModule, &tempBase, &tempSize);
 
-        if (result)
+        if (result.success)
         {
             outBase = tempBase;
             outSize = tempSize;
-            return true;
+            return result;
         }
 
         std::string modulePathStr = "未知模块";
@@ -317,9 +351,15 @@ namespace SystemUtils
         }
 
         LOG_DEBUG_F(AntiCheatLogger::LogCategory::SYSTEM,
-                    "GetModuleCodeSectionInfo: 未找到代码节, hModule=0x%p, 模块路径=%s", hModule, modulePathStr.c_str());
+                    "GetModuleCodeSectionInfo: 代码节解析失败, status=%s, hModule=0x%p, 模块路径=%s",
+                    ModuleCodeSectionInfoStatusToString(result.status), hModule, modulePathStr.c_str());
 
-        return false;
+        return result;
+    }
+
+    bool GetModuleCodeSectionInfo(HMODULE hModule, PVOID &outBase, DWORD &outSize)
+    {
+        return GetModuleCodeSectionInfoDetailed(hModule, outBase, outSize).success;
     }
 
     CallerValidationResult CheckCallerAddressSafe(PVOID caller_address)

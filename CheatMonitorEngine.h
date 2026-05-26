@@ -199,6 +199,8 @@ struct CheatMonitorEngine
     void UploadSensorExecutionStatsReport();
     void RecordSensorWorkloadCounters(const std::string &name, uint64_t snapshot_size, uint64_t attempts,
                                       uint64_t hits);
+    void RecordSensorDiagnosticCounter(const std::string &name, const std::string &key, uint64_t delta);
+    void RecordSensorDiagnosticValue(const std::string &name, const std::string &key, const std::string &value);
     void AddEvidence(anti_cheat::CheatCategory category, const std::string &description);
 
     bool IsCurrentOsSupported() const;

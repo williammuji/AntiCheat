@@ -9,6 +9,7 @@
 #include <iomanip>
 #include <vector>
 #include <memory>
+#include <limits>
 
 bool ThreadActivitySensor::IsIgnorableNtStatus(NTSTATUS status)
 {
@@ -32,7 +33,8 @@ SensorExecutionResult ThreadActivitySensor::Execute(SensorRuntimeContext &contex
         return SensorExecutionResult::FAILURE;
     }
 
-    const int budget_ms = CheatConfigManager::GetInstance().GetHeavyScanBudgetMs();
+    const int budget_ms = context.IsTargetedScan() ? std::numeric_limits<int>::max()
+                                                   : CheatConfigManager::GetInstance().GetHeavyScanBudgetMs();
     const auto startTime = std::chrono::steady_clock::now();
 
     if (!SystemUtils::g_pNtQueryInformationThread)
@@ -58,6 +60,7 @@ SensorExecutionResult ThreadActivitySensor::Execute(SensorRuntimeContext &contex
 bool ThreadActivitySensor::ScanThreadsWithTimeout(SensorRuntimeContext &context, int budget_ms,
                                                   const std::chrono::steady_clock::time_point &startTime)
 {
+    const bool targetedScan = context.IsTargetedScan();
     int threadCount = 0;
     bool hasSystemFailure = false;
     bool timeoutOccurred = false;
@@ -75,7 +78,8 @@ bool ThreadActivitySensor::ScanThreadsWithTimeout(SensorRuntimeContext &context,
                 if (threadCount % 25 == 0)
                 {
                     auto now = std::chrono::steady_clock::now();
-                    if (std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count() > budget_ms)
+                    if (!targetedScan &&
+                        std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count() > budget_ms)
                     {
                         LOG_WARNING(AntiCheatLogger::LogCategory::SENSOR,
                                     "ThreadActivitySensor: 线程扫描超时");

@@ -24,8 +24,10 @@ private:
        DWORD codeSize;
        bool valid;
        bool isSpecial; // 缓存特殊模块标记
+       SystemUtils::ModuleCodeSectionInfoResult codeSectionResult;
    };
    std::unordered_map<HMODULE, CachedModuleInfo> m_moduleCache;
+   std::unordered_set<std::wstring> m_reportedUnsignedProtectedAssets;
 
    SensorExecutionResult ProcessModuleCodeIntegrity(HMODULE hModule, const CachedModuleInfo &info, SensorRuntimeContext &context,
                                    const std::unordered_map<std::wstring, std::vector<uint8_t>> &baselineHashes,
@@ -36,4 +38,5 @@ private:
    static bool IsWritableCodeProtection(DWORD protect);
    static bool ShouldLearnTrustedBaseline(bool validationTrusted);
    static bool ShouldEmitTamperEvidence(bool isSelfModule, bool isWhitelisted);
+   void MaybeReportUnsignedProtectedAsset(HMODULE hModule, const CachedModuleInfo &info, SensorRuntimeContext &context);
 };

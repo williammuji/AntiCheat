@@ -15,7 +15,8 @@ private:
    bool IsModuleInUnifiedWhitelist(const std::wstring &modulePath, SensorRuntimeContext &context) const;
    bool IsAddressWhitelisted(PVOID address, SensorRuntimeContext &context) const;
    SensorExecutionResult CheckModuleExports(HMODULE hMod, SensorRuntimeContext& context,
-                                            std::chrono::steady_clock::time_point startTime, int budgetMs);
+                                            std::chrono::steady_clock::time_point startTime, int budgetMs,
+                                            bool targetedScan);
    void CheckFunction(BYTE* pFunc, const char* funcName, SensorRuntimeContext& context);
    void CheckHotpatchPreamble(BYTE* pPreamble, const char* funcName, SensorRuntimeContext& context);
 };

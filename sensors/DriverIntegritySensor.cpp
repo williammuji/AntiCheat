@@ -9,6 +9,7 @@
 #include <vector>
 #include <unordered_set>
 #include <algorithm>
+#include <limits>
 #include <psapi.h>
 
 #pragma comment(lib, "wintrust.lib")
@@ -45,9 +46,12 @@ namespace
 
 SensorExecutionResult DriverIntegritySensor::Execute(SensorRuntimeContext &context)
 {
+    const bool targetedScan = context.IsTargetedScan();
     auto startTime = std::chrono::steady_clock::now();
-    int budgetMs = CheatConfigManager::GetInstance().GetHeavyScanBudgetMs();
+    int budgetMs = targetedScan ? std::numeric_limits<int>::max()
+                                : CheatConfigManager::GetInstance().GetHeavyScanBudgetMs();
     if (budgetMs <= 0) budgetMs = 1500; // Default fallback
+    context.RecordSensorDiagnosticValue("DriverIntegritySensor", "scan_mode", targetedScan ? "targeted" : "periodic");
 
     m_lastFailureReason = anti_cheat::UNKNOWN_FAILURE;
 
@@ -55,14 +59,20 @@ SensorExecutionResult DriverIntegritySensor::Execute(SensorRuntimeContext &conte
     DWORD cbNeeded;
     if (!EnumDeviceDrivers(drivers, sizeof(drivers), &cbNeeded))
     {
+        context.RecordSensorDiagnosticCounter("DriverIntegritySensor", "enum_device_drivers_failed_count", 1);
+        context.RecordSensorDiagnosticValue("DriverIntegritySensor", "last_enum_device_drivers_error",
+                                            Utils::FormatString("0x%08X", GetLastError()));
         RecordFailure(anti_cheat::SYSTEM_API_CALL_FAILED);
         return SensorExecutionResult::FAILURE;
     }
 
     int cDrivers = cbNeeded / sizeof(drivers[0]);
+    context.RecordSensorDiagnosticValue("DriverIntegritySensor", "last_driver_count",
+                                        std::to_string(static_cast<uint64_t>(cDrivers)));
     if (cDrivers == 0)
     {
         LOG_WARNING(AntiCheatLogger::LogCategory::SENSOR, "DriverIntegritySensor: No drivers found");
+        context.RecordSensorDiagnosticCounter("DriverIntegritySensor", "empty_driver_snapshot_count", 1);
         RecordFailure(anti_cheat::SYSTEM_API_CALL_FAILED);
         return SensorExecutionResult::FAILURE;
     }
@@ -71,8 +81,10 @@ SensorExecutionResult DriverIntegritySensor::Execute(SensorRuntimeContext &conte
 
     // 游标使用「驱动基地址（uintptr_t）」而非数组下标，保证驱动列表顺序变化时不偏移。
     // GetDriverCursorOffset() 保存的是上次超时时 drivers[i] 的地址值，0 表示从头开始。
-    uintptr_t resumeAddr = static_cast<uintptr_t>(context.GetDriverCursorOffset());
+    uintptr_t resumeAddr = targetedScan ? 0 : static_cast<uintptr_t>(context.GetDriverCursorOffset());
     bool resumeFound = (resumeAddr == 0); // 若为 0，从第一个开始
+    int processedDrivers = 0;
+    int suspiciousDrivers = 0;
 
     for (int i = 0; i < cDrivers; i++)
     {
@@ -90,15 +102,21 @@ SensorExecutionResult DriverIntegritySensor::Execute(SensorRuntimeContext &conte
         {
             auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - startTime).count();
-            if (elapsed > budgetMs)
+            if (!targetedScan && elapsed > budgetMs)
             {
                 // 保存当前驱动的基地址作为游标
                 context.SetDriverCursorOffset(static_cast<size_t>(reinterpret_cast<uintptr_t>(drivers[i])));
+                context.RecordSensorDiagnosticCounter("DriverIntegritySensor", "timeout_count", 1);
+                context.RecordSensorDiagnosticValue("DriverIntegritySensor", "last_timeout_index",
+                                                    std::to_string(static_cast<uint64_t>(i)));
+                context.RecordSensorDiagnosticValue("DriverIntegritySensor", "last_timeout_elapsed_ms",
+                                                    std::to_string(static_cast<uint64_t>(elapsed)));
                 LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR,
                            "DriverIntegritySensor 扫描超时: 索引=%d/%d，已保存驱动地址游标", i, cDrivers);
                 return SensorExecutionResult::TIMEOUT;
             }
         }
+        processedDrivers++;
 
         // 先以文件基名匹配 Windows 内核组件白名单：这些模块由内核 / SMSS 加载，
         // 路径归一化失败时不应被误判为可疑驱动。
@@ -150,6 +168,11 @@ SensorExecutionResult DriverIntegritySensor::Execute(SensorRuntimeContext &conte
                 }
 
                 std::string u8Path = Utils::WideToString(driverPath);
+                suspiciousDrivers++;
+                context.RecordSensorDiagnosticCounter("DriverIntegritySensor", "suspicious_driver_evidence_count", 1);
+                context.RecordSensorDiagnosticValue("DriverIntegritySensor", "last_suspicious_driver_path", u8Path);
+                context.RecordSensorDiagnosticValue("DriverIntegritySensor", "last_suspicious_driver_reason",
+                                                    validation.reason);
                 context.AddEvidence(anti_cheat::ENVIRONMENT_SUSPICIOUS_DRIVER,
                     "Suspicious driver (Reason: " + validation.reason + "): " + u8Path);
             }
@@ -166,5 +189,9 @@ SensorExecutionResult DriverIntegritySensor::Execute(SensorRuntimeContext &conte
 
     // 全部扫描完成，重置游标
     context.SetDriverCursorOffset(0);
+    context.RecordSensorWorkloadCounters("DriverIntegritySensor", static_cast<uint64_t>(cDrivers),
+                                         static_cast<uint64_t>(processedDrivers),
+                                         static_cast<uint64_t>(suspiciousDrivers));
+    context.RecordSensorDiagnosticValue("DriverIntegritySensor", "last_driver_cursor_next", "0");
     return SensorExecutionResult::SUCCESS;
 }

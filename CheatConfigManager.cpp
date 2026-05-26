@@ -777,9 +777,9 @@ void CheatConfigManager::SetDefaultValues(ConfigData& configData)
     configData.config->set_max_window_count(300);        // 最大窗口数量限制(300个) - 适应多窗口环境
 
     // [新增] ProcessHandleSensor配置参数 (CRITICAL级 - 分段扫描)
-    configData.config->set_max_handle_scan_count(800000);  // 最大句柄扫描数量(800K) - 基于A/B测试，成功耗时仅116ms
+    configData.config->set_max_handle_scan_count(1500000);  // 最大句柄扫描数量(1.5M) - 覆盖百万级句柄膨胀场景
     configData.config->set_initial_buffer_size_mb(16);     // 初始缓冲区大小(16MB) - 增加以覆盖90k+句柄场景, 减少扩容
-    configData.config->set_max_buffer_size_mb(64);         // 最大缓冲区大小(64MB) - 处理大量句柄场景
+    configData.config->set_max_buffer_size_mb(128);        // 最大缓冲区大小(128MB) - 避免百万级句柄快照触发缓冲区超限
     configData.config->set_max_pid_attempts_per_scan(
             2000);                                     // 单次扫描最多尝试的新PID数量(2000个) - 性能富余，大幅增加覆盖率
     configData.config->set_max_modules_per_scan(512);  // ModuleIntegritySensor单次扫描模块数(512个) - 尝试扫描所有模块

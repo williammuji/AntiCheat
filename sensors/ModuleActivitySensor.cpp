@@ -7,6 +7,7 @@
 #include <vector>
 #include <algorithm>
 #include <sstream>
+#include <limits>
 
 bool ModuleActivitySensor::ShouldReportUnknownModule(bool isWhitelisted, const Utils::ModuleValidationResult &validation)
 {
@@ -30,7 +31,8 @@ SensorExecutionResult ModuleActivitySensor::Execute(SensorRuntimeContext &contex
         return SensorExecutionResult::FAILURE;
     }
 
-    const int budget_ms = CheatConfigManager::GetInstance().GetHeavyScanBudgetMs();
+    const int budget_ms = context.IsTargetedScan() ? std::numeric_limits<int>::max()
+                                                   : CheatConfigManager::GetInstance().GetHeavyScanBudgetMs();
     const auto startTime = std::chrono::steady_clock::now();
 
     // 3. 扫描模块（新活动检测）
@@ -50,6 +52,7 @@ SensorExecutionResult ModuleActivitySensor::Execute(SensorRuntimeContext &contex
 bool ModuleActivitySensor::ScanModulesWithTimeout(SensorRuntimeContext &context, int budget_ms,
                                                   const std::chrono::steady_clock::time_point &startTime)
 {
+    const bool targetedScan = context.IsTargetedScan();
     int moduleCount = 0;
     bool timeoutOccurred = false;
 
@@ -78,7 +81,8 @@ bool ModuleActivitySensor::ScanModulesWithTimeout(SensorRuntimeContext &context,
         if (moduleCount % 15 == 0)
         {
             auto now = std::chrono::steady_clock::now();
-            if (std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count() > budget_ms)
+            if (!targetedScan &&
+                std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count() > budget_ms)
             {
                 LOG_WARNING(AntiCheatLogger::LogCategory::SENSOR, "ModuleActivitySensor: 模块扫描超时");
                 RecordFailure(anti_cheat::MODULE_SCAN_TIMEOUT);
@@ -88,7 +92,7 @@ bool ModuleActivitySensor::ScanModulesWithTimeout(SensorRuntimeContext &context,
         }
         moduleCount++;
 
-        if (context.IsModuleKnown(hModule))
+        if (!targetedScan && context.IsModuleKnown(hModule))
         {
             continue;
         }

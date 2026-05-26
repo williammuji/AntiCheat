@@ -4,6 +4,7 @@
 #include "Logger.h"
 #include "CheatConfigManager.h"
 #include <algorithm>
+#include <limits>
 #include <sstream>
 
 bool VehHookSensor::IsExecutableProtection(DWORD prot)
@@ -24,6 +25,7 @@ SensorExecutionResult VehHookSensor::Execute(SensorRuntimeContext &context)
 {
     // 重置失败原因
     m_lastFailureReason = anti_cheat::UNKNOWN_FAILURE;
+    const bool targetedScan = context.IsTargetedScan();
 
     // 策略1：配置版本门控 - 检查当前OS版本是否满足配置的最低要求
     if (!IsOsSupported(context))
@@ -66,7 +68,8 @@ SensorExecutionResult VehHookSensor::Execute(SensorRuntimeContext &context)
         return SensorExecutionResult::FAILURE;
     }
 
-    const int budget_ms = CheatConfigManager::GetInstance().GetHeavyScanBudgetMs();
+    const int budget_ms = targetedScan ? std::numeric_limits<int>::max()
+                                       : CheatConfigManager::GetInstance().GetHeavyScanBudgetMs();
     const auto startTime = std::chrono::steady_clock::now();
 
     LIST_ENTRY *pHead = nullptr;
@@ -90,7 +93,7 @@ SensorExecutionResult VehHookSensor::Execute(SensorRuntimeContext &context)
 
     // 策略5：保守的处理器枚举
     std::vector<PVOID> handlers;
-    auto traverseResult = TraverseVehListSafe(pHead, budget_ms);
+    auto traverseResult = TraverseVehListSafe(pHead, budget_ms, targetedScan);
     if (!traverseResult.success)
     {
         if (traverseResult.exceptionCode != 0)
@@ -120,7 +123,8 @@ SensorExecutionResult VehHookSensor::Execute(SensorRuntimeContext &context)
         // The viewed SensorRuntimeContext does not expose it either directly.
         // I will assume CheatConfigManager works or default to 50 if failing compilation.
         // Assuming CheatConfigManager has GetMaxVehHandlersToScan() based on CheatMonitor.cpp code.
-        const size_t maxHandlers = (size_t)CheatConfigManager::GetInstance().GetMaxVehHandlersToScan();
+        const size_t maxHandlers = targetedScan ? handlers.size()
+                                                : (size_t)CheatConfigManager::GetInstance().GetMaxVehHandlersToScan();
         const size_t checkCount = std::min(handlers.size(), maxHandlers);
 
         LOG_INFO_F(AntiCheatLogger::LogCategory::SENSOR, "VEH检测: 发现%zu个处理器，检查前%zu个", handlers.size(),
@@ -134,7 +138,7 @@ SensorExecutionResult VehHookSensor::Execute(SensorRuntimeContext &context)
                 auto now = std::chrono::steady_clock::now();
                 auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count();
 
-                if (elapsed_ms > budget_ms)
+                if (!targetedScan && elapsed_ms > budget_ms)
                 {
                     LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR,
                                   "VEH检测超时，已检查%zu/%zu个处理器，耗时%ldms", i, checkCount, elapsed_ms);
@@ -218,7 +222,8 @@ VehHookSensor::VehAccessResult VehHookSensor::AccessVehStructSafe(uintptr_t base
     return result;
 }
 
-VehHookSensor::VehTraverseResult VehHookSensor::TraverseVehListSafe(LIST_ENTRY *pHead, int budget_ms)
+VehHookSensor::VehTraverseResult VehHookSensor::TraverseVehListSafe(LIST_ENTRY *pHead, int budget_ms,
+                                                                    bool targetedScan)
 {
     VehTraverseResult result = {false, {0}, 0, 0};
     __try
@@ -234,7 +239,8 @@ VehHookSensor::VehTraverseResult VehHookSensor::TraverseVehListSafe(LIST_ENTRY *
             if (safetyCounter % 5 == 0)
             {
                 auto now = std::chrono::steady_clock::now();
-                if (std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count() >= budget_ms)
+                if (!targetedScan &&
+                    std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count() >= budget_ms)
                 {
                     result.success = false;  // 超时视为失败
                     return result;           // Timeout

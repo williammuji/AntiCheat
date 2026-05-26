@@ -5,6 +5,7 @@
 #include "utils/Utils.h"
 #include "CheatConfigManager.h"
 #include <algorithm>
+#include <limits>
 #include <memory>
 
 bool ProcessHandleSensor::HasSuspiciousProcessAccessMask(ULONG grantedAccess)
@@ -139,17 +140,33 @@ SensorExecutionResult ProcessHandleSensor::Execute(SensorRuntimeContext &context
 {
     // 重置失败原因
     m_lastFailureReason = anti_cheat::UNKNOWN_FAILURE;
+    const bool targetedScan = context.IsTargetedScan();
+    auto recordCounter = [&](const std::string &key, uint64_t delta = 1) {
+        context.RecordSensorDiagnosticCounter("ProcessHandleSensor", key, delta);
+    };
+    auto recordValue = [&](const std::string &key, uint64_t value) {
+        context.RecordSensorDiagnosticValue("ProcessHandleSensor", key, std::to_string(value));
+    };
+    auto recordText = [&](const std::string &key, const std::string &value) {
+        context.RecordSensorDiagnosticValue("ProcessHandleSensor", key, value);
+    };
+    recordText("scan_mode", targetedScan ? "targeted" : "periodic");
+    recordValue("config_initial_buffer_size_mb", CheatConfigManager::GetInstance().GetInitialBufferSizeMb());
+    recordValue("config_max_buffer_size_mb", CheatConfigManager::GetInstance().GetMaxBufferSizeMb());
+    recordValue("config_max_handle_scan_count", CheatConfigManager::GetInstance().GetMaxHandleScanCount());
 
     // 1. 配置版本门控
     if (!IsOsSupported(context))
     {
         LOG_DEBUG(AntiCheatLogger::LogCategory::SENSOR, "进程句柄检测已禁用：当前OS版本低于配置最低要求");
+        recordCounter("os_unsupported_count");
         RecordFailure(anti_cheat::PROCESS_HANDLE_OS_VERSION_UNSUPPORTED);
         return SensorExecutionResult::FAILURE;
     }
 
     // 获取超时预算
-    const int budget_ms = CheatConfigManager::GetInstance().GetHeavyScanBudgetMs();
+    const int budget_ms = targetedScan ? std::numeric_limits<int>::max()
+                                       : CheatConfigManager::GetInstance().GetHeavyScanBudgetMs();
     const auto startTime = std::chrono::steady_clock::now();
     const auto nowCleanup = startTime;  // 用于清理过期缓存
 
@@ -157,6 +174,7 @@ SensorExecutionResult ProcessHandleSensor::Execute(SensorRuntimeContext &context
     if (!SystemUtils::g_pNtQuerySystemInformation)
     {
         LOG_ERROR(AntiCheatLogger::LogCategory::SENSOR, "ProcessHandleSensor: NtQuerySystemInformation API不可用");
+        recordCounter("ntquery_api_missing_count");
         RecordFailure(anti_cheat::PROCESS_HANDLE_QUERY_SYSTEM_INFO_FAILED);
         return SensorExecutionResult::FAILURE;
     }
@@ -212,18 +230,27 @@ SensorExecutionResult ProcessHandleSensor::Execute(SensorRuntimeContext &context
         if (status == STATUS_INFO_LENGTH_MISMATCH)
         {
             size_t newSize = bufferManager.size * 2;
+            recordCounter("ntquery_length_mismatch_count");
+            recordValue("last_buffer_size_bytes", static_cast<uint64_t>(bufferManager.size));
+            recordValue("last_buffer_resize_requested_bytes", static_cast<uint64_t>(newSize));
             if (!bufferManager.Resize(newSize))
             {
                 LOG_ERROR_F(AntiCheatLogger::LogCategory::SENSOR,
                             "ProcessHandleSensor: 缓冲区大小超过限制 (%zu bytes)，跳过扫描", newSize);
+                recordCounter("buffer_size_exceeded_count");
+                recordValue("last_failure_retry_count", static_cast<uint64_t>(retries));
                 RecordFailure(anti_cheat::PROCESS_HANDLE_BUFFER_SIZE_EXCEEDED);
                 return SensorExecutionResult::FAILURE;
             }
             retries++;
+            recordValue("last_retry_count", static_cast<uint64_t>(retries));
             if (ShouldAbortDueToRetryCount(retries))
             {
                 LOG_ERROR_F(AntiCheatLogger::LogCategory::SENSOR,
                             "ProcessHandleSensor: 获取句柄信息重试过多 (%d次)，跳过扫描", retries);
+                recordCounter("retry_exceeded_count");
+                recordValue("last_failure_retry_count", static_cast<uint64_t>(retries));
+                recordValue("last_buffer_size_bytes", static_cast<uint64_t>(bufferManager.size));
                 RecordFailure(anti_cheat::PROCESS_HANDLE_RETRY_EXCEEDED);
                 return SensorExecutionResult::FAILURE;
             }
@@ -234,6 +261,8 @@ SensorExecutionResult ProcessHandleSensor::Execute(SensorRuntimeContext &context
         {
             LOG_DEBUG(AntiCheatLogger::LogCategory::SENSOR,
                       "ProcessHandleSensor: 扩展句柄信息类不可用，回退到旧结构");
+            recordCounter("legacy_fallback_count");
+            recordText("last_extended_query_status", Utils::FormatString("0x%08X", status));
             useLegacy = true;
             bufferManager.Reset();
             retries = 0;
@@ -246,6 +275,10 @@ SensorExecutionResult ProcessHandleSensor::Execute(SensorRuntimeContext &context
     {
         LOG_ERROR_F(AntiCheatLogger::LogCategory::SENSOR,
                     "ProcessHandleSensor: NtQuerySystemInformation失败，状态码: 0x%08X", status);
+        recordCounter("ntquery_failed_count");
+        recordText("last_ntquery_status", Utils::FormatString("0x%08X", status));
+        recordValue("last_buffer_size_bytes", static_cast<uint64_t>(bufferManager.size));
+        recordValue("last_retry_count", static_cast<uint64_t>(retries));
         RecordFailure(anti_cheat::PROCESS_HANDLE_QUERY_SYSTEM_INFO_FAILED);
         return SensorExecutionResult::FAILURE;
     }
@@ -255,15 +288,25 @@ SensorExecutionResult ProcessHandleSensor::Execute(SensorRuntimeContext &context
     const void *pHandleInfoLegacy = reinterpret_cast<const void *>(bufferManager.buffer);
     ULONG_PTR totalHandles = useLegacy ? (ULONG_PTR)((const SYSTEM_HANDLE_INFORMATION_LEGACY *)pHandleInfoLegacy)->NumberOfHandles
                                        : (ULONG_PTR)((const SYSTEM_HANDLE_INFORMATION_EX *)pHandleInfoEx)->NumberOfHandles;
-    if (totalHandles > kMaxHandlesToScan)
+    recordValue("last_total_handles", static_cast<uint64_t>(totalHandles));
+    recordValue("last_effective_buffer_size_bytes", static_cast<uint64_t>(bufferManager.size));
+    recordText("last_handle_info_class", useLegacy ? "legacy" : "extended");
+    if (targetedScan && totalHandles > kMaxHandlesToScan)
+    {
+        recordCounter("targeted_handle_count_limit_ignored_count");
+    }
+    if (!targetedScan && totalHandles > kMaxHandlesToScan)
     {
         // 优化：自适应策略 - 如果句柄数超限但不是太离谱（<150%），仍然尝试扫描但减少处理量
-        double handleRatio = static_cast<double>(totalHandles) / kMaxHandlesToScan;
+        double handleRatio = (kMaxHandlesToScan == 0) ? std::numeric_limits<double>::infinity()
+                                                      : static_cast<double>(totalHandles) / kMaxHandlesToScan;
         if (!IsSevereHandleOverflow(totalHandles, kMaxHandlesToScan))
         {
             LOG_INFO_F(AntiCheatLogger::LogCategory::SENSOR,
                        "ProcessHandleSensor: 系统句柄数量略超上限 (%lu > %lu, 超出%.1f%%)，启用降级扫描模式",
                        (ULONG)totalHandles, kMaxHandlesToScan, (handleRatio - 1.0) * 100.0);
+            recordCounter("handle_count_soft_limit_count");
+            recordValue("last_handle_count_ratio_x100", static_cast<uint64_t>(handleRatio * 100.0));
             // 继续执行，但会通过游标机制自动限制扫描量
         }
         else
@@ -274,15 +317,19 @@ SensorExecutionResult ProcessHandleSensor::Execute(SensorRuntimeContext &context
                     "ProcessHandleSensor: 系统句柄数量严重超限 (%lu > %lu, 超出%.1f%%)，跳过扫描以确保系统性能。"
                     "建议：1) 检查系统是否有句柄泄漏 2) 考虑增加max_handle_scan_count配置值",
                     (ULONG)totalHandles, kMaxHandlesToScan, (handleRatio - 1.0) * 100.0);
+            recordCounter("handle_count_exceeded_count");
+            recordValue("last_handle_count_ratio_x100",
+                        kMaxHandlesToScan == 0 ? 0 : static_cast<uint64_t>(handleRatio * 100.0));
             RecordFailure(anti_cheat::PROCESS_HANDLE_HANDLE_COUNT_EXCEEDED);
             return SensorExecutionResult::FAILURE;
         }
     }
 
     // 记录句柄数量统计信息（仅在DEBUG级别）
+    const ULONG maxHandlesForRatio = std::max<ULONG>(1, kMaxHandlesToScan);
     LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR,
                 "ProcessHandleSensor: 开始扫描 %lu 个系统句柄 (上限: %lu, 使用率: %.1f%%)%s", (ULONG)totalHandles,
-                kMaxHandlesToScan, static_cast<double>(totalHandles) / kMaxHandlesToScan * 100.0,
+                kMaxHandlesToScan, static_cast<double>(totalHandles) / maxHandlesForRatio * 100.0,
                 useLegacy ? " [LEGACY]" : "");
 
     // 8. 主扫描循环
@@ -290,6 +337,7 @@ SensorExecutionResult ProcessHandleSensor::Execute(SensorRuntimeContext &context
     if (ownPid == 0)
     {
         LOG_ERROR(AntiCheatLogger::LogCategory::SENSOR, "ProcessHandleSensor: GetCurrentProcessId失败");
+        recordCounter("get_current_process_id_failed_count");
         RecordFailure(anti_cheat::PROCESS_HANDLE_GET_PROCESS_ID_FAILED);
         return SensorExecutionResult::FAILURE;
     }
@@ -319,11 +367,14 @@ SensorExecutionResult ProcessHandleSensor::Execute(SensorRuntimeContext &context
 
     // 游标 + 限额（时间片遍历）
     ULONG_PTR total = totalHandles;
-    ULONG_PTR cursorStart = (total > 0) ? (ULONG_PTR)(context.GetHandleCursorOffset() % total) : 0;
-    const int maxPidAttempts = std::max(1, CheatConfigManager::GetInstance().GetMaxPidAttemptsPerScan());
+    ULONG_PTR cursorStart = (!targetedScan && total > 0) ? (ULONG_PTR)(context.GetHandleCursorOffset() % total) : 0;
+    const int maxPidAttempts = targetedScan ? std::numeric_limits<int>::max()
+                                            : std::max(1, CheatConfigManager::GetInstance().GetMaxPidAttemptsPerScan());
     int pidAttempts = 0;
     ULONG_PTR entriesVisited = 0;
     auto &pidTtlMap = context.GetPidThrottleUntil();
+    recordValue("last_cursor_start", static_cast<uint64_t>(cursorStart));
+    recordValue("last_max_pid_attempts", static_cast<uint64_t>(maxPidAttempts));
 
     // 提取公共逻辑到 Lambda 或 Helper
     auto ProcessEntry = [&](DWORD ownerPid, HANDLE handleValue, ULONG grantedAccess) -> bool {
@@ -336,28 +387,36 @@ SensorExecutionResult ProcessHandleSensor::Execute(SensorRuntimeContext &context
 
         // 跨扫描节流与限额
         const auto pidIt = pidTtlMap.find(ownerPid);
-        if (pidIt != pidTtlMap.end() && now < pidIt->second)
+        if (!targetedScan && pidIt != pidTtlMap.end() && now < pidIt->second)
         {
+            recordCounter("pid_throttled_skip_count");
             return false;
         }
         if (pidAttempts >= maxPidAttempts)
         {
+            recordCounter("pid_attempt_limit_reached_count");
             return true; // Stop
         }
 
         // 句柄指向性验证 (使用新的 Helper)
         if (!IsHandlePointingToUs_Safe_Impl(handleValue, ownerPid, ownPid))
         {
-            pidTtlMap[ownerPid] =
-                    now + std::chrono::minutes(CheatConfigManager::GetInstance().GetPidThrottleMinutes());
+            if (!targetedScan)
+            {
+                pidTtlMap[ownerPid] =
+                        now + std::chrono::minutes(CheatConfigManager::GetInstance().GetPidThrottleMinutes());
+            }
             return false;
         }
 
         pidAttempts++; // Increment only if we actually check process details
 
         processedPidsThisScan.insert(ownerPid);
-        pidTtlMap[ownerPid] =
-                now + std::chrono::minutes(CheatConfigManager::GetInstance().GetPidThrottleMinutes());
+        if (!targetedScan)
+        {
+            pidTtlMap[ownerPid] =
+                    now + std::chrono::minutes(CheatConfigManager::GetInstance().GetPidThrottleMinutes());
+        }
         handlesProcessed++;
 
         // 进程路径获取（优化：避免重复获取）
@@ -372,17 +431,22 @@ SensorExecutionResult ProcessHandleSensor::Execute(SensorRuntimeContext &context
         if (!hOwnerProcess.get())
         {
             DWORD lastError = GetLastError();
+            recordText("last_open_process_failed_pid", std::to_string(ownerPid));
+            recordText("last_open_process_error", Utils::FormatString("0x%08X", lastError));
             if (lastError == ERROR_ACCESS_DENIED)
             {
                 ++openProcDeniedCount;
+                recordCounter("open_process_access_denied_count");
             }
             else if (lastError == ERROR_INVALID_PARAMETER || lastError == ERROR_INVALID_HANDLE)
             {
                 ++openProcInvalidCount;
+                recordCounter("open_process_invalid_count");
             }
             else
             {
                 ++openProcOtherFailCount;
+                recordCounter("open_process_other_failure_count");
                 LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR,
                               "ProcessHandleSensor: 无法打开进程进行句柄验证 PID %lu，错误: 0x%08X", ownerPid,
                               lastError);
@@ -404,6 +468,7 @@ SensorExecutionResult ProcessHandleSensor::Execute(SensorRuntimeContext &context
             if (isKnownGoodProcess)
             {
                 // 已知安全进程，记录调试信息
+                recordCounter("empty_path_known_good_process_count");
                 LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR,
                             "ProcessHandleSensor: 安全进程无法获取路径（正常现象）, 进程名=%s, PID=%lu",
                             Utils::WideToString(processName).c_str(), ownerPid);
@@ -412,6 +477,9 @@ SensorExecutionResult ProcessHandleSensor::Execute(SensorRuntimeContext &context
             else
             {
                 // 未知进程，记录警告并作为可疑行为上报
+                recordCounter("empty_path_unknown_process_evidence_count");
+                recordText("last_empty_path_process_name", Utils::WideToString(processName));
+                recordValue("last_empty_path_process_pid", static_cast<uint64_t>(ownerPid));
                 LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR,
                               "ProcessHandleSensor: 无法获取进程路径 PID %lu, 进程名=%s", ownerPid,
                               Utils::WideToString(processName).c_str());
@@ -434,6 +502,8 @@ SensorExecutionResult ProcessHandleSensor::Execute(SensorRuntimeContext &context
                 uint32_t currentCreationTime = GetProcessCreationTime(ownerPid);
                 if (currentCreationTime == 0)
                 {
+                    recordCounter("get_process_times_failed_count");
+                    recordValue("last_get_process_times_failed_pid", static_cast<uint64_t>(ownerPid));
                     RecordFailure(anti_cheat::PROCESS_HANDLE_GET_PROCESS_TIMES_FAILED);
                     pathCache.erase(pathCacheIt);
                 }
@@ -471,9 +541,10 @@ SensorExecutionResult ProcessHandleSensor::Execute(SensorRuntimeContext &context
                 const auto ttl = std::chrono::minutes(
                         CheatConfigManager::GetInstance().GetSignatureCacheDurationMinutes());
                 auto thrIt = processSigThrottleUntil.find(ownerProcessPath);
-                if (thrIt != processSigThrottleUntil.end() && now < thrIt->second)
+                if (!targetedScan && thrIt != processSigThrottleUntil.end() && now < thrIt->second)
                 {
                     signatureStatus = Utils::SignatureStatus::FAILED_TO_VERIFY;
+                    recordCounter("signature_throttled_count");
                 }
                 else
                 {
@@ -489,6 +560,8 @@ SensorExecutionResult ProcessHandleSensor::Execute(SensorRuntimeContext &context
                                 Utils::VerifyFileSignature(ownerProcessPath, context.GetWindowsVersion());
                         if (signatureStatus == Utils::SignatureStatus::FAILED_TO_VERIFY)
                         {
+                            recordCounter("signature_failed_to_verify_count");
+                            recordText("last_signature_failed_path", Utils::WideToString(ownerProcessPath));
                             processSigThrottleUntil[ownerProcessPath] =
                                     now + std::chrono::milliseconds(
                                                   CheatConfigManager::GetInstance()
@@ -509,6 +582,8 @@ SensorExecutionResult ProcessHandleSensor::Execute(SensorRuntimeContext &context
             uint32_t creationTime = GetProcessCreationTime(ownerPid);
             if (creationTime == 0)
             {
+                 recordCounter("get_process_times_failed_count");
+                 recordValue("last_get_process_times_failed_pid", static_cast<uint64_t>(ownerPid));
                  RecordFailure(anti_cheat::PROCESS_HANDLE_GET_PROCESS_TIMES_FAILED);
                  creationTime = 0;
             }
@@ -529,6 +604,9 @@ SensorExecutionResult ProcessHandleSensor::Execute(SensorRuntimeContext &context
         }
         else
         {
+            recordCounter("suspicious_handle_evidence_count");
+            recordText("last_suspicious_handle_process_path", Utils::WideToString(ownerProcessPath));
+            recordValue("last_suspicious_handle_process_pid", static_cast<uint64_t>(ownerPid));
             context.AddEvidence(anti_cheat::INTEGRITY_SUSPICIOUS_HANDLE,
                                 "可疑进程持有我们进程的句柄: " + Utils::WideToString(ownerProcessPath) +
                                         " (PID: " + std::to_string(ownerPid) + ")");
@@ -549,11 +627,16 @@ SensorExecutionResult ProcessHandleSensor::Execute(SensorRuntimeContext &context
                 auto elapsed_ms =
                         std::chrono::duration_cast<std::chrono::milliseconds>(currentTime - startTime).count();
 
-                if (elapsed_ms > budget_ms)
+                if (!targetedScan && elapsed_ms > budget_ms)
                 {
                     LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR,
                                   "ProcessHandleSensor: 扫描超时，已处理 %lu/%lu 个句柄，耗时%ldms",
                                   handlesProcessed, (ULONG)total, elapsed_ms);
+                    recordCounter("scan_timeout_count");
+                    recordValue("last_timeout_elapsed_ms", static_cast<uint64_t>(elapsed_ms));
+                    recordValue("last_timeout_entries_visited", static_cast<uint64_t>(entriesVisited));
+                    recordValue("last_timeout_handles_processed", static_cast<uint64_t>(handlesProcessed));
+                    recordValue("last_timeout_pid_attempts", static_cast<uint64_t>(pidAttempts));
                     this->RecordFailure(anti_cheat::PROCESS_HANDLE_SCAN_TIMEOUT);
                     context.SetHandleCursorOffset(cursorStart + entriesVisited);
                     return SensorExecutionResult::TIMEOUT;
@@ -566,7 +649,7 @@ SensorExecutionResult ProcessHandleSensor::Execute(SensorRuntimeContext &context
 
             if (ProcessEntry((DWORD)handle.UniqueProcessId, (HANDLE)handle.HandleValue, handle.GrantedAccess))
             {
-                 context.SetHandleCursorOffset(cursorStart + entriesVisited);
+                 if (!targetedScan) context.SetHandleCursorOffset(cursorStart + entriesVisited);
                  break;
             }
             entriesVisited++;
@@ -582,11 +665,16 @@ SensorExecutionResult ProcessHandleSensor::Execute(SensorRuntimeContext &context
                 auto currentTime = std::chrono::steady_clock::now();
                 auto elapsed_ms =
                         std::chrono::duration_cast<std::chrono::milliseconds>(currentTime - startTime).count();
-                if (elapsed_ms > budget_ms)
+                if (!targetedScan && elapsed_ms > budget_ms)
                 {
                     LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR,
                                   "ProcessHandleSensor: 扫描超时，已处理 %lu/%lu 个句柄，耗时%ldms",
                                   handlesProcessed, (ULONG)total, elapsed_ms);
+                    recordCounter("scan_timeout_count");
+                    recordValue("last_timeout_elapsed_ms", static_cast<uint64_t>(elapsed_ms));
+                    recordValue("last_timeout_entries_visited", static_cast<uint64_t>(entriesVisited));
+                    recordValue("last_timeout_handles_processed", static_cast<uint64_t>(handlesProcessed));
+                    recordValue("last_timeout_pid_attempts", static_cast<uint64_t>(pidAttempts));
                     this->RecordFailure(anti_cheat::PROCESS_HANDLE_SCAN_TIMEOUT);
                     context.SetHandleCursorOffset(cursorStart + entriesVisited);
                     return SensorExecutionResult::TIMEOUT;
@@ -598,7 +686,7 @@ SensorExecutionResult ProcessHandleSensor::Execute(SensorRuntimeContext &context
 
             if (ProcessEntry((DWORD)handle.UniqueProcessId, (HANDLE)(ULONG_PTR)handle.HandleValue, handle.GrantedAccess))
             {
-                context.SetHandleCursorOffset(cursorStart + entriesVisited);
+                if (!targetedScan) context.SetHandleCursorOffset(cursorStart + entriesVisited);
                 break;
             }
             entriesVisited++;
@@ -618,8 +706,16 @@ SensorExecutionResult ProcessHandleSensor::Execute(SensorRuntimeContext &context
          // 它是累加的offset。SensorRuntimeContext 内部可能是个简单的计数器。
 
          // 修正：如果完整跑完，应该更新游标以供下次使用
-        context.SetHandleCursorOffset(cursorStart + entriesVisited);
+        context.SetHandleCursorOffset(targetedScan ? 0 : cursorStart + entriesVisited);
     }
+
+    recordValue("last_entries_visited", static_cast<uint64_t>(entriesVisited));
+    recordValue("last_handles_processed", static_cast<uint64_t>(handlesProcessed));
+    recordValue("last_pid_attempts", static_cast<uint64_t>(pidAttempts));
+    recordValue("last_open_process_access_denied_count", static_cast<uint64_t>(openProcDeniedCount));
+    recordValue("last_open_process_invalid_count", static_cast<uint64_t>(openProcInvalidCount));
+    recordValue("last_open_process_other_failure_count", static_cast<uint64_t>(openProcOtherFailCount));
+    recordValue("last_cursor_next", static_cast<uint64_t>(context.GetHandleCursorOffset()));
 
     // Telemetry
     context.RecordSensorWorkloadCounters("ProcessHandleSensor", (uint64_t)total, (uint64_t)handlesProcessed,

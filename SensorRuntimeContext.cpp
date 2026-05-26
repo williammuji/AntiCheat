@@ -161,6 +161,16 @@ void SensorRuntimeContext::RecordSensorWorkloadCounters(const std::string &name,
     m_engine->RecordSensorWorkloadCounters(name, snapshot_size, attempts, hits);
 }
 
+void SensorRuntimeContext::RecordSensorDiagnosticCounter(const std::string &name, const std::string &key, uint64_t delta)
+{
+    m_engine->RecordSensorDiagnosticCounter(name, key, delta);
+}
+
+void SensorRuntimeContext::RecordSensorDiagnosticValue(const std::string &name, const std::string &key, const std::string &value)
+{
+    m_engine->RecordSensorDiagnosticValue(name, key, value);
+}
+
 std::set<DWORD> SensorRuntimeContext::GetKnownThreadIds() const
 {
     std::lock_guard<std::mutex> lock(m_engine->m_baselineMutex);

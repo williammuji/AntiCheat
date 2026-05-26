@@ -244,6 +244,28 @@ namespace SystemUtils
     void SetNtApiBindingsForTesting(const NtApiBindings &bindings);
     void ResetNtApiBindingsForTesting();
 
+    enum class ModuleCodeSectionInfoStatus
+    {
+        Success,
+        InvalidArgument,
+        DosHeaderInvalid,
+        NtHeaderInvalid,
+        NoCodeSection,
+        MemoryAccessException
+    };
+
+    struct ModuleCodeSectionInfoResult
+    {
+        bool success = false;
+        ModuleCodeSectionInfoStatus status = ModuleCodeSectionInfoStatus::InvalidArgument;
+        DWORD exceptionCode = 0;
+        DWORD dosMagic = 0;
+        DWORD ntSignature = 0;
+        WORD numberOfSections = 0;
+    };
+
+    const char *ModuleCodeSectionInfoStatusToString(ModuleCodeSectionInfoStatus status);
+    ModuleCodeSectionInfoResult GetModuleCodeSectionInfoDetailed(HMODULE hModule, PVOID &outBase, DWORD &outSize);
     bool GetModuleCodeSectionInfo(HMODULE hModule, PVOID &outBase, DWORD &outSize);
     PBYTE FindPattern(PBYTE base, SIZE_T size, const BYTE *pattern, SIZE_T patternSize, BYTE wildcard = 0x00);
 

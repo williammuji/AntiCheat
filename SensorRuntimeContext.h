@@ -60,6 +60,8 @@ class SensorRuntimeContext
     void UploadTelemetryMetricsReport(const anti_cheat::TelemetryMetrics &metrics);
     void SendServerLog(const std::string &log_level, const std::string &log_category, const std::string &log_message);
     void RecordSensorWorkloadCounters(const std::string &name, uint64_t snapshot_size, uint64_t attempts, uint64_t hits);
+    void RecordSensorDiagnosticCounter(const std::string &name, const std::string &key, uint64_t delta);
+    void RecordSensorDiagnosticValue(const std::string &name, const std::string &key, const std::string &value);
 
     std::set<DWORD> GetKnownThreadIds() const;
     std::set<HMODULE> GetKnownModules() const;
@@ -102,4 +104,3 @@ class SensorRuntimeContext
     GetProcessSigCache();
     std::unordered_map<std::wstring, std::chrono::steady_clock::time_point> &GetProcessSigThrottleUntil();
 };
-

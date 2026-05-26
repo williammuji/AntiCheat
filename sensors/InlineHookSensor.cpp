@@ -8,6 +8,7 @@
 #include <sstream>
 #include <set>
 #include <algorithm>
+#include <limits>
 
 extern "C" {
 #include "hde/hde32.h"
@@ -15,8 +16,10 @@ extern "C" {
 
 SensorExecutionResult InlineHookSensor::Execute(SensorRuntimeContext &context)
 {
+    const bool targetedScan = context.IsTargetedScan();
     auto startTime = std::chrono::steady_clock::now();
-    int budgetMs = CheatConfigManager::GetInstance().GetHeavyScanBudgetMs();
+    int budgetMs = targetedScan ? std::numeric_limits<int>::max()
+                                : CheatConfigManager::GetInstance().GetHeavyScanBudgetMs();
     if (budgetMs <= 0) budgetMs = 1500;
 
     m_lastFailureReason = anti_cheat::UNKNOWN_FAILURE;
@@ -46,7 +49,7 @@ SensorExecutionResult InlineHookSensor::Execute(SensorRuntimeContext &context)
     // Add main module check (NULL)
     targetModules.push_back(L"__SELF__");
 
-    size_t startModIdx = context.GetInlineHookModuleCursorOffset();
+    size_t startModIdx = targetedScan ? 0 : context.GetInlineHookModuleCursorOffset();
     if (startModIdx >= targetModules.size()) startModIdx = 0;
 
     for (size_t i = startModIdx; i < targetModules.size(); i++)
@@ -64,10 +67,10 @@ SensorExecutionResult InlineHookSensor::Execute(SensorRuntimeContext &context)
 
         if (hMod)
         {
-            auto result = CheckModuleExports(hMod, context, startTime, budgetMs);
+            auto result = CheckModuleExports(hMod, context, startTime, budgetMs, targetedScan);
             if (result == SensorExecutionResult::TIMEOUT)
             {
-                context.SetInlineHookModuleCursorOffset(i);
+                if (!targetedScan) context.SetInlineHookModuleCursorOffset(i);
                 LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR,
                            "InlineHookSensor scan timeout: Module=%ls (Index: %zu/%zu)",
                            modName.c_str(), i, targetModules.size());
@@ -75,7 +78,7 @@ SensorExecutionResult InlineHookSensor::Execute(SensorRuntimeContext &context)
             }
         }
         // Successfully processed a module, reset export cursor
-        context.SetExportCursorOffset(0);
+        if (!targetedScan) context.SetExportCursorOffset(0);
     }
 
     // All scanning completed, reset cursors
@@ -125,7 +128,8 @@ bool InlineHookSensor::IsAddressWhitelisted(PVOID address, SensorRuntimeContext 
 }
 
 SensorExecutionResult InlineHookSensor::CheckModuleExports(HMODULE hMod, SensorRuntimeContext& context,
-                                               std::chrono::steady_clock::time_point startTime, int budgetMs)
+                                               std::chrono::steady_clock::time_point startTime, int budgetMs,
+                                               bool targetedScan)
 {
     PIMAGE_DOS_HEADER pDos = (PIMAGE_DOS_HEADER)hMod;
     if (!SystemUtils::IsReadableMemory(pDos, sizeof(IMAGE_DOS_HEADER)) || pDos->e_magic != IMAGE_DOS_SIGNATURE) return SensorExecutionResult::SUCCESS;
@@ -145,7 +149,7 @@ SensorExecutionResult InlineHookSensor::CheckModuleExports(HMODULE hMod, SensorR
     DWORD* pAddressOfNames = (DWORD*)((BYTE*)hMod + pExport->AddressOfNames);
     WORD* pAddressOfNameOrdinals = (WORD*)((BYTE*)hMod + pExport->AddressOfNameOrdinals);
 
-    size_t startExportIdx = context.GetExportCursorOffset();
+    size_t startExportIdx = targetedScan ? 0 : context.GetExportCursorOffset();
 
     for (DWORD i = (DWORD)startExportIdx; i < pExport->NumberOfNames; i++)
     {
@@ -154,7 +158,7 @@ SensorExecutionResult InlineHookSensor::CheckModuleExports(HMODULE hMod, SensorR
         {
             auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - startTime).count();
-            if (elapsed > budgetMs)
+            if (!targetedScan && elapsed > budgetMs)
             {
                 context.SetExportCursorOffset(i);
                 return SensorExecutionResult::TIMEOUT;

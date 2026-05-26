@@ -389,6 +389,12 @@ message SensorExecutionStats {
   uint64 workload_last_snapshot_size = 16;    // 最近一轮：快照规模
   uint64 workload_last_attempts = 17;         // 最近一轮：尝试数
   uint64 workload_last_hits = 18;             // 最近一轮：命中数
+
+  // 传感器诊断信息（用于解释 failure_reasons 的现场上下文）
+  // 例如 ProcessHandleSensor 的句柄总数/配置上限/缓冲区大小，
+  // ModuleIntegritySensor 的代码节解析失败模块与动态基线拒绝原因。
+  map<string, uint64> diagnostic_counters = 19;      // 累积诊断计数
+  map<string, string> last_diagnostic_values = 20;   // 最近一轮诊断值
 }
 
 // LightweightSensorStats已删除，统一使用SensorExecutionStats

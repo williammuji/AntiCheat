@@ -7,7 +7,38 @@
 #include "CheatConfigManager.h"
 #include <algorithm>
 #include <limits>
+#include <psapi.h>
 #include <sstream>
+
+namespace
+{
+    std::wstring ToLowerCopy(std::wstring value)
+    {
+        std::transform(value.begin(), value.end(), value.begin(), ::towlower);
+        return value;
+    }
+
+    bool IsProtectedAssetModule(const std::wstring &modulePath)
+    {
+        return Utils::GetFileName(ToLowerCopy(modulePath)) == L"zhengtu.dav";
+    }
+
+    const char *SignatureStatusToString(Utils::SignatureStatus status)
+    {
+        switch (status)
+        {
+            case Utils::SignatureStatus::TRUSTED:
+                return "trusted";
+            case Utils::SignatureStatus::UNTRUSTED:
+                return "untrusted";
+            case Utils::SignatureStatus::FAILED_TO_VERIFY:
+                return "failed_to_verify";
+            case Utils::SignatureStatus::UNKNOWN:
+            default:
+                return "unknown";
+        }
+    }
+}
 
 bool ModuleIntegritySensor::IsWritableCodeProtection(DWORD protect)
 {
@@ -50,9 +81,17 @@ SensorExecutionResult ModuleIntegritySensor::Execute(SensorRuntimeContext &conte
     const int budget_ms = targetedScan ? std::numeric_limits<int>::max()
                                        : CheatConfigManager::GetInstance().GetHeavyScanBudgetMs();
     const auto startTime = std::chrono::steady_clock::now();
+    auto recordValue = [&](const std::string &key, uint64_t value) {
+        context.RecordSensorDiagnosticValue("ModuleIntegritySensor", key, std::to_string(value));
+    };
+    auto recordText = [&](const std::string &key, const std::string &value) {
+        context.RecordSensorDiagnosticValue("ModuleIntegritySensor", key, value);
+    };
+    recordValue("config_max_code_section_size_bytes", static_cast<uint64_t>(MAX_CODE_SECTION_SIZE));
+    recordText("scan_mode", targetedScan ? "targeted" : "periodic");
 
     // 3. 使用公共扫描器枚举模块（游标 + 限额 + 时间片）
-    size_t startCursor = context.GetModuleCursorOffset();
+    size_t startCursor = targetedScan ? 0 : context.GetModuleCursorOffset();
     size_t index = 0;
     size_t processed = 0;
     const int maxModules = targetedScan ? std::numeric_limits<int>::max()
@@ -89,6 +128,9 @@ SensorExecutionResult ModuleIntegritySensor::Execute(SensorRuntimeContext &conte
         else
         {
             // 获取文件名失败，无法继续
+            context.RecordSensorDiagnosticCounter("ModuleIntegritySensor", "get_module_path_failed_count", 1);
+            context.RecordSensorDiagnosticValue("ModuleIntegritySensor", "last_get_module_path_failed_hmodule",
+                                                Utils::FormatString("0x%p", hModule));
             RecordFailure(anti_cheat::MODULE_INTEGRITY_GET_MODULE_PATH_FAILED);
             return;
         }
@@ -97,7 +139,9 @@ SensorExecutionResult ModuleIntegritySensor::Execute(SensorRuntimeContext &conte
         if (needsUpdate)
         {
             modInfo.modulePath = curNameW;
-            modInfo.valid = SystemUtils::GetModuleCodeSectionInfo(hModule, modInfo.codeBase, modInfo.codeSize);
+            modInfo.codeSectionResult =
+                    SystemUtils::GetModuleCodeSectionInfoDetailed(hModule, modInfo.codeBase, modInfo.codeSize);
+            modInfo.valid = modInfo.codeSectionResult.success;
 
             // 检查特殊模块逻辑（用于标记）
             if (!modInfo.valid)
@@ -123,6 +167,8 @@ SensorExecutionResult ModuleIntegritySensor::Execute(SensorRuntimeContext &conte
         std::transform(lastModName.begin(), lastModName.end(),
                        lastModName.begin(), ::towlower);
 
+        MaybeReportUnsignedProtectedAsset(hModule, modInfo, context);
+
         // 超时检查
         {
             auto now = std::chrono::steady_clock::now();
@@ -135,6 +181,13 @@ SensorExecutionResult ModuleIntegritySensor::Execute(SensorRuntimeContext &conte
                         "ModuleIntegritySensor超时: elapsed=%lldms budget=%dms processed=%zu index=%zu current='%s'",
                         (long long)elapsed, budget_ms, processed, index,
                         Utils::WideToString(lastModName).c_str());
+                context.RecordSensorDiagnosticCounter("ModuleIntegritySensor", "timeout_count", 1);
+                context.RecordSensorDiagnosticValue("ModuleIntegritySensor", "last_timeout_module",
+                                                    Utils::WideToString(lastModName));
+                context.RecordSensorDiagnosticValue("ModuleIntegritySensor", "last_timeout_elapsed_ms",
+                                                    std::to_string(static_cast<uint64_t>(elapsed)));
+                context.RecordSensorDiagnosticValue("ModuleIntegritySensor", "last_timeout_budget_ms",
+                                                    std::to_string(static_cast<uint64_t>(budget_ms)));
                 RecordFailure(anti_cheat::MODULE_SCAN_TIMEOUT);
                 timeoutOccurred = true;
                 stopEnumerate = true;
@@ -159,13 +212,21 @@ SensorExecutionResult ModuleIntegritySensor::Execute(SensorRuntimeContext &conte
     // 更新游标（按本轮实际处理的模块数轮转）
     if (index > 0)
     {
-        size_t nextCursor = (startCursor + processed) % index;
+        size_t nextCursor = targetedScan ? 0 : (startCursor + processed) % index;
         context.SetModuleCursorOffset(nextCursor);
     }
 
     // Telemetry: 记录本轮模块快照与处理量
     context.RecordSensorWorkloadCounters("ModuleIntegritySensor", (uint64_t)index, (uint64_t)processed,
                                          (uint64_t)processed);
+    recordValue("last_module_cursor_start", static_cast<uint64_t>(startCursor));
+    recordValue("last_modules_enumerated", static_cast<uint64_t>(index));
+    recordValue("last_modules_processed", static_cast<uint64_t>(processed));
+    recordValue("last_module_cursor_next", static_cast<uint64_t>(context.GetModuleCursorOffset()));
+    if (!lastModName.empty())
+    {
+        recordText("last_module_seen", Utils::WideToString(lastModName));
+    }
 
     // 如果发生超时，直接返回超时
     if (timeoutOccurred)
@@ -198,6 +259,62 @@ SensorExecutionResult ModuleIntegritySensor::Execute(SensorRuntimeContext &conte
     return SensorExecutionResult::SUCCESS;
 }
 
+void ModuleIntegritySensor::MaybeReportUnsignedProtectedAsset(HMODULE hModule, const CachedModuleInfo &info,
+                                                              SensorRuntimeContext &context)
+{
+    if (info.modulePath.empty() || !IsProtectedAssetModule(info.modulePath))
+    {
+        return;
+    }
+
+    const std::wstring normalizedPath = SystemUtils::SystemNormalizePathLowercase(info.modulePath);
+    context.RecordSensorDiagnosticCounter("ModuleIntegritySensor", "protected_asset_scan_count", 1);
+    context.RecordSensorDiagnosticValue("ModuleIntegritySensor", "last_protected_asset_path",
+                                        Utils::WideToString(info.modulePath));
+
+    if (m_reportedUnsignedProtectedAssets.count(normalizedPath) > 0)
+    {
+        return;
+    }
+
+    const Utils::SignatureStatus signatureStatus =
+            Utils::VerifyFileSignature(info.modulePath, context.GetWindowsVersion());
+    const char *signatureStatusText = SignatureStatusToString(signatureStatus);
+    context.RecordSensorDiagnosticValue("ModuleIntegritySensor", "last_protected_asset_signature_status",
+                                        signatureStatusText);
+    context.RecordSensorDiagnosticValue("ModuleIntegritySensor", "last_protected_asset_code_section_status",
+                                        SystemUtils::ModuleCodeSectionInfoStatusToString(info.codeSectionResult.status));
+    context.RecordSensorDiagnosticValue("ModuleIntegritySensor", "last_protected_asset_code_section_size",
+                                        std::to_string(static_cast<uint64_t>(info.codeSize)));
+
+    MODULEINFO moduleInfo = {};
+    uint64_t moduleSize = 0;
+    if (GetModuleInformation(GetCurrentProcess(), hModule, &moduleInfo, sizeof(moduleInfo)))
+    {
+        moduleSize = moduleInfo.SizeOfImage;
+        context.RecordSensorDiagnosticValue("ModuleIntegritySensor", "last_protected_asset_module_size",
+                                            std::to_string(moduleSize));
+    }
+
+    m_reportedUnsignedProtectedAssets.insert(normalizedPath);
+    if (signatureStatus == Utils::SignatureStatus::TRUSTED)
+    {
+        return;
+    }
+
+    context.RecordSensorDiagnosticCounter("ModuleIntegritySensor", "protected_asset_unsigned_evidence_count", 1);
+
+    std::ostringstream oss;
+    oss << "Protected asset module has no trusted signature: " << Utils::WideToString(info.modulePath)
+        << " (signature_status=" << signatureStatusText
+        << ", module_size=" << moduleSize
+        << ", code_section_size=" << static_cast<uint64_t>(info.codeSize)
+        << ", code_section_status="
+        << SystemUtils::ModuleCodeSectionInfoStatusToString(info.codeSectionResult.status)
+        << ")";
+    context.AddEvidence(anti_cheat::INTEGRITY_ASSET_TAMPERED, oss.str());
+}
+
 SensorExecutionResult ModuleIntegritySensor::ProcessModuleCodeIntegrity(HMODULE hModule, const CachedModuleInfo &info, SensorRuntimeContext &context,
                                     const std::unordered_map<std::wstring, std::vector<uint8_t>> &baselineHashes,
                                     size_t maxCodeSectionSize)
@@ -205,6 +322,23 @@ SensorExecutionResult ModuleIntegritySensor::ProcessModuleCodeIntegrity(HMODULE 
     // 注意：不再跳过自身模块，让ModuleCodeIntegritySensor也检测自身完整性
     if (!info.valid)
     {
+        const char *status = SystemUtils::ModuleCodeSectionInfoStatusToString(info.codeSectionResult.status);
+        context.RecordSensorDiagnosticCounter("ModuleIntegritySensor", "code_section_invalid_count", 1);
+        context.RecordSensorDiagnosticCounter("ModuleIntegritySensor",
+                                              std::string("code_section_invalid_reason.") + status, 1);
+        context.RecordSensorDiagnosticValue("ModuleIntegritySensor", "last_code_section_invalid_module",
+                                            Utils::WideToString(info.modulePath));
+        context.RecordSensorDiagnosticValue("ModuleIntegritySensor", "last_code_section_failure_status", status);
+        context.RecordSensorDiagnosticValue("ModuleIntegritySensor", "last_code_section_failure_exception",
+                                            Utils::FormatString("0x%08X", info.codeSectionResult.exceptionCode));
+        context.RecordSensorDiagnosticValue("ModuleIntegritySensor", "last_code_section_failure_dos_magic",
+                                            Utils::FormatString("0x%04X", info.codeSectionResult.dosMagic));
+        context.RecordSensorDiagnosticValue("ModuleIntegritySensor", "last_code_section_failure_nt_signature",
+                                            Utils::FormatString("0x%08X", info.codeSectionResult.ntSignature));
+        context.RecordSensorDiagnosticValue("ModuleIntegritySensor", "last_code_section_failure_sections",
+                                            std::to_string(static_cast<uint64_t>(info.codeSectionResult.numberOfSections)));
+        context.RecordSensorDiagnosticValue("ModuleIntegritySensor", "last_code_section_invalid_is_special",
+                                            info.isSpecial ? "1" : "0");
         if (info.isSpecial)
         {
             // 特殊模块的代码节获取失败是正常情况，记录调试信息
@@ -226,6 +360,11 @@ SensorExecutionResult ModuleIntegritySensor::ProcessModuleCodeIntegrity(HMODULE 
     // 检查代码节大小是否超过限制
     if (info.codeSize > maxCodeSectionSize)
     {
+        context.RecordSensorDiagnosticCounter("ModuleIntegritySensor", "code_section_oversize_skip_count", 1);
+        context.RecordSensorDiagnosticValue("ModuleIntegritySensor", "last_code_section_oversize_module",
+                                            Utils::WideToString(info.modulePath));
+        context.RecordSensorDiagnosticValue("ModuleIntegritySensor", "last_code_section_size_bytes",
+                                            std::to_string(static_cast<uint64_t>(info.codeSize)));
         LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR,
                       "ModuleIntegritySensor: 代码节过大，跳过模块: %s (大小: %lu > %zu MB)",
                       Utils::WideToString(info.modulePath).c_str(), info.codeSize / (1024 * 1024),
@@ -267,6 +406,11 @@ SensorExecutionResult ModuleIntegritySensor::ValidateModuleCodeIntegrity(const w
          {
              if (ShouldEmitTamperEvidence(isSelfModule, isWhitelisted))
              {
+                 context.RecordSensorDiagnosticCounter("ModuleIntegritySensor", "writable_code_section_evidence_count", 1);
+                 context.RecordSensorDiagnosticValue("ModuleIntegritySensor", "last_writable_code_section_module",
+                                                     Utils::WideToString(modulePath_w));
+                 context.RecordSensorDiagnosticValue("ModuleIntegritySensor", "last_writable_code_section_protect",
+                                                     std::to_string(static_cast<uint64_t>(mbi.Protect)));
                  std::string u8Path = Utils::WideToString(modulePath_w);
                  context.AddEvidence(anti_cheat::INTEGRITY_MEMORY_PATCH, "Writable code section detected: " + u8Path);
              }
@@ -279,10 +423,12 @@ SensorExecutionResult ModuleIntegritySensor::ValidateModuleCodeIntegrity(const w
          }
     }
 
-    uint64_t currentHashState = context.GetModuleIntegrityPartialHash();
-    size_t internalOffset = context.GetModuleInternalOffset();
+    const bool targetedScan = context.IsTargetedScan();
+    uint64_t currentHashState = targetedScan ? 0 : context.GetModuleIntegrityPartialHash();
+    size_t internalOffset = targetedScan ? 0 : context.GetModuleInternalOffset();
 
-    int budget_ms = CheatConfigManager::GetInstance().GetHeavyScanBudgetMs();
+    int budget_ms = targetedScan ? std::numeric_limits<int>::max()
+                                 : CheatConfigManager::GetInstance().GetHeavyScanBudgetMs();
     // budget_ms <= 0 表示配置未设置；此时不对单个模块的内层 Hash 施加时间限制，
     // 让当前模块整体一次 Hash 完成（与外层超时机制协调）。
     if (budget_ms <= 0) budget_ms = std::numeric_limits<int>::max();
@@ -304,7 +450,8 @@ SensorExecutionResult ModuleIntegritySensor::ValidateModuleCodeIntegrity(const w
         internalOffset += bytesToHash;
 
         auto now = std::chrono::steady_clock::now();
-        if (std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count() >= budget_ms)
+        if (!targetedScan &&
+            std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count() >= budget_ms)
         {
             // Ensure we only timeout if we've made some progress in THIS call
             // OR if the setup has taken significant time.
@@ -365,6 +512,13 @@ SensorExecutionResult ModuleIntegritySensor::ValidateModuleCodeIntegrity(const w
         else
         {
             // 拒绝为不可信模块建立基线，并立即产生作弊证据
+            context.RecordSensorDiagnosticCounter("ModuleIntegritySensor", "untrusted_dynamic_baseline_reject_count", 1);
+            context.RecordSensorDiagnosticValue("ModuleIntegritySensor", "last_untrusted_dynamic_baseline_module",
+                                                Utils::WideToString(modulePath));
+            context.RecordSensorDiagnosticValue("ModuleIntegritySensor", "last_untrusted_dynamic_baseline_reason",
+                                                validation.reason);
+            context.RecordSensorDiagnosticValue("ModuleIntegritySensor", "last_untrusted_dynamic_baseline_code_size",
+                                                std::to_string(static_cast<uint64_t>(codeSize)));
             LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR,
                           "ModuleIntegritySensor: 拒绝动态建立不可信模块基线: %s | 原因: %s",
                           Utils::WideToString(modulePath).c_str(), validation.reason.c_str());
@@ -395,6 +549,9 @@ SensorExecutionResult ModuleIntegritySensor::ValidateModuleCodeIntegrity(const w
 
             if (isSelfModule)
             {
+                context.RecordSensorDiagnosticCounter("ModuleIntegritySensor", "self_hash_mismatch_count", 1);
+                context.RecordSensorDiagnosticValue("ModuleIntegritySensor", "last_hash_mismatch_module",
+                                                    Utils::WideToString(modulePath));
                 // 自身模块被篡改，使用专门的证据类型
                 LOG_ERROR_F(AntiCheatLogger::LogCategory::SENSOR,
                             "ModuleIntegritySensor: 检测到反作弊模块自身被篡改: %s | 当前Hash: %s | 基线Hash: %s | "
@@ -406,6 +563,9 @@ SensorExecutionResult ModuleIntegritySensor::ValidateModuleCodeIntegrity(const w
             }
             else if (isWhitelisted)
             {
+                context.RecordSensorDiagnosticCounter("ModuleIntegritySensor", "whitelisted_hash_mismatch_count", 1);
+                context.RecordSensorDiagnosticValue("ModuleIntegritySensor", "last_hash_mismatch_module",
+                                                    Utils::WideToString(modulePath));
                 // 白名单模块（系统DLL或合法第三方软件）被修改：降级为警告日志
                 // 原因：热补丁、安全软件、驱动更新等合法场景
                 LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR,
@@ -417,6 +577,9 @@ SensorExecutionResult ModuleIntegritySensor::ValidateModuleCodeIntegrity(const w
             }
             else if (ShouldEmitTamperEvidence(isSelfModule, isWhitelisted))
             {
+                context.RecordSensorDiagnosticCounter("ModuleIntegritySensor", "untrusted_hash_mismatch_count", 1);
+                context.RecordSensorDiagnosticValue("ModuleIntegritySensor", "last_hash_mismatch_module",
+                                                    Utils::WideToString(modulePath));
                 // 非白名单模块被篡改：真正可疑的情况
                 LOG_ERROR_F(AntiCheatLogger::LogCategory::SENSOR,
                             "ModuleIntegritySensor: 检测到模块代码节被篡改: %s | 当前Hash: %s | 基线Hash: %s | "

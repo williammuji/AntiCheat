@@ -7,6 +7,7 @@
 #include <vector>
 #include <sstream>
 #include <algorithm>
+#include <limits>
 #include <tlhelp32.h>
 
 bool MemorySecuritySensor::IsRwXProtection(DWORD protect)
@@ -39,7 +40,9 @@ SensorExecutionResult MemorySecuritySensor::Execute(SensorRuntimeContext &contex
         return SensorExecutionResult::FAILURE;
     }
 
-    const int budget_ms = CheatConfigManager::GetInstance().GetHeavyScanBudgetMs();
+    const bool targetedScan = context.IsTargetedScan();
+    const int budget_ms = targetedScan ? std::numeric_limits<int>::max()
+                                       : CheatConfigManager::GetInstance().GetHeavyScanBudgetMs();
     const auto startTime = std::chrono::steady_clock::now();
 
     // 4. 使用公共扫描器进行内存遍历（支持超时提前退出）
@@ -60,7 +63,8 @@ SensorExecutionResult MemorySecuritySensor::Execute(SensorRuntimeContext &contex
         if (regionsScanned++ % 100 == 0)
         {
             auto now = std::chrono::steady_clock::now();
-            if (std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count() > budget_ms)
+            if (!targetedScan &&
+                std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count() > budget_ms)
             {
                 LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR,
                               "MemorySecuritySensor: 内存扫描超时，已扫描%zu个区域", regionsScanned);

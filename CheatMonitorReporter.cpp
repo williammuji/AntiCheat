@@ -230,7 +230,8 @@ void CheatMonitorEngine::UploadSensorExecutionStatsReport()
                 stats.min_success_time_ms() > 0 || stats.max_failure_time_ms() > 0 || stats.min_failure_time_ms() > 0 ||
                 stats.workload_snapshot_size_total() > 0 || stats.workload_attempts_total() > 0 ||
                 stats.workload_hits_total() > 0 || stats.workload_last_snapshot_size() > 0 ||
-                stats.workload_last_attempts() > 0 || stats.workload_last_hits() > 0)
+                stats.workload_last_attempts() > 0 || stats.workload_last_hits() > 0 ||
+                stats.diagnostic_counters_size() > 0 || stats.last_diagnostic_values_size() > 0)
             {
                 nonEmpty = true;
             }
@@ -306,6 +307,23 @@ void CheatMonitorEngine::RecordSensorWorkloadCounters(const std::string &name, u
         stats.set_workload_hits_total(stats.workload_hits_total() + hits);
         stats.set_workload_last_hits(hits);
     }
+}
+
+void CheatMonitorEngine::RecordSensorDiagnosticCounter(const std::string &name, const std::string &key, uint64_t delta)
+{
+    if (delta == 0) return;
+
+    std::lock_guard<std::mutex> lock(m_sensorStatsMutex);
+    auto &stats = m_sensorExecutionStats[name];
+    (*stats.mutable_diagnostic_counters())[key] += delta;
+}
+
+void CheatMonitorEngine::RecordSensorDiagnosticValue(const std::string &name, const std::string &key,
+                                                     const std::string &value)
+{
+    std::lock_guard<std::mutex> lock(m_sensorStatsMutex);
+    auto &stats = m_sensorExecutionStats[name];
+    (*stats.mutable_last_diagnostic_values())[key] = value;
 }
 
 void CheatMonitorEngine::SendReport(const anti_cheat::Report &report)

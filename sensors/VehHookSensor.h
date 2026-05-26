@@ -33,6 +33,6 @@ private:
     };
 
     static VehAccessResult AccessVehStructSafe(uintptr_t base, SystemUtils::WindowsVersion winVer);
-    static VehTraverseResult TraverseVehListSafe(LIST_ENTRY *pHead, int budget_ms);
+    static VehTraverseResult TraverseVehListSafe(LIST_ENTRY *pHead, int budget_ms, bool targetedScan);
     void AnalyzeHandlerSecurity(SensorRuntimeContext &context, PVOID handlerAddress, int index);
 };
