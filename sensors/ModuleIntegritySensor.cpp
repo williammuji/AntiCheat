@@ -20,7 +20,7 @@ namespace
 
     bool IsProtectedAssetModule(const std::wstring &modulePath)
     {
-        return Utils::GetFileName(ToLowerCopy(modulePath)) == L"zhengtu.dav";
+        return Utils::GetFileName(ToLowerCopy(modulePath)) == L"game.exe";
     }
 
     const char *SignatureStatusToString(Utils::SignatureStatus status)
