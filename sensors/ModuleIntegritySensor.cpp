@@ -89,6 +89,10 @@ SensorExecutionResult ModuleIntegritySensor::Execute(SensorRuntimeContext &conte
     };
     recordValue("config_max_code_section_size_bytes", static_cast<uint64_t>(MAX_CODE_SECTION_SIZE));
     recordText("scan_mode", targetedScan ? "targeted" : "periodic");
+    recordText("timeout_budget_active", targetedScan ? "0" : "1");
+    recordValue("last_timeout_elapsed_ms", 0);
+    recordValue("last_timeout_budget_ms", targetedScan ? 0 : static_cast<uint64_t>(budget_ms));
+    recordText("last_timeout_module", "");
 
     // 3. 使用公共扫描器枚举模块（游标 + 限额 + 时间片）
     size_t startCursor = targetedScan ? 0 : context.GetModuleCursorOffset();
@@ -154,12 +158,47 @@ SensorExecutionResult ModuleIntegritySensor::Execute(SensorRuntimeContext &conte
                 {
                     for (const auto &kw : *integrityIgnoreList)
                     {
-                        if (lowerName.find(kw) != std::wstring::npos) { isSpecial = true; break; }
+                        const std::wstring lowerKeyword = ToLowerCopy(kw);
+                        if (!lowerKeyword.empty() && lowerName.find(lowerKeyword) != std::wstring::npos)
+                        {
+                            isSpecial = true;
+                            context.RecordSensorDiagnosticValue("ModuleIntegritySensor",
+                                                                "last_integrity_ignore_match",
+                                                                Utils::WideToString(kw));
+                            break;
+                        }
                     }
                 }
                 modInfo.isSpecial = isSpecial;
             }
             m_moduleCache[hModule] = modInfo;
+        }
+
+        // The ignore list can be updated by server config after this module was cached,
+        // so refresh the flag on every scan for PE files without a code section.
+        if (!modInfo.valid)
+        {
+            std::wstring lowerName = modInfo.modulePath;
+            std::transform(lowerName.begin(), lowerName.end(), lowerName.begin(), ::towlower);
+            auto integrityIgnoreList = context.GetWhitelistedIntegrityIgnoreList();
+            bool isSpecial = false;
+            if (integrityIgnoreList)
+            {
+                for (const auto &kw : *integrityIgnoreList)
+                {
+                    const std::wstring lowerKeyword = ToLowerCopy(kw);
+                    if (!lowerKeyword.empty() && lowerName.find(lowerKeyword) != std::wstring::npos)
+                    {
+                        isSpecial = true;
+                        context.RecordSensorDiagnosticValue("ModuleIntegritySensor",
+                                                            "last_integrity_ignore_match",
+                                                            Utils::WideToString(kw));
+                        break;
+                    }
+                }
+            }
+            modInfo.isSpecial = isSpecial;
+            m_moduleCache[hModule].isSpecial = isSpecial;
         }
 
         // 更新lastModName用于日志（使用缓存的路径）
@@ -268,9 +307,6 @@ void ModuleIntegritySensor::MaybeReportUnsignedProtectedAsset(HMODULE hModule, c
     }
 
     const std::wstring normalizedPath = SystemUtils::SystemNormalizePathLowercase(info.modulePath);
-    context.RecordSensorDiagnosticCounter("ModuleIntegritySensor", "protected_asset_scan_count", 1);
-    context.RecordSensorDiagnosticValue("ModuleIntegritySensor", "last_protected_asset_path",
-                                        Utils::WideToString(info.modulePath));
 
     if (m_reportedUnsignedProtectedAssets.count(normalizedPath) > 0)
     {
@@ -280,32 +316,28 @@ void ModuleIntegritySensor::MaybeReportUnsignedProtectedAsset(HMODULE hModule, c
     const Utils::SignatureStatus signatureStatus =
             Utils::VerifyFileSignature(info.modulePath, context.GetWindowsVersion());
     const char *signatureStatusText = SignatureStatusToString(signatureStatus);
-    context.RecordSensorDiagnosticValue("ModuleIntegritySensor", "last_protected_asset_signature_status",
-                                        signatureStatusText);
-    context.RecordSensorDiagnosticValue("ModuleIntegritySensor", "last_protected_asset_code_section_status",
-                                        SystemUtils::ModuleCodeSectionInfoStatusToString(info.codeSectionResult.status));
-    context.RecordSensorDiagnosticValue("ModuleIntegritySensor", "last_protected_asset_code_section_size",
-                                        std::to_string(static_cast<uint64_t>(info.codeSize)));
 
     MODULEINFO moduleInfo = {};
     uint64_t moduleSize = 0;
     if (GetModuleInformation(GetCurrentProcess(), hModule, &moduleInfo, sizeof(moduleInfo)))
     {
         moduleSize = moduleInfo.SizeOfImage;
-        context.RecordSensorDiagnosticValue("ModuleIntegritySensor", "last_protected_asset_module_size",
-                                            std::to_string(moduleSize));
     }
 
     m_reportedUnsignedProtectedAssets.insert(normalizedPath);
+
     if (signatureStatus == Utils::SignatureStatus::TRUSTED)
     {
         return;
     }
 
-    context.RecordSensorDiagnosticCounter("ModuleIntegritySensor", "protected_asset_unsigned_evidence_count", 1);
+    if (signatureStatus != Utils::SignatureStatus::UNTRUSTED)
+    {
+        return;
+    }
 
     std::ostringstream oss;
-    oss << "Protected asset module has no trusted signature: " << Utils::WideToString(info.modulePath)
+    oss << "Protected asset module is unsigned or has a bad digest: " << Utils::WideToString(info.modulePath)
         << " (signature_status=" << signatureStatusText
         << ", module_size=" << moduleSize
         << ", code_section_size=" << static_cast<uint64_t>(info.codeSize)
@@ -339,21 +371,22 @@ SensorExecutionResult ModuleIntegritySensor::ProcessModuleCodeIntegrity(HMODULE 
                                             std::to_string(static_cast<uint64_t>(info.codeSectionResult.numberOfSections)));
         context.RecordSensorDiagnosticValue("ModuleIntegritySensor", "last_code_section_invalid_is_special",
                                             info.isSpecial ? "1" : "0");
-        if (info.isSpecial)
+        const bool isNoCodeSection =
+                info.codeSectionResult.status == SystemUtils::ModuleCodeSectionInfoStatus::NoCodeSection;
+        context.RecordSensorDiagnosticValue("ModuleIntegritySensor", "last_code_section_invalid_is_no_code_section",
+                                            isNoCodeSection ? "1" : "0");
+        if (info.isSpecial || isNoCodeSection)
         {
-            // 特殊模块的代码节获取失败是正常情况，记录调试信息
             LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR,
-                        "ModuleIntegritySensor: 特殊模块代码节获取失败（正常情况）, 模块=%s, hModule=0x%p",
+                        "ModuleIntegritySensor: module has no code section or is ignored, module=%s, hModule=0x%p",
                         Utils::WideToString(info.modulePath).c_str(), hModule);
+            return SensorExecutionResult::SUCCESS;
         }
-        else
-        {
-            // 普通模块的代码节获取失败需要记录
-            RecordFailure(anti_cheat::MODULE_INTEGRITY_GET_CODE_SECTION_FAILED);
-            LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR,
-                          "ModuleIntegritySensor: 获取代码节信息失败, 模块=%s, hModule=0x%p",
-                          Utils::WideToString(info.modulePath).c_str(), hModule);
-        }
+
+        RecordFailure(anti_cheat::MODULE_INTEGRITY_GET_CODE_SECTION_FAILED);
+        LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR,
+                      "ModuleIntegritySensor: failed to get code section info, module=%s, hModule=0x%p",
+                      Utils::WideToString(info.modulePath).c_str(), hModule);
         return SensorExecutionResult::FAILURE;
     }
 
