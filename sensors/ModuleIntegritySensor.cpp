@@ -89,10 +89,6 @@ SensorExecutionResult ModuleIntegritySensor::Execute(SensorRuntimeContext &conte
     };
     recordValue("config_max_code_section_size_bytes", static_cast<uint64_t>(MAX_CODE_SECTION_SIZE));
     recordText("scan_mode", targetedScan ? "targeted" : "periodic");
-    recordText("timeout_budget_active", targetedScan ? "0" : "1");
-    recordValue("last_timeout_elapsed_ms", 0);
-    recordValue("last_timeout_budget_ms", targetedScan ? 0 : static_cast<uint64_t>(budget_ms));
-    recordText("last_timeout_module", "");
 
     // 3. 使用公共扫描器枚举模块（游标 + 限额 + 时间片）
     size_t startCursor = targetedScan ? 0 : context.GetModuleCursorOffset();
@@ -220,7 +216,6 @@ SensorExecutionResult ModuleIntegritySensor::Execute(SensorRuntimeContext &conte
                         "ModuleIntegritySensor超时: elapsed=%lldms budget=%dms processed=%zu index=%zu current='%s'",
                         (long long)elapsed, budget_ms, processed, index,
                         Utils::WideToString(lastModName).c_str());
-                context.RecordSensorDiagnosticCounter("ModuleIntegritySensor", "timeout_count", 1);
                 context.RecordSensorDiagnosticValue("ModuleIntegritySensor", "last_timeout_module",
                                                     Utils::WideToString(lastModName));
                 context.RecordSensorDiagnosticValue("ModuleIntegritySensor", "last_timeout_elapsed_ms",
@@ -236,6 +231,15 @@ SensorExecutionResult ModuleIntegritySensor::Execute(SensorRuntimeContext &conte
 
         if (ProcessModuleCodeIntegrity(hModule, modInfo, context, baselineHashes, MAX_CODE_SECTION_SIZE) == SensorExecutionResult::TIMEOUT)
         {
+            const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - startTime).count();
+            context.RecordSensorDiagnosticValue("ModuleIntegritySensor", "last_timeout_module",
+                                                Utils::WideToString(lastModName));
+            context.RecordSensorDiagnosticValue("ModuleIntegritySensor", "last_timeout_elapsed_ms",
+                                                std::to_string(static_cast<uint64_t>(elapsed)));
+            context.RecordSensorDiagnosticValue("ModuleIntegritySensor", "last_timeout_budget_ms",
+                                                std::to_string(static_cast<uint64_t>(budget_ms)));
+            RecordFailure(anti_cheat::MODULE_SCAN_TIMEOUT);
             timeoutOccurred = true;
             stopEnumerate = true;
             return;
@@ -355,9 +359,23 @@ SensorExecutionResult ModuleIntegritySensor::ProcessModuleCodeIntegrity(HMODULE 
     if (!info.valid)
     {
         const char *status = SystemUtils::ModuleCodeSectionInfoStatusToString(info.codeSectionResult.status);
+        const bool isNoCodeSection =
+                info.codeSectionResult.status == SystemUtils::ModuleCodeSectionInfoStatus::NoCodeSection;
         context.RecordSensorDiagnosticCounter("ModuleIntegritySensor", "code_section_invalid_count", 1);
         context.RecordSensorDiagnosticCounter("ModuleIntegritySensor",
                                               std::string("code_section_invalid_reason.") + status, 1);
+        if (info.isSpecial || isNoCodeSection)
+        {
+            context.RecordSensorDiagnosticValue("ModuleIntegritySensor", "last_code_section_suppressed_module",
+                                                Utils::WideToString(info.modulePath));
+            context.RecordSensorDiagnosticValue("ModuleIntegritySensor", "last_code_section_suppressed_reason",
+                                                status);
+            LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR,
+                        "ModuleIntegritySensor: module has no code section or is ignored, module=%s, hModule=0x%p",
+                        Utils::WideToString(info.modulePath).c_str(), hModule);
+            return SensorExecutionResult::SUCCESS;
+        }
+
         context.RecordSensorDiagnosticValue("ModuleIntegritySensor", "last_code_section_invalid_module",
                                             Utils::WideToString(info.modulePath));
         context.RecordSensorDiagnosticValue("ModuleIntegritySensor", "last_code_section_failure_status", status);
@@ -369,20 +387,6 @@ SensorExecutionResult ModuleIntegritySensor::ProcessModuleCodeIntegrity(HMODULE 
                                             Utils::FormatString("0x%08X", info.codeSectionResult.ntSignature));
         context.RecordSensorDiagnosticValue("ModuleIntegritySensor", "last_code_section_failure_sections",
                                             std::to_string(static_cast<uint64_t>(info.codeSectionResult.numberOfSections)));
-        context.RecordSensorDiagnosticValue("ModuleIntegritySensor", "last_code_section_invalid_is_special",
-                                            info.isSpecial ? "1" : "0");
-        const bool isNoCodeSection =
-                info.codeSectionResult.status == SystemUtils::ModuleCodeSectionInfoStatus::NoCodeSection;
-        context.RecordSensorDiagnosticValue("ModuleIntegritySensor", "last_code_section_invalid_is_no_code_section",
-                                            isNoCodeSection ? "1" : "0");
-        if (info.isSpecial || isNoCodeSection)
-        {
-            LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR,
-                        "ModuleIntegritySensor: module has no code section or is ignored, module=%s, hModule=0x%p",
-                        Utils::WideToString(info.modulePath).c_str(), hModule);
-            return SensorExecutionResult::SUCCESS;
-        }
-
         RecordFailure(anti_cheat::MODULE_INTEGRITY_GET_CODE_SECTION_FAILED);
         LOG_WARNING_F(AntiCheatLogger::LogCategory::SENSOR,
                       "ModuleIntegritySensor: failed to get code section info, module=%s, hModule=0x%p",
