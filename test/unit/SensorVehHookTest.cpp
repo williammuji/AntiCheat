@@ -10,9 +10,9 @@ public:
         return VehHookSensor::AccessVehStructSafe(base, version);
     }
 
-    static VehHookSensor::VehTraverseResult Traverse(LIST_ENTRY *head, int budgetMs)
+    static VehHookSensor::VehTraverseResult Traverse(LIST_ENTRY *head, int budgetMs, bool targetedScan = false)
     {
-        return VehHookSensor::TraverseVehListSafe(head, budgetMs);
+        return VehHookSensor::TraverseVehListSafe(head, budgetMs, targetedScan);
     }
     static bool IsExecutable(DWORD prot)
     {
