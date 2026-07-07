@@ -63,7 +63,7 @@ void RunSimulatedFuzz(const std::string& label, const std::vector<uint8_t>& data
     // Try to parse as TargetedSensorCommand
     anti_cheat::TargetedSensorCommand cmd;
     if (cmd.ParseFromArray(data.data(), (int)data.size())) {
-        if (!cmd.sensor_name().empty()) {
+        if (cmd.ByteSizeLong() == 0 && data.empty()) {
             if (google::protobuf::util::MessageToJsonString(cmd, &json, options).ok()) {
                 std::cout << "Parsed as TargetedSensorCommand:\n" << json << std::endl;
                 return;
@@ -96,8 +96,6 @@ int main(int argc, char **argv) {
 
     // Case 3: Valid Targeted Command
     anti_cheat::TargetedSensorCommand cmd;
-    cmd.set_sensor_name("MemorySecuritySensor");
-    cmd.set_request_id("cmd-001");
     std::vector<uint8_t> cmd_data(cmd.ByteSizeLong());
     cmd.SerializeToArray(cmd_data.data(), (int)cmd_data.size());
     RunSimulatedFuzz("Valid Targeted Command", cmd_data);

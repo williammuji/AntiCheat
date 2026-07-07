@@ -81,14 +81,22 @@ void CheatMonitor::SetGameWindow(void *hwnd)
     if (m_pimpl) m_pimpl->m_gameWindowHandle.store(reinterpret_cast<uintptr_t>(hwnd), std::memory_order_relaxed);
 }
 
+void CheatMonitor::SubmitTargetedSensorRequest()
+{
+    if (m_pimpl) m_pimpl->SubmitTargetedScanRequest();
+}
+
 void CheatMonitor::SubmitTargetedSensorRequest(const std::string &request_id, const std::string &sensor_name)
 {
-    if (m_pimpl) m_pimpl->SubmitTargetedScanRequest(request_id, sensor_name);
+    (void)request_id;
+    (void)sensor_name;
+    SubmitTargetedSensorRequest();
 }
 
 void CheatMonitor::SubmitTargetedSensorRequest(const anti_cheat::TargetedSensorCommand &command)
 {
-    if (m_pimpl) m_pimpl->SubmitTargetedScanRequest(command.request_id(), command.sensor_name());
+    (void)command;
+    SubmitTargetedSensorRequest();
 }
 
 void CheatMonitor::UploadSnapshot()

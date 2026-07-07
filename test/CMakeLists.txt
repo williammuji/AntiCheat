@@ -48,6 +48,7 @@ if(ANTICHEAT_ENABLE_UNIT_TESTS)
             unit/SensorProcessHollowingTest.cpp
             unit/SensorSystemCodeIntegrityTest.cpp
             unit/SensorVTableHookTest.cpp
+            unit/TargetedScanSchedulerTest.cpp
         )
         target_include_directories(CheatMonitorUnitTests PRIVATE
             ${CMAKE_SOURCE_DIR}

@@ -19,7 +19,6 @@
 #include <set>
 #include <map>
 #include <vector>
-#include <deque>
 #include <random>
 #include <algorithm>
 
@@ -125,14 +124,7 @@ struct CheatMonitorEngine
     std::vector<std::unique_ptr<ISensor>> m_heavyweightSensors;
     std::unordered_map<std::string, ISensor *> m_sensorRegistry;
 
-    struct TargetedScanRequest
-    {
-        std::string requestId;
-        std::string sensorName;
-    };
-    std::mutex m_targetedScanMutex;
-    std::deque<TargetedScanRequest> m_targetedScanQueue;
-    std::unordered_set<std::string> m_consumedTargetedScanIds;
+    std::atomic<bool> m_targetedScanPending{false};
 
     std::atomic<uint64_t> m_sequenceId{0};
     std::string m_sessionId;
@@ -178,9 +170,11 @@ struct CheatMonitorEngine
     void AddRandomJitter();
     void WakeMonitor();
     void ProcessPendingTargetedScans();
-    void RunTargetedSensorScan(const TargetedScanRequest &request);
+    void RunTargetedSensorScan();
+    void RunTargetedSensorScanForSensor(ISensor *sensor);
+    void SubmitTargetedScanRequest();
     void SubmitTargetedScanRequest(const std::string &requestId, const std::string &sensorName);
-    bool TryDequeueTargetedScan(TargetedScanRequest &outRequest);
+    bool TryConsumeTargetedScanRequest();
     void UploadTargetedSensorReport(const std::string &requestId, const std::string &sensorName,
                                     SensorExecutionResult result, anti_cheat::SensorFailureReason failureReason,
                                     int duration_ms, const std::string &notes,

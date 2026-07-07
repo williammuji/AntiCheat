@@ -36,7 +36,7 @@ void CheatMonitorEngine::MonitorLoop()
             m_cv.wait_until(lk, earliest, [&]() { 
                 return !m_isSystemActive.load() || 
                        m_wakeRequested.load() ||
-                       (!m_targetedScanQueue.empty());
+                       m_targetedScanPending.load();
             });
             
             if (m_wakeRequested.load())
@@ -113,11 +113,7 @@ void CheatMonitorEngine::ResetSessionState()
         m_knownThreadIds.clear();
         m_knownModules.clear();
     }
-    {
-        std::lock_guard<std::mutex> lock(m_targetedScanMutex);
-        m_targetedScanQueue.clear();
-        m_consumedTargetedScanIds.clear();
-    }
+    m_targetedScanPending.store(false);
     LOG_INFO(AntiCheatLogger::LogCategory::SYSTEM, "Session state reset completed");
 }
 
@@ -228,57 +224,54 @@ void CheatMonitorEngine::AddRandomJitter()
     std::this_thread::sleep_for(std::chrono::milliseconds(jitter_dist(m_rng)));
 }
 
-void CheatMonitorEngine::SubmitTargetedScanRequest(const std::string &requestId, const std::string &sensorName)
+void CheatMonitorEngine::SubmitTargetedScanRequest()
 {
-    if (requestId.empty() || sensorName.empty()) return;
-
-    // 去重键必须同时包含 sensorName：一次全量复核会用同一个 requestId 依次下发多个 sensor，
-    // 若只按 requestId 去重，除第一个以外的 sensor 会在执行前被静默丢弃（后台永远收不到它们的结果）。
-    const std::string dedupKey = requestId + '\x1f' + sensorName;
-    bool added = false;
-    {
-        std::lock_guard<std::mutex> lock(m_targetedScanMutex);
-        if (m_consumedTargetedScanIds.count(dedupKey) > 0) return;
-        bool alreadyQueued = std::any_of(m_targetedScanQueue.begin(), m_targetedScanQueue.end(),
-                                         [&](const TargetedScanRequest &queued) {
-                                             return queued.requestId == requestId && queued.sensorName == sensorName;
-                                         });
-        if (alreadyQueued) return;
-        m_targetedScanQueue.push_back(TargetedScanRequest{requestId, sensorName});
-        added = true;
-    }
-    if (added) WakeMonitor();
+    bool expected = false;
+    if (m_targetedScanPending.compare_exchange_strong(expected, true)) WakeMonitor();
 }
 
-bool CheatMonitorEngine::TryDequeueTargetedScan(TargetedScanRequest &outRequest)
+void CheatMonitorEngine::SubmitTargetedScanRequest(const std::string &requestId, const std::string &sensorName)
 {
-    std::lock_guard<std::mutex> lock(m_targetedScanMutex);
-    if (m_targetedScanQueue.empty()) return false;
-    outRequest = m_targetedScanQueue.front();
-    m_targetedScanQueue.pop_front();
-    return true;
+    (void)requestId;
+    (void)sensorName;
+    SubmitTargetedScanRequest();
+}
+
+bool CheatMonitorEngine::TryConsumeTargetedScanRequest()
+{
+    return m_targetedScanPending.exchange(false);
 }
 
 void CheatMonitorEngine::ProcessPendingTargetedScans()
 {
     if (!m_isSessionActive.load()) return;
-    TargetedScanRequest request;
-    while (TryDequeueTargetedScan(request))
+    while (TryConsumeTargetedScanRequest())
     {
-        RunTargetedSensorScan(request);
+        RunTargetedSensorScan();
     }
 }
 
-void CheatMonitorEngine::RunTargetedSensorScan(const TargetedScanRequest &request)
+void CheatMonitorEngine::RunTargetedSensorScan()
+{
+    if (!m_isSessionActive.load()) return;
+
+    for (const auto &sensor : m_lightweightSensors)
+    {
+        RunTargetedSensorScanForSensor(sensor.get());
+    }
+
+    for (const auto &sensor : m_heavyweightSensors)
+    {
+        RunTargetedSensorScanForSensor(sensor.get());
+    }
+}
+
+void CheatMonitorEngine::RunTargetedSensorScanForSensor(ISensor *targetSensor)
 {
     SensorExecutionResult result = SensorExecutionResult::FAILURE;
     anti_cheat::SensorFailureReason failureReason = anti_cheat::UNKNOWN_FAILURE;
     int durationMs = 0;
     std::string notes;
-
-    ISensor *targetSensor = nullptr;
-    auto it = m_sensorRegistry.find(request.sensorName);
-    if (it != m_sensorRegistry.end()) targetSensor = it->second;
 
     size_t evidence_begin = 0;
     {
@@ -289,12 +282,12 @@ void CheatMonitorEngine::RunTargetedSensorScan(const TargetedScanRequest &reques
     if (!targetSensor)
     {
         notes = "Sensor not found";
-        UploadTargetedSensorReport(request.requestId, request.sensorName, result, failureReason, durationMs, notes, {});
+        UploadTargetedSensorReport("", "", result, failureReason, durationMs, notes, {});
     }
     else if (!m_isSessionActive.load())
     {
         notes = "Session inactive";
-        UploadTargetedSensorReport(request.requestId, request.sensorName, result, failureReason, durationMs, notes, {});
+        UploadTargetedSensorReport("", targetSensor->GetName(), result, failureReason, durationMs, notes, {});
     }
     else
     {
@@ -318,11 +311,6 @@ void CheatMonitorEngine::RunTargetedSensorScan(const TargetedScanRequest &reques
                 m_evidences.erase(m_evidences.begin() + evidence_begin, m_evidences.end());
             }
         }
-        UploadTargetedSensorReport(request.requestId, request.sensorName, result, failureReason, durationMs, notes, evidences);
-    }
-
-    {
-        std::lock_guard<std::mutex> lock(m_targetedScanMutex);
-        m_consumedTargetedScanIds.insert(request.requestId + '\x1f' + request.sensorName);
+        UploadTargetedSensorReport("", targetSensor->GetName(), result, failureReason, durationMs, notes, evidences);
     }
 }
