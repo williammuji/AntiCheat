@@ -232,12 +232,17 @@ void CheatMonitorEngine::SubmitTargetedScanRequest(const std::string &requestId,
 {
     if (requestId.empty() || sensorName.empty()) return;
 
+    // 去重键必须同时包含 sensorName：一次全量复核会用同一个 requestId 依次下发多个 sensor，
+    // 若只按 requestId 去重，除第一个以外的 sensor 会在执行前被静默丢弃（后台永远收不到它们的结果）。
+    const std::string dedupKey = requestId + '\x1f' + sensorName;
     bool added = false;
     {
         std::lock_guard<std::mutex> lock(m_targetedScanMutex);
-        if (m_consumedTargetedScanIds.count(requestId) > 0) return;
+        if (m_consumedTargetedScanIds.count(dedupKey) > 0) return;
         bool alreadyQueued = std::any_of(m_targetedScanQueue.begin(), m_targetedScanQueue.end(),
-                                         [&](const TargetedScanRequest &queued) { return queued.requestId == requestId; });
+                                         [&](const TargetedScanRequest &queued) {
+                                             return queued.requestId == requestId && queued.sensorName == sensorName;
+                                         });
         if (alreadyQueued) return;
         m_targetedScanQueue.push_back(TargetedScanRequest{requestId, sensorName});
         added = true;
@@ -318,6 +323,6 @@ void CheatMonitorEngine::RunTargetedSensorScan(const TargetedScanRequest &reques
 
     {
         std::lock_guard<std::mutex> lock(m_targetedScanMutex);
-        m_consumedTargetedScanIds.insert(request.requestId);
+        m_consumedTargetedScanIds.insert(request.requestId + '\x1f' + request.sensorName);
     }
 }

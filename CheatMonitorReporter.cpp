@@ -16,7 +16,8 @@ void CaptureSessionIdentity(CheatMonitorEngine &engine, uint32_t &userId, std::s
 }
 }
 
-void CheatMonitorEngine::AddEvidence(anti_cheat::CheatCategory category, const std::string &description)
+void CheatMonitorEngine::AddEvidence(anti_cheat::CheatCategory category, const std::string &description,
+                                     bool bypassThrottle)
 {
     std::lock_guard<std::mutex> lock(m_sessionMutex);
 
@@ -34,14 +35,22 @@ void CheatMonitorEngine::AddEvidence(anti_cheat::CheatCategory category, const s
         return;
     }
 
-    if (m_uniqueEvidence.find({category, description}) != m_uniqueEvidence.end()) return;
-
-    const auto now = std::chrono::steady_clock::now();
-    auto it = m_lastReported.find({m_currentUserId, category});
-    if (it != m_lastReported.end())
+    // 定点扫描（targeted scan）由服务器显式下发，用于对既有可疑证据做“定点复核”。
+    // 它必须绕过 unique 去重与 {userId, category} 冷却窗口：否则周期扫描先前上报过同类证据后，
+    // 复核期间此处会被冷却直接 return，导致 RunTargetedSensorScan 收割到空证据、回报 punish:false，
+    // 形成“客户端检测到但后台收不到”。同时不写入 m_uniqueEvidence / m_lastReported，
+    // 避免仅进入定点报告（随后被 erase）的证据污染周期上报路径的节流状态。
+    if (!bypassThrottle)
     {
-        auto elapsed = std::chrono::duration_cast<std::chrono::minutes>(now - it->second);
-        if (elapsed < std::chrono::minutes(CheatConfigManager::GetInstance().GetReportCooldownMinutes())) return;
+        if (m_uniqueEvidence.find({category, description}) != m_uniqueEvidence.end()) return;
+
+        const auto now = std::chrono::steady_clock::now();
+        auto it = m_lastReported.find({m_currentUserId, category});
+        if (it != m_lastReported.end())
+        {
+            auto elapsed = std::chrono::duration_cast<std::chrono::minutes>(now - it->second);
+            if (elapsed < std::chrono::minutes(CheatConfigManager::GetInstance().GetReportCooldownMinutes())) return;
+        }
     }
 
     anti_cheat::Evidence evidence;
@@ -52,9 +61,13 @@ void CheatMonitorEngine::AddEvidence(anti_cheat::CheatCategory category, const s
     evidence.set_description(description);
 
     m_evidences.push_back(evidence);
-    m_uniqueEvidence.insert({category, description});
-    m_lastReported[{m_currentUserId, category}] = now;
-    LOG_WARNING_F(AntiCheatLogger::LogCategory::SECURITY, "Evidence added: %s", description.c_str());
+    if (!bypassThrottle)
+    {
+        m_uniqueEvidence.insert({category, description});
+        m_lastReported[{m_currentUserId, category}] = std::chrono::steady_clock::now();
+    }
+    LOG_WARNING_F(AntiCheatLogger::LogCategory::SECURITY, "Evidence added%s: %s", bypassThrottle ? " (targeted)" : "",
+                  description.c_str());
 }
 
 void CheatMonitorEngine::UploadHardwareReport()

@@ -945,6 +945,9 @@ void CheatConfigManager::SetDefaultValues(ConfigData& configData)
     configData.config->add_whitelisted_integrity_files("nimdnsnsp.dll");
     configData.config->add_whitelisted_integrity_files("idmmkb.dll");
     configData.config->add_whitelisted_integrity_files("shhkapi.dll");
+    // 网吧无盘系统/虚拟磁盘驱动 (常见误报白名单)
+    configData.config->add_whitelisted_integrity_files("ospro.sys");
+    configData.config->add_whitelisted_integrity_files("vdiskbus64.sys");
     // 调试组件
     configData.config->add_whitelisted_integrity_files("pdm.dll");
     configData.config->add_whitelisted_integrity_files("mdmui.dll");

@@ -62,7 +62,8 @@ bool SensorRuntimeContext::IsTargetedScan() const
 
 void SensorRuntimeContext::AddEvidence(anti_cheat::CheatCategory category, const std::string &description)
 {
-    m_engine->AddEvidence(category, description);
+    // 定点扫描的证据必须绕过节流（冷却/去重），否则复核会被周期扫描留下的冷却窗口吞掉。
+    m_engine->AddEvidence(category, description, m_isTargetedScan);
 }
 
 std::shared_ptr<const std::vector<std::wstring>> SensorRuntimeContext::GetHarmfulProcessNames() const

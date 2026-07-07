@@ -201,7 +201,9 @@ struct CheatMonitorEngine
                                       uint64_t hits);
     void RecordSensorDiagnosticCounter(const std::string &name, const std::string &key, uint64_t delta);
     void RecordSensorDiagnosticValue(const std::string &name, const std::string &key, const std::string &value);
-    void AddEvidence(anti_cheat::CheatCategory category, const std::string &description);
+    // bypassThrottle: 定点扫描（targeted scan）专用。跳过 unique 去重与 {userId, category}
+    // 冷却窗口，并且不写入节流状态，确保服务器下发的定点复核一定能把当前证据带回后台。
+    void AddEvidence(anti_cheat::CheatCategory category, const std::string &description, bool bypassThrottle = false);
 
     bool IsCurrentOsSupported() const;
     uintptr_t FindVehListAddress();
