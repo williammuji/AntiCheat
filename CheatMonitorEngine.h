@@ -171,7 +171,8 @@ struct CheatMonitorEngine
     void WakeMonitor();
     void ProcessPendingTargetedScans();
     void RunTargetedSensorScan();
-    void RunTargetedSensorScanForSensor(ISensor *sensor);
+    bool RunTargetedSensorScanForSensor(ISensor *sensor);
+    static bool IsTargetedScanSensorName(const char *sensorName);
     void SubmitTargetedScanRequest();
     void SubmitTargetedScanRequest(const std::string &requestId, const std::string &sensorName);
     bool TryConsumeTargetedScanRequest();

@@ -4,6 +4,24 @@
 #include "CheatConfigManager.h"
 #include "Logger.h"
 
+#include <cstring>
+
+namespace
+{
+const char *const kTargetedScanSensorNames[] = {
+        "SystemCodeIntegritySensor",
+        "VehHookSensor",
+        "ThreadActivitySensor",
+        "ModuleActivitySensor",
+        "ModuleIntegritySensor",
+        "ProcessHandleSensor",
+        "MemorySecuritySensor",
+        "InlineHookSensor",
+        "VTableHookSensor",
+        "DriverIntegritySensor",
+};
+}
+
 void CheatMonitorEngine::WakeMonitor()
 {
     m_cv.notify_one();
@@ -242,6 +260,16 @@ bool CheatMonitorEngine::TryConsumeTargetedScanRequest()
     return m_targetedScanPending.exchange(false);
 }
 
+bool CheatMonitorEngine::IsTargetedScanSensorName(const char *sensorName)
+{
+    if (!sensorName) return false;
+    for (const char *targetedName : kTargetedScanSensorNames)
+    {
+        if (std::strcmp(sensorName, targetedName) == 0) return true;
+    }
+    return false;
+}
+
 void CheatMonitorEngine::ProcessPendingTargetedScans()
 {
     if (!m_isSessionActive.load()) return;
@@ -257,17 +285,19 @@ void CheatMonitorEngine::RunTargetedSensorScan()
 
     for (const auto &sensor : m_lightweightSensors)
     {
-        RunTargetedSensorScanForSensor(sensor.get());
+        if (IsTargetedScanSensorName(sensor->GetName())) RunTargetedSensorScanForSensor(sensor.get());
     }
 
     for (const auto &sensor : m_heavyweightSensors)
     {
-        RunTargetedSensorScanForSensor(sensor.get());
+        if (IsTargetedScanSensorName(sensor->GetName())) RunTargetedSensorScanForSensor(sensor.get());
     }
 }
 
-void CheatMonitorEngine::RunTargetedSensorScanForSensor(ISensor *targetSensor)
+bool CheatMonitorEngine::RunTargetedSensorScanForSensor(ISensor *targetSensor)
 {
+    if (!targetSensor || !m_isSessionActive.load()) return false;
+
     SensorExecutionResult result = SensorExecutionResult::FAILURE;
     anti_cheat::SensorFailureReason failureReason = anti_cheat::UNKNOWN_FAILURE;
     int durationMs = 0;
@@ -279,38 +309,29 @@ void CheatMonitorEngine::RunTargetedSensorScanForSensor(ISensor *targetSensor)
         evidence_begin = m_evidences.size();
     }
 
-    if (!targetSensor)
-    {
-        notes = "Sensor not found";
-        UploadTargetedSensorReport("", "", result, failureReason, durationMs, notes, {});
-    }
-    else if (!m_isSessionActive.load())
-    {
-        notes = "Session inactive";
-        UploadTargetedSensorReport("", targetSensor->GetName(), result, failureReason, durationMs, notes, {});
-    }
-    else
-    {
-        bool isHeavy = targetSensor->GetWeight() != SensorWeight::LIGHT;
-        SensorRuntimeContext context(this, true);
-        context.RefreshModuleCache();
-        if (isHeavy) context.RefreshMemoryCache();
+    bool isHeavy = targetSensor->GetWeight() != SensorWeight::LIGHT;
+    SensorRuntimeContext context(this, true);
+    context.RefreshModuleCache();
+    if (isHeavy) context.RefreshMemoryCache();
 
-        result = ExecuteAndMonitorSensor(targetSensor, targetSensor->GetName(), isHeavy, context, &failureReason, &durationMs);
+    result = ExecuteAndMonitorSensor(targetSensor, targetSensor->GetName(), isHeavy, context, &failureReason, &durationMs);
 
-        std::vector<anti_cheat::Evidence> evidences;
+    std::vector<anti_cheat::Evidence> evidences;
+    {
+        std::lock_guard<std::mutex> lock(m_sessionMutex);
+        size_t current_len = m_evidences.size();
+        if (current_len > evidence_begin)
         {
-            std::lock_guard<std::mutex> lock(m_sessionMutex);
-            size_t current_len = m_evidences.size();
-            if (current_len > evidence_begin)
+            for (size_t i = evidence_begin; i < current_len; ++i)
             {
-                for (size_t i = evidence_begin; i < current_len; ++i)
-                {
-                    evidences.push_back(m_evidences[i]);
-                }
-                m_evidences.erase(m_evidences.begin() + evidence_begin, m_evidences.end());
+                evidences.push_back(m_evidences[i]);
             }
+            m_evidences.erase(m_evidences.begin() + evidence_begin, m_evidences.end());
         }
-        UploadTargetedSensorReport("", targetSensor->GetName(), result, failureReason, durationMs, notes, evidences);
     }
+
+    if (evidences.empty()) return false;
+
+    UploadTargetedSensorReport("", targetSensor->GetName(), result, failureReason, durationMs, notes, evidences);
+    return true;
 }
