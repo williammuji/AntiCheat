@@ -56,18 +56,29 @@ SensorExecutionResult InlineHookSensor::Execute(SensorRuntimeContext &context)
     {
         const auto& modName = targetModules[i];
         HMODULE hMod = nullptr;
+        std::string moduleDisplayName;
         if (modName == L"__SELF__")
         {
             hMod = GetModuleHandleW(NULL);
+            wchar_t exePath[MAX_PATH] = {0};
+            if (hMod && GetModuleFileNameW(hMod, exePath, MAX_PATH) > 0)
+            {
+                moduleDisplayName = Utils::WideToString(Utils::GetFileName(exePath));
+            }
+            else
+            {
+                moduleDisplayName = "__SELF__";
+            }
         }
         else
         {
             hMod = GetModuleHandleW(modName.c_str());
+            moduleDisplayName = Utils::WideToString(modName);
         }
 
         if (hMod)
         {
-            auto result = CheckModuleExports(hMod, context, startTime, budgetMs, targetedScan);
+            auto result = CheckModuleExports(hMod, moduleDisplayName, context, startTime, budgetMs, targetedScan);
             if (result == SensorExecutionResult::TIMEOUT)
             {
                 if (!targetedScan) context.SetInlineHookModuleCursorOffset(i);
@@ -127,7 +138,40 @@ bool InlineHookSensor::IsAddressWhitelisted(PVOID address, SensorRuntimeContext 
     return IsModuleInUnifiedWhitelist(modulePath, context);
 }
 
-SensorExecutionResult InlineHookSensor::CheckModuleExports(HMODULE hMod, SensorRuntimeContext& context,
+bool InlineHookSensor::IsRvaInExecutableSection(HMODULE hMod, PIMAGE_NT_HEADERS pNt, DWORD rva)
+{
+    PIMAGE_SECTION_HEADER pSection = IMAGE_FIRST_SECTION(pNt);
+    const WORD sectionCount = pNt->FileHeader.NumberOfSections;
+    if (sectionCount == 0 ||
+        !SystemUtils::IsReadableMemory(pSection, sizeof(IMAGE_SECTION_HEADER) * sectionCount))
+    {
+        return false;
+    }
+
+    for (WORD s = 0; s < sectionCount; s++)
+    {
+        DWORD sectionSize = pSection[s].Misc.VirtualSize ? pSection[s].Misc.VirtualSize
+                                                         : pSection[s].SizeOfRawData;
+        if (rva >= pSection[s].VirtualAddress && rva - pSection[s].VirtualAddress < sectionSize)
+        {
+            return (pSection[s].Characteristics & IMAGE_SCN_MEM_EXECUTE) != 0;
+        }
+    }
+    // RVA 不落在任何节内（如 PE 头区域）：同样不是代码
+    return false;
+}
+
+bool InlineHookSensor::IsCommittedExecutableMemory(PVOID address)
+{
+    MEMORY_BASIC_INFORMATION mbi = {};
+    if (VirtualQuery(address, &mbi, sizeof(mbi)) == 0) return false;
+    if (mbi.State != MEM_COMMIT) return false;
+    if (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) return false;
+    return (mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) != 0;
+}
+
+SensorExecutionResult InlineHookSensor::CheckModuleExports(HMODULE hMod, const std::string &moduleName,
+                                               SensorRuntimeContext& context,
                                                std::chrono::steady_clock::time_point startTime, int budgetMs,
                                                bool targetedScan)
 {
@@ -183,16 +227,24 @@ SensorExecutionResult InlineHookSensor::CheckModuleExports(HMODULE hMod, SensorR
             continue;
         }
 
+        // 数据导出（如导出的全局变量 gCookie、ntdll!NlsAnsiCodePage）位于非可执行节，
+        // 其内容是数据而非指令，反汇编会产生虚假的 JMP/PUSH+RET "钩子"
+        if (!IsRvaInExecutableSection(hMod, pNt, funcRVA))
+        {
+            continue;
+        }
+
         BYTE* pFunc = (BYTE*)hMod + funcRVA;
         if (!SystemUtils::IsReadableMemory(pFunc, 16)) continue;
 
-        CheckFunction(pFunc, funcName, context);
+        CheckFunction(pFunc, funcName, moduleName, context);
     }
 
     return SensorExecutionResult::SUCCESS;
 }
 
-void InlineHookSensor::CheckFunction(BYTE* pFunc, const char* funcName, SensorRuntimeContext& context)
+void InlineHookSensor::CheckFunction(BYTE* pFunc, const char* funcName, const std::string &moduleName,
+                                     SensorRuntimeContext& context)
 {
     hde32s hs;
     unsigned int len = hde32_disasm(pFunc, &hs);
@@ -214,7 +266,7 @@ void InlineHookSensor::CheckFunction(BYTE* pFunc, const char* funcName, SensorRu
         targetAddr = (PVOID)(pFunc + hs.len + (int8_t)hs.imm.imm8);
         if ((BYTE*)targetAddr == pFunc - 5)
         {
-            CheckHotpatchPreamble((BYTE*)targetAddr, funcName, context);
+            CheckHotpatchPreamble((BYTE*)targetAddr, funcName, moduleName, context);
             return;
         }
         else
@@ -240,14 +292,33 @@ void InlineHookSensor::CheckFunction(BYTE* pFunc, const char* funcName, SensorRu
         {
             return;
         }
+        // 真实 inline hook 的跳转目标必然是已提交的可执行内存，否则钩子一执行就会崩溃；
+        // 不可执行的目标只能是把数据误解码成跳转指令的产物
+        if (!IsCommittedExecutableMemory(targetAddr))
+        {
+            LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR,
+                        "InlineHookSensor: 忽略不可执行跳转目标 %s!%s -> 0x%p", moduleName.c_str(), funcName,
+                        targetAddr);
+            return;
+        }
 
         std::ostringstream oss;
-        oss << "Inline Hook Detected: " << funcName << " -> 0x" << std::hex << (uintptr_t)targetAddr;
+        oss << "Inline Hook Detected: " << moduleName << "!" << funcName << " -> 0x" << std::hex
+            << (uintptr_t)targetAddr;
+        if (!modulePath.empty())
+        {
+            oss << " (target module: " << Utils::WideToString(modulePath) << ")";
+        }
+        else
+        {
+            oss << " (target in private executable memory)";
+        }
         context.AddEvidence(anti_cheat::INTEGRITY_SYSTEM_API_HOOKED, oss.str());
     }
 }
 
-void InlineHookSensor::CheckHotpatchPreamble(BYTE* pPreamble, const char* funcName, SensorRuntimeContext& context)
+void InlineHookSensor::CheckHotpatchPreamble(BYTE* pPreamble, const char* funcName, const std::string &moduleName,
+                                             SensorRuntimeContext& context)
 {
     if (!SystemUtils::IsReadableMemory(pPreamble, 5)) return;
 
@@ -268,9 +339,25 @@ void InlineHookSensor::CheckHotpatchPreamble(BYTE* pPreamble, const char* funcNa
         {
             return;
         }
+        if (!IsCommittedExecutableMemory(targetAddr))
+        {
+            LOG_DEBUG_F(AntiCheatLogger::LogCategory::SENSOR,
+                        "InlineHookSensor: 忽略不可执行 Hotpatch 跳转目标 %s!%s -> 0x%p", moduleName.c_str(),
+                        funcName, targetAddr);
+            return;
+        }
 
         std::ostringstream oss;
-        oss << "Inline Hook (Hotpatch) Detected: " << funcName << " -> 0x" << std::hex << (uintptr_t)targetAddr;
+        oss << "Inline Hook (Hotpatch) Detected: " << moduleName << "!" << funcName << " -> 0x" << std::hex
+            << (uintptr_t)targetAddr;
+        if (!modulePath.empty())
+        {
+            oss << " (target module: " << Utils::WideToString(modulePath) << ")";
+        }
+        else
+        {
+            oss << " (target in private executable memory)";
+        }
         context.AddEvidence(anti_cheat::INTEGRITY_SYSTEM_API_HOOKED, oss.str());
     }
 }

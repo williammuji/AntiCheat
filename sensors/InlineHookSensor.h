@@ -1,6 +1,7 @@
 ﻿#pragma once
 
 #include <windows.h>
+#include <string>
 #include "../ISensor.h"
 
 
@@ -14,9 +15,12 @@ public:
 private:
    bool IsModuleInUnifiedWhitelist(const std::wstring &modulePath, SensorRuntimeContext &context) const;
    bool IsAddressWhitelisted(PVOID address, SensorRuntimeContext &context) const;
-   SensorExecutionResult CheckModuleExports(HMODULE hMod, SensorRuntimeContext& context,
+   static bool IsRvaInExecutableSection(HMODULE hMod, PIMAGE_NT_HEADERS pNt, DWORD rva);
+   static bool IsCommittedExecutableMemory(PVOID address);
+   SensorExecutionResult CheckModuleExports(HMODULE hMod, const std::string &moduleName, SensorRuntimeContext& context,
                                             std::chrono::steady_clock::time_point startTime, int budgetMs,
                                             bool targetedScan);
-   void CheckFunction(BYTE* pFunc, const char* funcName, SensorRuntimeContext& context);
-   void CheckHotpatchPreamble(BYTE* pPreamble, const char* funcName, SensorRuntimeContext& context);
+   void CheckFunction(BYTE* pFunc, const char* funcName, const std::string &moduleName, SensorRuntimeContext& context);
+   void CheckHotpatchPreamble(BYTE* pPreamble, const char* funcName, const std::string &moduleName,
+                              SensorRuntimeContext& context);
 };
